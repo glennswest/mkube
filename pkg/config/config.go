@@ -14,10 +14,41 @@ type Config struct {
 	Standalone bool           `yaml:"standalone"`
 	KubeConfig string         `yaml:"kubeconfig"`
 	RouterOS   RouterOSConfig `yaml:"routeros"`
-	Network    NetworkConfig  `yaml:"network"`
+	Networks   []NetworkDef   `yaml:"networks"`
 	Storage    StorageConfig  `yaml:"storage"`
 	Systemd    SystemdConfig  `yaml:"systemd"`
 	Registry   RegistryConfig `yaml:"registry"`
+
+	// Deprecated: single-network config for backward compatibility.
+	// If present and Networks is empty, it is migrated into Networks.
+	Network *legacyNetworkConfig `yaml:"network,omitempty"`
+}
+
+// NetworkDef defines a network that containers can be placed on.
+type NetworkDef struct {
+	Name       string    `yaml:"name"`
+	Bridge     string    `yaml:"bridge"`
+	CIDR       string    `yaml:"cidr"`
+	Gateway    string    `yaml:"gateway"`
+	VLAN       int       `yaml:"vlan,omitempty"`
+	DNS        DNSConfig `yaml:"dns"`
+}
+
+// DNSConfig specifies the MicroDNS instance for a network.
+type DNSConfig struct {
+	Endpoint string `yaml:"endpoint"` // e.g. "http://192.168.200.199:8080"
+	Zone     string `yaml:"zone"`     // e.g. "gt.lo"
+	Server   string `yaml:"server"`   // DNS server IP for containers, e.g. "192.168.200.199"
+}
+
+// legacyNetworkConfig is the old single-network format, kept for backward compat.
+type legacyNetworkConfig struct {
+	PodCIDR     string   `yaml:"podCIDR"`
+	ServiceCIDR string   `yaml:"serviceCIDR"`
+	GatewayIP   string   `yaml:"gatewayIP"`
+	BridgeName  string   `yaml:"bridgeName"`
+	VLAN        int      `yaml:"vlan"`
+	DNSServers  []string `yaml:"dnsServers"`
 }
 
 type RouterOSConfig struct {
@@ -33,20 +64,6 @@ type RouterOSConfig struct {
 	UseTLS         bool   `yaml:"useTLS"`
 	CACert         string `yaml:"caCert"`
 	InsecureVerify bool   `yaml:"insecureVerify"`
-}
-
-type NetworkConfig struct {
-	// IPAM
-	PodCIDR     string `yaml:"podCIDR"`     // e.g. "172.20.0.0/16"
-	ServiceCIDR string `yaml:"serviceCIDR"` // optional, for service IPs
-	GatewayIP   string `yaml:"gatewayIP"`   // bridge gateway, auto-derived if empty
-
-	// RouterOS bridge
-	BridgeName string `yaml:"bridgeName"` // RouterOS bridge interface name
-	VLAN       int    `yaml:"vlan"`       // optional VLAN tag
-
-	// DNS
-	DNSServers []string `yaml:"dnsServers"`
 }
 
 type StorageConfig struct {
@@ -83,6 +100,27 @@ type RegistryConfig struct {
 	UpstreamRegistries []string `yaml:"upstreamRegistries"` // e.g. ["docker.io", "ghcr.io"]
 }
 
+// DefaultNetwork returns the first configured network (the default).
+func (c *Config) DefaultNetwork() NetworkDef {
+	if len(c.Networks) > 0 {
+		return c.Networks[0]
+	}
+	return NetworkDef{}
+}
+
+// FindNetwork looks up a network by name. Returns the default if name is empty.
+func (c *Config) FindNetwork(name string) (NetworkDef, bool) {
+	if name == "" && len(c.Networks) > 0 {
+		return c.Networks[0], true
+	}
+	for _, n := range c.Networks {
+		if n.Name == name {
+			return n, true
+		}
+	}
+	return NetworkDef{}, false
+}
+
 // Load reads config from file and overrides with CLI flags.
 func Load(flags *pflag.FlagSet) (*Config, error) {
 	configPath, _ := flags.GetString("config")
@@ -95,12 +133,6 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			RESTURL:        "https://192.168.200.1/rest",
 			User:           "admin",
 			InsecureVerify: true,
-		},
-		Network: NetworkConfig{
-			PodCIDR:    "192.168.200.0/24",
-			GatewayIP:  "192.168.200.1",
-			BridgeName: "containers",
-			DNSServers: []string{"8.8.8.8", "1.1.1.1"},
 		},
 		Storage: StorageConfig{
 			BasePath:           "/raid1/images",
@@ -125,6 +157,39 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 	if data, err := os.ReadFile(configPath); err == nil {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config file: %w", err)
+		}
+	}
+
+	// Migrate legacy single-network config
+	if cfg.Network != nil {
+		migrated := NetworkDef{
+			Name:    "containers",
+			Bridge:  cfg.Network.BridgeName,
+			CIDR:    cfg.Network.PodCIDR,
+			Gateway: cfg.Network.GatewayIP,
+			VLAN:    cfg.Network.VLAN,
+		}
+		if len(cfg.Network.DNSServers) > 0 {
+			migrated.DNS.Server = cfg.Network.DNSServers[0]
+		}
+		cfg.Networks = []NetworkDef{migrated}
+		cfg.Network = nil
+	}
+
+	// Apply default network if none configured
+	if len(cfg.Networks) == 0 {
+		cfg.Networks = []NetworkDef{
+			{
+				Name:    "containers",
+				Bridge:  "containers",
+				CIDR:    "192.168.200.0/24",
+				Gateway: "192.168.200.1",
+				DNS: DNSConfig{
+					Endpoint: "http://192.168.200.199:8080",
+					Zone:     "gt.lo",
+					Server:   "192.168.200.199",
+				},
+			},
 		}
 	}
 
@@ -156,11 +221,16 @@ func applyFlagOverrides(cfg *Config, flags *pflag.FlagSet) {
 	if v, _ := flags.GetString("routeros-password"); v != "" {
 		cfg.RouterOS.Password = v
 	}
+	// pod-cidr and bridge-name override the first network
 	if v, _ := flags.GetString("pod-cidr"); v != "" {
-		cfg.Network.PodCIDR = v
+		if len(cfg.Networks) > 0 {
+			cfg.Networks[0].CIDR = v
+		}
 	}
 	if v, _ := flags.GetString("bridge-name"); v != "" {
-		cfg.Network.BridgeName = v
+		if len(cfg.Networks) > 0 {
+			cfg.Networks[0].Bridge = v
+		}
 	}
 	if v, _ := flags.GetString("storage-path"); v != "" {
 		cfg.Storage.BasePath = v

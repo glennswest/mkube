@@ -5,58 +5,86 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
 
 	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/mikrotik-kube/pkg/dns"
 	"github.com/glenneth/mikrotik-kube/pkg/routeros"
 )
 
-// Manager handles IP address allocation (IPAM), veth interface creation,
-// and bridge port management for containers on RouterOS.
-type Manager struct {
-	cfg    config.NetworkConfig
-	ros    *routeros.Client
-	log    *zap.SugaredLogger
-
-	mu        sync.Mutex
+// networkState holds per-network IPAM state and cached zone ID.
+type networkState struct {
+	def       config.NetworkDef
 	subnet    *net.IPNet
 	gateway   net.IP
 	allocated map[string]net.IP // veth name -> allocated IP
-	nextIP    uint32            // next IP to try (host-order offset)
+	nextIP    uint32
+	zoneID    string // cached MicroDNS zone UUID
 }
 
-// NewManager initializes the network manager and ensures the bridge exists.
-func NewManager(cfg config.NetworkConfig, ros *routeros.Client, log *zap.SugaredLogger) (*Manager, error) {
-	_, subnet, err := net.ParseCIDR(cfg.PodCIDR)
-	if err != nil {
-		return nil, fmt.Errorf("parsing pod CIDR %q: %w", cfg.PodCIDR, err)
-	}
+// allocation tracks which network a veth belongs to.
+type allocation struct {
+	networkName string
+	ip          net.IP
+	hostname    string
+}
 
-	// Gateway is .1 in the subnet by default
-	gateway := make(net.IP, len(subnet.IP))
-	copy(gateway, subnet.IP)
-	gateway[len(gateway)-1] = 1
+// Manager handles IP address allocation (IPAM), veth interface creation,
+// DNS registration, and bridge port management across multiple networks.
+type Manager struct {
+	networks map[string]*networkState // keyed by network name
+	netOrder []string                 // ordered network names (first = default)
+	ros      *routeros.Client
+	dns      *dns.Client
+	log      *zap.SugaredLogger
 
-	if cfg.GatewayIP != "" {
-		gateway = net.ParseIP(cfg.GatewayIP)
-		if gateway == nil {
-			return nil, fmt.Errorf("invalid gateway IP: %s", cfg.GatewayIP)
-		}
-	}
+	mu     sync.Mutex
+	allocs map[string]*allocation // veth name -> allocation info
+}
 
+// NewManager initializes the network manager with multiple networks.
+func NewManager(networks []config.NetworkDef, ros *routeros.Client, dnsClient *dns.Client, log *zap.SugaredLogger) (*Manager, error) {
 	mgr := &Manager{
-		cfg:       cfg,
-		ros:       ros,
-		log:       log,
-		subnet:    subnet,
-		gateway:   gateway,
-		allocated: make(map[string]net.IP),
-		nextIP:    2, // start at .2 (skip network and gateway)
+		networks: make(map[string]*networkState, len(networks)),
+		ros:      ros,
+		dns:      dnsClient,
+		log:      log,
+		allocs:   make(map[string]*allocation),
 	}
 
-	// Sync with existing veth allocations on RouterOS
+	for _, netDef := range networks {
+		_, subnet, err := net.ParseCIDR(netDef.CIDR)
+		if err != nil {
+			return nil, fmt.Errorf("parsing CIDR %q for network %s: %w", netDef.CIDR, netDef.Name, err)
+		}
+
+		gateway := make(net.IP, len(subnet.IP))
+		copy(gateway, subnet.IP)
+		gateway[len(gateway)-1] = 1
+
+		if netDef.Gateway != "" {
+			gateway = net.ParseIP(netDef.Gateway)
+			if gateway == nil {
+				return nil, fmt.Errorf("invalid gateway IP %q for network %s", netDef.Gateway, netDef.Name)
+			}
+		}
+
+		ns := &networkState{
+			def:       netDef,
+			subnet:    subnet,
+			gateway:   gateway,
+			allocated: make(map[string]net.IP),
+			nextIP:    2,
+		}
+
+		mgr.networks[netDef.Name] = ns
+		mgr.netOrder = append(mgr.netOrder, netDef.Name)
+	}
+
+	// Sync existing allocations from RouterOS
 	if err := mgr.syncExistingAllocations(context.Background()); err != nil {
 		log.Warnw("failed to sync existing allocations", "error", err)
 	}
@@ -64,107 +92,171 @@ func NewManager(cfg config.NetworkConfig, ros *routeros.Client, log *zap.Sugared
 	return mgr, nil
 }
 
-// AllocateInterface creates a veth, assigns an IP from the pool, and
-// adds it to the container bridge. Returns the IP and gateway.
-func (m *Manager) AllocateInterface(ctx context.Context, vethName string) (ip string, gateway string, err error) {
+// InitDNSZones calls EnsureZone for each network that has DNS configured.
+// Should be called at startup after NewManager.
+func (m *Manager) InitDNSZones(ctx context.Context) {
+	if m.dns == nil {
+		return
+	}
+	for _, name := range m.netOrder {
+		ns := m.networks[name]
+		if ns.def.DNS.Endpoint == "" || ns.def.DNS.Zone == "" {
+			continue
+		}
+		zoneID, err := m.dns.EnsureZone(ctx, ns.def.DNS.Endpoint, ns.def.DNS.Zone)
+		if err != nil {
+			m.log.Warnw("failed to ensure DNS zone", "network", name, "zone", ns.def.DNS.Zone, "error", err)
+			continue
+		}
+		ns.zoneID = zoneID
+		m.log.Infow("DNS zone ready", "network", name, "zone", ns.def.DNS.Zone, "zoneID", zoneID)
+	}
+}
+
+// AllocateInterface creates a veth, assigns an IP from the specified network,
+// registers a DNS A record, and adds it to the network's bridge.
+// If networkName is empty, the first (default) network is used.
+func (m *Manager) AllocateInterface(ctx context.Context, vethName, hostname, networkName string) (ip string, gateway string, dnsServer string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Allocate an IP
-	allocatedIP, err := m.allocateIP()
+	ns, err := m.resolveNetwork(networkName)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
-	// Determine the prefix length from the subnet
-	ones, _ := m.subnet.Mask.Size()
+	// Allocate an IP
+	allocatedIP, err := m.allocateIP(ns)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	ones, _ := ns.subnet.Mask.Size()
 	ipCIDR := fmt.Sprintf("%s/%d", allocatedIP.String(), ones)
-	gw := m.gateway.String()
+	gw := ns.gateway.String()
 
 	// Create veth on RouterOS
 	if err := m.ros.CreateVeth(ctx, vethName, ipCIDR, gw); err != nil {
-		return "", "", fmt.Errorf("creating veth %s: %w", vethName, err)
+		return "", "", "", fmt.Errorf("creating veth %s: %w", vethName, err)
 	}
 
 	// Add to bridge
-	if err := m.ros.AddBridgePort(ctx, m.cfg.BridgeName, vethName); err != nil {
-		// Rollback veth
+	if err := m.ros.AddBridgePort(ctx, ns.def.Bridge, vethName); err != nil {
 		_ = m.ros.RemoveVeth(ctx, vethName)
-		return "", "", fmt.Errorf("adding %s to bridge %s: %w", vethName, m.cfg.BridgeName, err)
+		return "", "", "", fmt.Errorf("adding %s to bridge %s: %w", vethName, ns.def.Bridge, err)
 	}
 
-	m.allocated[vethName] = allocatedIP
-	m.log.Infow("interface allocated", "veth", vethName, "ip", ipCIDR, "bridge", m.cfg.BridgeName)
+	ns.allocated[vethName] = allocatedIP
+	m.allocs[vethName] = &allocation{
+		networkName: ns.def.Name,
+		ip:          allocatedIP,
+		hostname:    hostname,
+	}
 
-	return ipCIDR, gw, nil
+	// Register DNS A record
+	if m.dns != nil && ns.zoneID != "" && hostname != "" {
+		if regErr := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, ns.zoneID, hostname, allocatedIP.String(), 60); regErr != nil {
+			m.log.Warnw("failed to register DNS", "hostname", hostname, "ip", allocatedIP, "error", regErr)
+		}
+	}
+
+	dnsServerIP := ns.def.DNS.Server
+	m.log.Infow("interface allocated",
+		"veth", vethName, "ip", ipCIDR, "bridge", ns.def.Bridge,
+		"network", ns.def.Name, "dns", dnsServerIP)
+
+	return ipCIDR, gw, dnsServerIP, nil
 }
 
-// ReleaseInterface removes the veth and returns its IP to the pool.
+// ReleaseInterface removes the veth, deregisters DNS, and returns the IP.
 func (m *Manager) ReleaseInterface(ctx context.Context, vethName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Deregister DNS
+	if alloc, ok := m.allocs[vethName]; ok && m.dns != nil && alloc.hostname != "" {
+		if ns, exists := m.networks[alloc.networkName]; exists && ns.zoneID != "" {
+			if err := m.dns.DeregisterHost(ctx, ns.def.DNS.Endpoint, ns.zoneID, alloc.hostname); err != nil {
+				m.log.Warnw("failed to deregister DNS", "hostname", alloc.hostname, "error", err)
+			}
+		}
+	}
 
 	if err := m.ros.RemoveVeth(ctx, vethName); err != nil {
 		m.log.Warnw("error removing veth", "name", vethName, "error", err)
 	}
 
-	delete(m.allocated, vethName)
-	m.log.Infow("interface released", "veth", vethName)
+	// Clean up allocation from the correct network
+	if alloc, ok := m.allocs[vethName]; ok {
+		if ns, exists := m.networks[alloc.networkName]; exists {
+			delete(ns.allocated, vethName)
+		}
+		delete(m.allocs, vethName)
+	}
 
+	m.log.Infow("interface released", "veth", vethName)
 	return nil
 }
 
-// GetAllocations returns a snapshot of current IP allocations.
+// GetAllocations returns a snapshot of current IP allocations across all networks.
 func (m *Manager) GetAllocations() map[string]string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	result := make(map[string]string, len(m.allocated))
-	for name, ip := range m.allocated {
-		result[name] = ip.String()
+	result := make(map[string]string)
+	for _, ns := range m.networks {
+		for name, ip := range ns.allocated {
+			result[name] = ip.String()
+		}
 	}
 	return result
 }
 
+// resolveNetwork returns the networkState for the given name, or the default.
+// Must be called with m.mu held.
+func (m *Manager) resolveNetwork(name string) (*networkState, error) {
+	if name == "" && len(m.netOrder) > 0 {
+		return m.networks[m.netOrder[0]], nil
+	}
+	if ns, ok := m.networks[name]; ok {
+		return ns, nil
+	}
+	return nil, fmt.Errorf("network %q not found", name)
+}
+
 // ─── IPAM ───────────────────────────────────────────────────────────────────
 
-// allocateIP finds the next available IP in the subnet.
-// Must be called with m.mu held.
-func (m *Manager) allocateIP() (net.IP, error) {
-	ones, bits := m.subnet.Mask.Size()
-	maxHosts := uint32(1<<(bits-ones)) - 2 // exclude network and broadcast
+func (m *Manager) allocateIP(ns *networkState) (net.IP, error) {
+	ones, bits := ns.subnet.Mask.Size()
+	maxHosts := uint32(1<<(bits-ones)) - 2
 
-	baseIP := ipToUint32(m.subnet.IP)
+	baseIP := ipToUint32(ns.subnet.IP)
 
-	// Try sequential allocation, wrapping around if needed
 	for attempts := uint32(0); attempts < maxHosts; attempts++ {
-		candidate := baseIP + m.nextIP
+		candidate := baseIP + ns.nextIP
 		candidateIP := uint32ToIP(candidate)
 
-		// Check not already allocated
 		taken := false
-		for _, existing := range m.allocated {
+		for _, existing := range ns.allocated {
 			if existing.Equal(candidateIP) {
 				taken = true
 				break
 			}
 		}
 
-		m.nextIP++
-		if m.nextIP > maxHosts {
-			m.nextIP = 2 // wrap around
+		ns.nextIP++
+		if ns.nextIP > maxHosts {
+			ns.nextIP = 2
 		}
 
-		if !taken && !candidateIP.Equal(m.gateway) {
+		if !taken && !candidateIP.Equal(ns.gateway) {
 			return candidateIP, nil
 		}
 	}
 
-	return nil, fmt.Errorf("IPAM: no available IPs in %s (all %d addresses allocated)", m.subnet.String(), maxHosts)
+	return nil, fmt.Errorf("IPAM: no available IPs in %s (all %d addresses allocated)", ns.subnet.String(), maxHosts)
 }
 
-// syncExistingAllocations reads current veth interfaces from RouterOS
-// and populates the allocation map, so we don't double-allocate on restart.
 func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 	veths, err := m.ros.ListVeths(ctx)
 	if err != nil {
@@ -179,14 +271,40 @@ func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 		if err != nil {
 			ip = net.ParseIP(v.Address)
 		}
-		if ip != nil && m.subnet.Contains(ip) {
-			m.allocated[v.Name] = ip
-			m.log.Debugw("synced existing allocation", "veth", v.Name, "ip", ip)
+		if ip == nil {
+			continue
+		}
+
+		// Find which network this IP belongs to
+		for _, ns := range m.networks {
+			if ns.subnet.Contains(ip) {
+				ns.allocated[v.Name] = ip
+				m.allocs[v.Name] = &allocation{
+					networkName: ns.def.Name,
+					ip:          ip,
+					hostname:    extractHostname(v.Name),
+				}
+				m.log.Debugw("synced existing allocation", "veth", v.Name, "ip", ip, "network", ns.def.Name)
+				break
+			}
 		}
 	}
 
-	m.log.Infow("synced existing allocations", "count", len(m.allocated))
+	total := 0
+	for _, ns := range m.networks {
+		total += len(ns.allocated)
+	}
+	m.log.Infow("synced existing allocations", "count", total)
 	return nil
+}
+
+// extractHostname attempts to derive a hostname from a veth name like "veth-myapp-0".
+func extractHostname(vethName string) string {
+	parts := strings.SplitN(vethName, "-", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return vethName
 }
 
 // ─── IP Helpers ─────────────────────────────────────────────────────────────

@@ -27,6 +27,11 @@ import (
 	"github.com/glenneth/mikrotik-kube/pkg/systemd"
 )
 
+const (
+	// annotationNetwork selects which network a pod's containers are placed on.
+	annotationNetwork = "mikrotik.io/network"
+)
+
 // Deps holds injected dependencies for the provider.
 type Deps struct {
 	Config     *config.Config
@@ -72,6 +77,9 @@ func (p *MikroTikProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("creating pod")
 
+	// Determine target network from annotation
+	networkName := pod.Annotations[annotationNetwork]
+
 	for i, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
 
@@ -81,13 +89,13 @@ func (p *MikroTikProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error
 			return fmt.Errorf("ensuring image %s: %w", container.Image, err)
 		}
 
-		// 2. Allocate network
+		// 2. Allocate network (with DNS registration)
 		vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
-		ip, gw, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName)
+		ip, gw, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName, pod.Name, networkName)
 		if err != nil {
 			return fmt.Errorf("allocating network for %s: %w", name, err)
 		}
-		log.Infow("allocated network", "veth", vethName, "ip", ip, "gateway", gw)
+		log.Infow("allocated network", "veth", vethName, "ip", ip, "gateway", gw, "dns", dnsServer)
 
 		// 3. Create volume mounts
 		var mounts []string
@@ -118,7 +126,7 @@ func (p *MikroTikProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error
 			Envs:        envs,
 			Cmd:         strings.Join(container.Command, " "),
 			Hostname:    pod.Name,
-			DNS:         strings.Join(p.deps.Config.Network.DNSServers, ","),
+			DNS:         dnsServer,
 			Logging:     true,
 			StartOnBoot: startOnBoot,
 		}
@@ -289,7 +297,7 @@ func (p *MikroTikProvider) GetPodStatus(ctx context.Context, namespace, name str
 		Phase:             phase,
 		ContainerStatuses: containerStatuses,
 		StartTime:         &metav1.Time{Time: p.startTime},
-		HostIP:            p.deps.Config.Network.GatewayIP,
+		HostIP:            p.deps.Config.DefaultNetwork().Gateway,
 		Conditions: []corev1.PodCondition{
 			{
 				Type:   corev1.PodReady,

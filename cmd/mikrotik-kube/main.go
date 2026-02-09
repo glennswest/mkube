@@ -49,6 +49,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/mikrotik-kube/pkg/dns"
 	"github.com/glenneth/mikrotik-kube/pkg/network"
 	"github.com/glenneth/mikrotik-kube/pkg/provider"
 	"github.com/glenneth/mikrotik-kube/pkg/registry"
@@ -124,12 +125,19 @@ func run(cmd *cobra.Command, args []string) error {
 	defer rosClient.Close()
 	log.Info("connected to RouterOS")
 
-	// ── Network Manager (IPAM + bridge/veth) ────────────────────────
-	netMgr, err := network.NewManager(cfg.Network, rosClient, log)
+	// ── DNS Client ──────────────────────────────────────────────────
+	dnsClient := dns.NewClient(log)
+	defer dnsClient.Close()
+
+	// ── Network Manager (IPAM + bridge/veth + DNS) ──────────────────
+	netMgr, err := network.NewManager(cfg.Networks, rosClient, dnsClient, log)
 	if err != nil {
 		return fmt.Errorf("initializing network manager: %w", err)
 	}
-	log.Infow("network manager ready", "cidr", cfg.Network.PodCIDR, "bridge", cfg.Network.BridgeName)
+	netMgr.InitDNSZones(ctx)
+	for _, n := range cfg.Networks {
+		log.Infow("network ready", "name", n.Name, "cidr", n.CIDR, "bridge", n.Bridge, "dns_zone", n.DNS.Zone)
+	}
 
 	// ── Storage Manager ─────────────────────────────────────────────
 	storageMgr, err := storage.NewManager(cfg.Storage, rosClient, log)
