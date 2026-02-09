@@ -2,9 +2,10 @@ BINARY    := mikrotik-kube
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 ARCH      ?= arm64
+DEVICE    ?= rose1.gw.lo
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
 
-.PHONY: build build-local image tarball test lint clean
+.PHONY: build build-local image tarball deploy test lint clean
 
 ## Build the Go binary for the target architecture
 build:
@@ -23,11 +24,14 @@ image:
 ## Export as RouterOS-compatible rootfs tarball
 tarball: image
 	@mkdir -p dist
-	@bash hack/build.sh $(ARCH)
+	@CONTAINER_ID=$$(docker create $(BINARY):$(VERSION)-$(ARCH)) && \
+		docker export $$CONTAINER_ID -o dist/$(BINARY)-$(VERSION)-$(ARCH).tar && \
+		docker rm $$CONTAINER_ID > /dev/null
+	@echo "Built dist/$(BINARY)-$(VERSION)-$(ARCH).tar"
 
-## Push tarball to a MikroTik device
-push: tarball
-	PUSH_TO_DEVICE=$(DEVICE) bash hack/build.sh $(ARCH)
+## Deploy to a MikroTik device (build + upload + configure)
+deploy: tarball
+	bash hack/deploy.sh $(DEVICE) dist/$(BINARY)-$(VERSION)-$(ARCH).tar
 
 ## Run tests
 test:

@@ -91,18 +91,20 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		NodeName:   "mikrotik-node",
 		Standalone: false,
 		RouterOS: RouterOSConfig{
-			Address: "192.168.88.1:8728",
-			RESTURL: "https://192.168.88.1/rest",
-			User:    "admin",
+			Address:        "192.168.200.1:8728",
+			RESTURL:        "https://192.168.200.1/rest",
+			User:           "admin",
+			InsecureVerify: true,
 		},
 		Network: NetworkConfig{
-			PodCIDR:    "172.20.0.0/16",
+			PodCIDR:    "192.168.200.0/24",
+			GatewayIP:  "192.168.200.1",
 			BridgeName: "containers",
 			DNSServers: []string{"8.8.8.8", "1.1.1.1"},
 		},
 		Storage: StorageConfig{
-			BasePath:           "/container-data",
-			TarballCache:       "/container-cache",
+			BasePath:           "/raid1/images",
+			TarballCache:       "/raid1/cache",
 			GCIntervalMinutes:  30,
 			GCKeepLastN:        5,
 		},
@@ -115,7 +117,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		Registry: RegistryConfig{
 			Enabled:    true,
 			ListenAddr: ":5000",
-			StorePath:  "/registry-data",
+			StorePath:  "/raid1/registry",
 		},
 	}
 

@@ -6,34 +6,34 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  mikrotik-kube (single Go binary, runs as RouterOS container)      │
-│                                                                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │ Virtual       │  │ Network      │  │ Storage Manager        │  │
-│  │ Kubelet +     │  │ Manager      │  │ • OCI→tarball convert  │  │
-│  │ RouterOS      │  │ • IPAM pool  │  │ • Volume provisioning  │  │
-│  │ Provider      │  │ • veth/bridge│  │ • Garbage collection   │  │
-│  └──────┬───────┘  └──────┬───────┘  └────────────┬───────────┘  │
-│         │                 │                        │              │
-│  ┌──────┴─────────────────┴────────────────────────┴───────────┐  │
-│  │                  RouterOS REST API Client                    │  │
-│  └─────────────────────────┬───────────────────────────────────┘  │
-│                            │                                      │
-│  ┌─────────────────────────┴───────────────────────────────────┐  │
-│  │  Systemd Manager (boot ordering, health checks, watchdog)   │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│                                                                   │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  Embedded OCI Registry (:5000, pull-through cache)          │  │
-│  └─────────────────────────────────────────────────────────────┘  │
+│  mikrotik-kube (single Go binary, runs as RouterOS container)    │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
+│  │ Virtual       │  │ Network      │  │ Storage Manager        │ │
+│  │ Kubelet +     │  │ Manager      │  │ • OCI→tarball convert  │ │
+│  │ RouterOS      │  │ • IPAM pool  │  │ • Volume provisioning  │ │
+│  │ Provider      │  │ • veth/bridge│  │ • Garbage collection   │ │
+│  └──────┬───────┘  └──────┬───────┘  └────────────┬───────────┘ │
+│         │                 │                        │             │
+│  ┌──────┴─────────────────┴────────────────────────┴───────────┐ │
+│  │                  RouterOS REST API Client                    │ │
+│  └─────────────────────────┬───────────────────────────────────┘ │
+│                            │                                     │
+│  ┌─────────────────────────┴───────────────────────────────────┐ │
+│  │  Systemd Manager (boot ordering, health checks, watchdog)   │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  Embedded OCI Registry (:5000, pull-through cache)          │ │
+│  └─────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────┘
          │
          ▼  RouterOS REST API (/rest/container/*)
 ┌──────────────────────────────────────────────────────────────────┐
-│  MikroTik RouterOS Container Runtime                              │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                                │
-│  │ C1  │ │ C2  │ │ C3  │ │ C4  │  ...                           │
-│  └─────┘ └─────┘ └─────┘ └─────┘                                │
+│  MikroTik RouterOS Container Runtime                             │
+│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐                               │
+│  │ C1  │ │ C2  │ │ C3  │ │ C4  │  ...                          │
+│  └─────┘ └─────┘ └─────┘ └─────┘                               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,13 +46,13 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - Custom annotations for MikroTik-specific config
 
 ### Network Manager (IPAM)
-- Sequential IP allocation from a configurable CIDR pool
+- Sequential IP allocation from a configurable CIDR pool (default `192.168.200.0/24`)
 - Automatic veth interface creation and bridge port assignment
 - Syncs with existing allocations on startup (survives restarts)
 - Per-container network isolation via RouterOS bridge
 
 ### Storage Manager
-- OCI image to RouterOS tarball conversion pipeline
+- OCI image to RouterOS tarball conversion via `go-containerregistry`
 - Local tarball cache with LRU garbage collection
 - Volume provisioning with per-container directory isolation
 - Orphaned volume cleanup
@@ -70,10 +70,35 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 
 ## Quick Start
 
-### 1. Build
+### Deploy to rose1
+
+The fastest path from checkout to running:
 
 ```bash
-# For ARM64 MikroTik devices (hAP ax3, RB5009, etc.)
+# Build for ARM64 and deploy to rose1.gw.lo
+make deploy
+```
+
+This single command will:
+1. Build the Go binary (cross-compiled for ARM64)
+2. Package it as a RouterOS-compatible rootfs tarball
+3. SSH to `admin@rose1.gw.lo` and:
+   - Create the `containers` bridge (`192.168.200.1/24`)
+   - Add NAT masquerade for `192.168.200.0/24`
+   - Create the management veth (`192.168.200.2`)
+   - Upload the tarball to `/raid1/tarballs/`
+   - Create and start the `mikrotik-kube` container
+
+### Deploy to a different device
+
+```bash
+make deploy DEVICE=192.168.1.88 ARCH=arm64
+```
+
+### Build only
+
+```bash
+# For ARM64 MikroTik devices (hAP ax3, RB5009, ROSE, etc.)
 make tarball ARCH=arm64
 
 # For x86 MikroTik CHR
@@ -83,64 +108,60 @@ make tarball ARCH=amd64
 make build-local
 ```
 
-### 2. Deploy to RouterOS
+## Network Layout
 
-```bash
-# Upload the tarball
-make push DEVICE=192.168.88.1 ARCH=arm64
+mikrotik-kube creates a dedicated bridge for managed containers:
+
+```
+                    ┌─────────────────────────────────┐
+                    │  RouterOS                        │
+                    │                                  │
+ 192.168.200.1/24 ──┤  bridge: "containers"            │
+                    │  ├── veth-mkube  (192.168.200.2) │  ← mikrotik-kube itself
+                    │  ├── veth-pod1   (192.168.200.3) │  ← managed container
+                    │  ├── veth-pod2   (192.168.200.4) │  ← managed container
+                    │  └── ...                         │
+                    │                                  │
+                    │  NAT masquerade: 192.168.200.0/24│
+                    └─────────────────────────────────┘
 ```
 
-Or manually:
-```bash
-scp dist/mikrotik-kube-dev-arm64.tar admin@192.168.88.1:/mikrotik-kube.tar
-```
-
-### 3. Configure RouterOS
-
-```routeros
-# Enable container mode
-/system/device-mode/update container=yes
-
-# Create bridge for containers
-/interface/bridge add name=containers
-/ip/address add address=172.20.0.1/16 interface=containers
-
-# Create veth for the management container
-/interface/veth add name=veth-mgmt address=172.20.0.2/16 gateway=172.20.0.1
-/interface/bridge/port add bridge=containers interface=veth-mgmt
-
-# NAT for container internet access
-/ip/firewall/nat add chain=srcnat src-address=172.20.0.0/16 action=masquerade
-
-# Create and start mikrotik-kube
-/container add \
-    file=mikrotik-kube.tar \
-    interface=veth-mgmt \
-    root-dir=/container-data/mikrotik-kube \
-    logging=yes \
-    start-on-boot=yes \
-    hostname=mikrotik-kube \
-    dns=8.8.8.8
-
-/container start [find name~"mikrotik-kube"]
-```
-
-### 4. Define Your Containers
-
-Create pod manifests in `/etc/mikrotik-kube/boot-order.yaml` (see `deploy/boot-order.yaml` for examples).
+Managed containers get IPs sequentially from the pool (`.3` onward; `.1` is the gateway, `.2` is mikrotik-kube).
 
 ## Configuration
 
-See `deploy/config.yaml` for all options. Key settings:
+### Default config
+
+See `deploy/config.yaml` for all options. For rose1-specific settings, see `deploy/rose1-config.yaml`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `routeros.restUrl` | `https://192.168.88.1/rest` | RouterOS REST API endpoint |
-| `network.podCIDR` | `172.20.0.0/16` | IP range for containers |
+| `routeros.restUrl` | `https://192.168.200.1/rest` | RouterOS REST API endpoint |
+| `network.podCIDR` | `192.168.200.0/24` | IP range for containers |
 | `network.bridgeName` | `containers` | RouterOS bridge name |
+| `storage.basePath` | `/raid1/images` | Container root dirs |
+| `storage.tarballCache` | `/raid1/cache` | Image tarball cache |
 | `storage.gcIntervalMinutes` | `30` | How often to run GC |
 | `systemd.maxRestarts` | `5` | Max restarts before marking failed |
 | `registry.enabled` | `true` | Enable embedded OCI registry |
+| `registry.storePath` | `/raid1/registry` | Registry blob storage |
+
+### rose1 storage layout
+
+```
+/raid1/
+  images/         Container root directories
+  tarballs/       Uploaded container tarballs
+  cache/          Image pull cache (managed by mikrotik-kube)
+  volumes/        Persistent volume mounts
+  registry/       OCI registry blob storage
+```
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `MIKROTIK_KUBE_PASSWORD` | RouterOS API password |
 
 ## Custom Annotations
 
@@ -148,6 +169,7 @@ See `deploy/config.yaml` for all options. Key settings:
 |-----------|-------------|
 | `mikrotik.io/boot-priority` | Integer boot order (lower = first) |
 | `mikrotik.io/depends-on` | Comma-separated container dependencies |
+| `mikrotik.io/health-check` | Health check endpoint |
 
 ## Operating Modes
 
@@ -162,12 +184,45 @@ mikrotik-kube --standalone --config /etc/mikrotik-kube/config.yaml
 Registers as a node in an existing Kubernetes cluster. Pods scheduled to this node are created on RouterOS.
 
 ```bash
-mikrotik-kube --kubeconfig /path/to/kubeconfig --node-name my-mikrotik
+mikrotik-kube --kubeconfig /path/to/kubeconfig --node-name rose1
 ```
 
 Then from kubectl:
 ```bash
 kubectl apply -f pod.yaml  # with toleration for virtual-kubelet.io/provider=mikrotik
+```
+
+## RouterOS Manual Setup
+
+If you prefer to set up the router manually instead of using `make deploy`:
+
+```routeros
+# Enable container mode (requires reboot)
+/system/device-mode/update container=yes
+
+# Create bridge for managed containers
+/interface/bridge add name=containers comment="Managed by mikrotik-kube"
+/ip/address add address=192.168.200.1/24 interface=containers
+
+# Create management veth for mikrotik-kube
+/interface/veth add name=veth-mkube address=192.168.200.2/24 gateway=192.168.200.1
+/interface/bridge/port add bridge=containers interface=veth-mkube
+
+# NAT for container internet access
+/ip/firewall/nat add chain=srcnat src-address=192.168.200.0/24 action=masquerade
+
+# Create and start mikrotik-kube
+/container add \
+    file=raid1/tarballs/mikrotik-kube.tar \
+    name=mikrotik-kube \
+    interface=veth-mkube \
+    root-dir=/raid1/images/mikrotik-kube \
+    logging=yes \
+    start-on-boot=yes \
+    hostname=mikrotik-kube \
+    dns=8.8.8.8
+
+/container start [find name=mikrotik-kube]
 ```
 
 ## Project Structure
@@ -182,8 +237,13 @@ pkg/
   storage/             OCI-to-tarball conversion, volume provisioning, GC
   systemd/             Boot ordering, health checks, watchdog
   registry/            Embedded OCI registry with pull-through cache
-deploy/                Configuration templates and boot-order examples
-hack/                  Build and deployment scripts
+deploy/
+  config.yaml          Default configuration template
+  rose1-config.yaml    Configuration for rose1.gw.lo
+  boot-order.yaml      Boot ordering manifest examples
+hack/
+  build.sh             Build and export rootfs tarball
+  deploy.sh            Full deployment to RouterOS device via SSH
 ```
 
 ## Development
@@ -191,8 +251,22 @@ hack/                  Build and deployment scripts
 ```bash
 make build-local    # Build for host platform
 make test           # Run tests
-make lint           # Lint
+make lint           # Lint (requires golangci-lint)
 make clean          # Clean build artifacts
+```
+
+## Monitoring
+
+```bash
+# View container logs
+ssh admin@rose1.gw.lo '/log/print where topics~"container"'
+
+# Check container status
+ssh admin@rose1.gw.lo '/container/print where name=mikrotik-kube'
+
+# Check bridge and network
+ssh admin@rose1.gw.lo '/interface/bridge/port/print where bridge=containers'
+ssh admin@rose1.gw.lo '/ip/address/print where interface=containers'
 ```
 
 ## License

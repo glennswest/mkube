@@ -4,7 +4,9 @@
 # Usage:
 #   ./hack/build.sh                    # Build for arm64 (most MikroTik devices)
 #   ./hack/build.sh amd64              # Build for x86_64 (CHR / x86 devices)
-#   PUSH_TO_DEVICE=192.168.88.1 ./hack/build.sh  # Build and upload to device
+#
+# This script is called by the Makefile `tarball` target. For deployment,
+# use `make deploy` instead which calls hack/deploy.sh.
 
 set -euo pipefail
 
@@ -38,32 +40,12 @@ docker buildx build \
 echo ""
 echo "▸ Exporting rootfs tarball..."
 
+mkdir -p dist
 CONTAINER_ID=$(docker create "${IMAGE_NAME}:${IMAGE_TAG}")
 docker export "${CONTAINER_ID}" -o "dist/${TARBALL_NAME}"
 docker rm "${CONTAINER_ID}" > /dev/null
 
 echo "  → dist/${TARBALL_NAME} ($(du -h "dist/${TARBALL_NAME}" | cut -f1))"
-
-# ── Step 3: Upload to device (optional) ─────────────────────────────────────
-if [ -n "${PUSH_TO_DEVICE:-}" ]; then
-    echo ""
-    echo "▸ Uploading to ${PUSH_TO_DEVICE}..."
-
-    # Upload via SCP (RouterOS supports SCP on port 22)
-    scp "dist/${TARBALL_NAME}" "admin@${PUSH_TO_DEVICE}:/${TARBALL_NAME}"
-
-    echo "  → Uploaded. Create container on RouterOS with:"
-    echo ""
-    echo "    /container add file=${TARBALL_NAME} \\"
-    echo "        interface=veth-mikrotik-kube \\"
-    echo "        root-dir=/container-data/mikrotik-kube \\"
-    echo "        logging=yes \\"
-    echo "        start-on-boot=yes \\"
-    echo "        hostname=mikrotik-kube \\"
-    echo "        dns=8.8.8.8"
-    echo ""
-    echo "    /container start [find name=mikrotik-kube]"
-fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

@@ -34,10 +34,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.NodeName != "mikrotik-node" {
 		t.Errorf("expected default NodeName 'mikrotik-node', got %q", cfg.NodeName)
 	}
-	if cfg.RouterOS.Address != "192.168.88.1:8728" {
+	if cfg.RouterOS.Address != "192.168.200.1:8728" {
 		t.Errorf("expected default RouterOS address, got %q", cfg.RouterOS.Address)
 	}
-	if cfg.Network.PodCIDR != "172.20.0.0/16" {
+	if cfg.Network.PodCIDR != "192.168.200.0/24" {
 		t.Errorf("expected default PodCIDR, got %q", cfg.Network.PodCIDR)
 	}
 	if cfg.Network.BridgeName != "containers" {

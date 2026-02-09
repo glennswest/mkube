@@ -79,18 +79,18 @@ func main() {
 	f.Bool("enable-registry", true, "Enable embedded Zot OCI registry")
 
 	// RouterOS connection
-	f.String("routeros-address", "192.168.88.1:8728", "RouterOS API address")
-	f.String("routeros-rest-url", "https://192.168.88.1/rest", "RouterOS REST API URL")
+	f.String("routeros-address", "192.168.200.1:8728", "RouterOS API address")
+	f.String("routeros-rest-url", "https://192.168.200.1/rest", "RouterOS REST API URL")
 	f.String("routeros-user", "admin", "RouterOS API username")
 	f.String("routeros-password", "", "RouterOS API password")
 
 	// Network
-	f.String("pod-cidr", "172.20.0.0/16", "CIDR range for pod IP allocation")
+	f.String("pod-cidr", "192.168.200.0/24", "CIDR range for pod IP allocation")
 	f.String("bridge-name", "containers", "RouterOS bridge interface for containers")
 
 	// Storage
-	f.String("storage-path", "/container-data", "Base path for container volumes on RouterOS")
-	f.String("tarball-cache", "/container-cache", "Path for image tarball cache")
+	f.String("storage-path", "/raid1/images", "Base path for container volumes on RouterOS")
+	f.String("tarball-cache", "/raid1/cache", "Path for image tarball cache")
 	f.Int("gc-interval-minutes", 30, "Garbage collection interval in minutes")
 
 	if err := rootCmd.Execute(); err != nil {

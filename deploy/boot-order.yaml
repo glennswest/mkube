@@ -8,6 +8,10 @@
 #   mikrotik.io/depends-on: comma-separated container names
 #   mikrotik.io/boot-priority: integer (lower = starts first)
 #   mikrotik.io/health-check: http://:port/path or tcp://:port
+#
+# Network: all containers get IPs from 192.168.200.0/24 on the
+# "containers" bridge. Images are pulled through the embedded
+# registry at localhost:5000.
 
 apiVersion: v1
 kind: Pod

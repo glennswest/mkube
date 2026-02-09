@@ -1,11 +1,11 @@
-# mikrotik-kube default configuration
-# This file is loaded from /etc/mikrotik-kube/config.yaml
+# mikrotik-kube configuration for rose1.gw.lo (ROSE Data Server)
+# This file is mounted at /etc/mikrotik-kube/config.yaml inside the container.
 #
-# For device-specific overrides, see deploy/rose1-config.yaml
-# or create your own <device>-config.yaml.
+# The container runs ON the router at 192.168.200.2 and accesses the
+# RouterOS REST API at 192.168.200.1 (the bridge gateway).
 
-nodeName: mikrotik-node
-standalone: true  # Set to false when connected to a K8s API server
+nodeName: rose1
+standalone: true
 
 routeros:
   address: "192.168.200.1:8728"
@@ -13,7 +13,7 @@ routeros:
   user: admin
   password: ""  # Set via MIKROTIK_KUBE_PASSWORD env var
   useTLS: false
-  insecureVerify: true  # RouterOS uses self-signed certs by default
+  insecureVerify: true  # RouterOS self-signed cert
 
 network:
   podCIDR: "192.168.200.0/24"
@@ -26,8 +26,8 @@ network:
 storage:
   basePath: /raid1/images
   tarballCache: /raid1/cache
-  gcIntervalMinutes: 30
-  gcKeepLastN: 5
+  gcIntervalMinutes: 60
+  gcKeepLastN: 10
   gcDryRun: false
 
 systemd:
