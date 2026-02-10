@@ -11,10 +11,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
-	"github.com/glenneth/mikrotik-kube/pkg/dns"
-	"github.com/glenneth/mikrotik-kube/pkg/lifecycle"
-	"github.com/glenneth/mikrotik-kube/pkg/routeros"
+	"github.com/glenneth/microkube/pkg/config"
+	"github.com/glenneth/microkube/pkg/dns"
+	"github.com/glenneth/microkube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/routeros"
 )
 
 // Container represents a discovered container with its full network context.
@@ -227,7 +227,7 @@ func probeMicroDNS(ctx context.Context, client *http.Client, ip string) []dns.Zo
 // EnrichNetworks updates network definitions with discovered inventory.
 // - Fills in missing DNS config for networks that have a MicroDNS container
 // - Creates new NetworkDef entries for discovered networks not in config
-// - Skips the mikrotik-kube container itself
+// - Skips the microkube container itself
 func EnrichNetworks(networks []config.NetworkDef, inv *Inventory, selfName string, log *zap.SugaredLogger) []config.NetworkDef {
 	result := make([]config.NetworkDef, len(networks))
 	copy(result, networks)

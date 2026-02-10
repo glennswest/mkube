@@ -1,4 +1,4 @@
-# mikrotik-kube
+# microkube
 
 A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kubelet) provider for MikroTik RouterOS containers, with integrated network management (IPAM), storage management, systemd-like boot ordering, and an embedded OCI registry.
 
@@ -6,7 +6,7 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  mikrotik-kube (single Go binary, runs as RouterOS container)    │
+│  microkube (single Go binary, runs as RouterOS container)    │
 │                                                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
 │  │ Virtual       │  │ Network      │  │ Storage Manager        │ │
@@ -86,7 +86,7 @@ This single command will:
    - Create the `containers` bridge (`192.168.200.1/24`)
    - Create the management veth (`192.168.200.2`)
    - Upload the tarball to `/raid1/tarballs/`
-   - Create and start the `mikrotik-kube` container
+   - Create and start the `microkube` container
 
 ### Deploy to a different device
 
@@ -109,21 +109,21 @@ make build-local
 
 ## Network Layout
 
-mikrotik-kube creates a dedicated bridge for managed containers:
+microkube creates a dedicated bridge for managed containers:
 
 ```
                     ┌─────────────────────────────────┐
                     │  RouterOS                        │
                     │                                  │
  192.168.200.1/24 ──┤  bridge: "containers"            │
-                    │  ├── veth-mkube  (192.168.200.2) │  ← mikrotik-kube itself
+                    │  ├── veth-mkube  (192.168.200.2) │  ← microkube itself
                     │  ├── veth-pod1   (192.168.200.3) │  ← managed container
                     │  ├── veth-pod2   (192.168.200.4) │  ← managed container
                     │  └── ...                         │
                     └─────────────────────────────────┘
 ```
 
-Managed containers get IPs sequentially from the pool (`.3` onward; `.1` is the gateway, `.2` is mikrotik-kube). The subnet is directly routable — no NAT. Any device with a route to rose1 can reach containers at their `192.168.200.x` addresses.
+Managed containers get IPs sequentially from the pool (`.3` onward; `.1` is the gateway, `.2` is microkube). The subnet is directly routable — no NAT. Any device with a route to rose1 can reach containers at their `192.168.200.x` addresses.
 
 ## Configuration
 
@@ -149,7 +149,7 @@ See `deploy/config.yaml` for all options. For rose1-specific settings, see `depl
 /raid1/
   images/         Container root directories
   tarballs/       Uploaded container tarballs
-  cache/          Image pull cache (managed by mikrotik-kube)
+  cache/          Image pull cache (managed by microkube)
   volumes/        Persistent volume mounts
   registry/       OCI registry blob storage
 ```
@@ -158,15 +158,16 @@ See `deploy/config.yaml` for all options. For rose1-specific settings, see `depl
 
 | Variable | Description |
 |----------|-------------|
-| `MIKROTIK_KUBE_PASSWORD` | RouterOS API password |
+| `MICROKUBE_PASSWORD` | RouterOS API password |
 
 ## Custom Annotations
 
 | Annotation | Description |
 |-----------|-------------|
-| `mikrotik.io/boot-priority` | Integer boot order (lower = first) |
-| `mikrotik.io/depends-on` | Comma-separated container dependencies |
-| `mikrotik.io/health-check` | Health check endpoint |
+| `vkube.io/boot-priority` | Integer boot order (lower = first) |
+| `vkube.io/depends-on` | Comma-separated container dependencies |
+| `vkube.io/network` | Target network name |
+| `vkube.io/file` | Local tarball path (skip OCI pull) |
 
 ## Operating Modes
 
@@ -174,14 +175,14 @@ See `deploy/config.yaml` for all options. For rose1-specific settings, see `depl
 Reads pod manifests from a local YAML file and reconciles against RouterOS. No Kubernetes cluster required.
 
 ```bash
-mikrotik-kube --standalone --config /etc/mikrotik-kube/config.yaml
+microkube --standalone --config /etc/microkube/config.yaml
 ```
 
 ### Virtual Kubelet Mode
 Registers as a node in an existing Kubernetes cluster. Pods scheduled to this node are created on RouterOS.
 
 ```bash
-mikrotik-kube --kubeconfig /path/to/kubeconfig --node-name rose1
+microkube --kubeconfig /path/to/kubeconfig --node-name rose1
 ```
 
 Then from kubectl:
@@ -198,34 +199,34 @@ If you prefer to set up the router manually instead of using `make deploy`:
 /system/device-mode/update container=yes
 
 # Create bridge for managed containers
-/interface/bridge add name=containers comment="Managed by mikrotik-kube"
+/interface/bridge add name=containers comment="Managed by microkube"
 /ip/address add address=192.168.200.1/24 interface=containers
 
-# Create management veth for mikrotik-kube
+# Create management veth for microkube
 /interface/veth add name=veth-mkube address=192.168.200.2/24 gateway=192.168.200.1
 /interface/bridge/port add bridge=containers interface=veth-mkube
 
 # No NAT — the subnet is directly routable via rose1.
 # Any device that can reach rose1 can reach containers at 192.168.200.x.
 
-# Create and start mikrotik-kube
+# Create and start microkube
 /container add \
-    file=raid1/tarballs/mikrotik-kube.tar \
-    name=mikrotik-kube \
+    file=raid1/tarballs/microkube.tar \
+    name=microkube \
     interface=veth-mkube \
-    root-dir=/raid1/images/mikrotik-kube \
+    root-dir=/raid1/images/microkube \
     logging=yes \
     start-on-boot=yes \
-    hostname=mikrotik-kube \
+    hostname=microkube \
     dns=8.8.8.8
 
-/container start [find name=mikrotik-kube]
+/container start [find name=microkube]
 ```
 
 ## Project Structure
 
 ```
-cmd/mikrotik-kube/       Entry point, CLI flags, manager initialization
+cmd/microkube/       Entry point, CLI flags, manager initialization
 pkg/
   config/              YAML configuration with CLI overrides
   routeros/            RouterOS REST API client (containers, veth, files)
@@ -259,7 +260,7 @@ make clean          # Clean build artifacts
 ssh admin@rose1.gw.lo '/log/print where topics~"container"'
 
 # Check container status
-ssh admin@rose1.gw.lo '/container/print where name=mikrotik-kube'
+ssh admin@rose1.gw.lo '/container/print where name=microkube'
 
 # Check bridge and network
 ssh admin@rose1.gw.lo '/interface/bridge/port/print where bridge=containers'

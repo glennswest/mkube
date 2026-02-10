@@ -15,12 +15,12 @@ trap "rm -rf ${WORK}" EXIT
 
 # Build rootfs layer
 LAYER_DIR="${WORK}/rootfs"
-mkdir -p "${LAYER_DIR}/etc/mikrotik-kube" "${LAYER_DIR}/usr/local/bin" "${LAYER_DIR}/data"
-echo "root:x:0:0:root:/:/usr/local/bin/mikrotik-kube" > "${LAYER_DIR}/etc/passwd"
+mkdir -p "${LAYER_DIR}/etc/microkube" "${LAYER_DIR}/usr/local/bin" "${LAYER_DIR}/data"
+echo "root:x:0:0:root:/:/usr/local/bin/microkube" > "${LAYER_DIR}/etc/passwd"
 echo "root:x:0:" > "${LAYER_DIR}/etc/group"
-cp "${BINARY}" "${LAYER_DIR}/usr/local/bin/mikrotik-kube"
-chmod +x "${LAYER_DIR}/usr/local/bin/mikrotik-kube"
-cp "${CONFIG}" "${LAYER_DIR}/etc/mikrotik-kube/config.yaml"
+cp "${BINARY}" "${LAYER_DIR}/usr/local/bin/microkube"
+chmod +x "${LAYER_DIR}/usr/local/bin/microkube"
+cp "${CONFIG}" "${LAYER_DIR}/etc/microkube/config.yaml"
 
 # Create layer tarball
 LAYER_TAR="${WORK}/layer.tar"
@@ -42,8 +42,8 @@ CONFIG_SHA=$(cat <<CFGJSON | shasum -a 256 | awk '{print $1}'
   "architecture": "arm64",
   "os": "linux",
   "config": {
-    "Entrypoint": ["/usr/local/bin/mikrotik-kube"],
-    "Cmd": ["--config", "/etc/mikrotik-kube/config.yaml"],
+    "Entrypoint": ["/usr/local/bin/microkube"],
+    "Cmd": ["--config", "/etc/microkube/config.yaml"],
     "WorkingDir": "/"
   },
   "rootfs": {
@@ -59,8 +59,8 @@ cat > "${WORK}/${CONFIG_SHA}.json" <<CFGJSON
   "architecture": "arm64",
   "os": "linux",
   "config": {
-    "Entrypoint": ["/usr/local/bin/mikrotik-kube"],
-    "Cmd": ["--config", "/etc/mikrotik-kube/config.yaml"],
+    "Entrypoint": ["/usr/local/bin/microkube"],
+    "Cmd": ["--config", "/etc/microkube/config.yaml"],
     "WorkingDir": "/"
   },
   "rootfs": {
@@ -76,8 +76,8 @@ cat > "${LAYER_SAVE_DIR}/json" <<LAYERJSON
   "id": "${LAYER_ID}",
   "created": "1970-01-01T00:00:00Z",
   "config": {
-    "Entrypoint": ["/usr/local/bin/mikrotik-kube"],
-    "Cmd": ["--config", "/etc/mikrotik-kube/config.yaml"]
+    "Entrypoint": ["/usr/local/bin/microkube"],
+    "Cmd": ["--config", "/etc/microkube/config.yaml"]
   }
 }
 LAYERJSON
@@ -86,14 +86,14 @@ LAYERJSON
 cat > "${WORK}/manifest.json" <<MANIFEST
 [{
   "Config": "${CONFIG_SHA}.json",
-  "RepoTags": ["mikrotik-kube:latest"],
+  "RepoTags": ["microkube:latest"],
   "Layers": ["${LAYER_ID}/layer.tar"]
 }]
 MANIFEST
 
 # Create repositories file
 cat > "${WORK}/repositories" <<REPOS
-{"mikrotik-kube":{"latest":"${LAYER_ID}"}}
+{"microkube":{"latest":"${LAYER_ID}"}}
 REPOS
 
 # Build final docker-save tar

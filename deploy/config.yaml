@@ -1,5 +1,5 @@
-# mikrotik-kube default configuration
-# This file is loaded from /etc/mikrotik-kube/config.yaml
+# microkube default configuration
+# This file is loaded from /etc/microkube/config.yaml
 #
 # For device-specific overrides, see deploy/rose1-config.yaml
 # or create your own <device>-config.yaml.
@@ -11,7 +11,7 @@ routeros:
   address: "192.168.200.1:8728"
   restUrl: "https://192.168.200.1/rest"
   user: admin
-  password: ""  # Set via MIKROTIK_KUBE_PASSWORD env var
+  password: ""  # Set via MICROKUBE_PASSWORD env var
   useTLS: false
   insecureVerify: true  # RouterOS uses self-signed certs by default
 
@@ -33,7 +33,7 @@ storage:
   gcDryRun: false
 
 systemd:
-  bootManifestPath: /etc/mikrotik-kube/boot-order.yaml
+  bootManifestPath: /etc/microkube/boot-order.yaml
   watchdogIntervalSeconds: 15
   maxRestarts: 5
   restartCooldown: 10

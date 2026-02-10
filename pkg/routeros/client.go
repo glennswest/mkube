@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/microkube/pkg/config"
 )
 
 // Client wraps both the RouterOS REST API and the RouterOS protocol API.
@@ -55,7 +55,8 @@ func (c Container) IsStopped() bool {
 // ContainerSpec is used to create/update a container.
 type ContainerSpec struct {
 	Name        string `json:"name"`
-	File        string `json:"file"`        // tarball path
+	File        string `json:"file,omitempty"` // tarball path
+	Tag         string `json:"tag,omitempty"`  // registry image ref, alternative to File
 	Interface   string `json:"interface"`
 	RootDir     string `json:"root-dir"`
 	MountLists  string `json:"mountlists,omitempty"`

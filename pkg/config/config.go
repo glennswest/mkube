@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the top-level configuration for mikrotik-kube.
+// Config is the top-level configuration for microkube.
 type Config struct {
 	NodeName   string         `yaml:"nodeName"`
 	Standalone bool           `yaml:"standalone"`
@@ -103,7 +103,7 @@ type RegistryConfig struct {
 
 // WatchImage defines an upstream image to watch for changes.
 // When a new digest is detected, the image is pulled into the local registry
-// and a PushEvent is emitted to trigger the auto-updater.
+// and a PushEvent is emitted for mkube-update to detect.
 type WatchImage struct {
 	// Upstream is the full image reference to poll (e.g., "ghcr.io/glenneth/microdns:latest")
 	Upstream string `yaml:"upstream"`
@@ -152,7 +152,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			GCKeepLastN:        5,
 		},
 		Lifecycle: LifecycleConfig{
-			BootManifestPath:   "/etc/mikrotik-kube/boot-order.yaml",
+			BootManifestPath:   "/etc/microkube/boot-order.yaml",
 			WatchdogInterval:   5,
 			MaxRestarts:        5,
 			RestartCooldown:    10,

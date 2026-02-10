@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — Build mikrotik-kube and export as a RouterOS-compatible tarball.
+# build.sh — Build microkube and export as a RouterOS-compatible tarball.
 #
 # Usage:
 #   ./hack/build.sh                    # Build for arm64 (most MikroTik devices)
@@ -13,12 +13,12 @@ set -euo pipefail
 ARCH="${1:-arm64}"
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo none)}"
-IMAGE_NAME="mikrotik-kube"
+IMAGE_NAME="microkube"
 IMAGE_TAG="${VERSION}-${ARCH}"
 TARBALL_NAME="${IMAGE_NAME}-${IMAGE_TAG}.tar"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  Building mikrotik-kube"
+echo "  Building microkube"
 echo "  Version: ${VERSION}  Arch: ${ARCH}  Commit: ${COMMIT}"
 echo "═══════════════════════════════════════════════════════════"
 

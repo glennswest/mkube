@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -20,11 +22,11 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
-	"github.com/glenneth/mikrotik-kube/pkg/network"
-	"github.com/glenneth/mikrotik-kube/pkg/routeros"
-	"github.com/glenneth/mikrotik-kube/pkg/storage"
-	"github.com/glenneth/mikrotik-kube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/config"
+	"github.com/glenneth/microkube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/network"
+	"github.com/glenneth/microkube/pkg/routeros"
+	"github.com/glenneth/microkube/pkg/storage"
 )
 
 const (
@@ -32,9 +34,6 @@ const (
 	annotationNetwork = "vkube.io/network"
 	// annotationFile specifies a local tarball path on the host, bypassing OCI pull.
 	annotationFile = "vkube.io/file"
-	// annotationImagePolicy controls automatic redeployment when an image is
-	// pushed to the embedded registry. Values: "auto" (redeploy on push).
-	annotationImagePolicy = "vkube.io/image-policy"
 )
 
 // Deps holds injected dependencies for the provider.
@@ -47,11 +46,11 @@ type Deps struct {
 	Logger     *zap.SugaredLogger
 }
 
-// MikroTikProvider implements the Virtual Kubelet provider interface.
-// It translates Kubernetes Pod specifications into MikroTik RouterOS
+// MicroKubeProvider implements the Virtual Kubelet provider interface.
+// It translates Kubernetes Pod specifications into RouterOS
 // container operations, managing the full lifecycle including networking,
 // storage, and boot ordering.
-type MikroTikProvider struct {
+type MicroKubeProvider struct {
 	deps            Deps
 	nodeName        string
 	startTime       time.Time
@@ -59,9 +58,9 @@ type MikroTikProvider struct {
 	notifyPodStatus func(*corev1.Pod)      // callback for pod status updates
 }
 
-// NewMikroTikProvider creates a new provider instance.
-func NewMikroTikProvider(deps Deps) (*MikroTikProvider, error) {
-	return &MikroTikProvider{
+// NewMicroKubeProvider creates a new provider instance.
+func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
+	return &MicroKubeProvider{
 		deps:      deps,
 		nodeName:  deps.Config.NodeName,
 		startTime: time.Now(),
@@ -78,7 +77,7 @@ func NewMikroTikProvider(deps Deps) (*MikroTikProvider, error) {
 //  3. Creating volume mounts
 //  4. Registering boot ordering if restartPolicy=Always
 //  5. Creating and starting the RouterOS container
-func (p *MikroTikProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
+func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("creating pod")
 
@@ -175,7 +174,7 @@ func (p *MikroTikProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error
 
 // UpdatePod handles pod spec updates. RouterOS containers are immutable,
 // so this performs a rolling update: create new → verify → remove old.
-func (p *MikroTikProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
+func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("updating pod (rolling replacement)")
 
@@ -188,7 +187,7 @@ func (p *MikroTikProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error
 
 // DeletePod removes all containers associated with a pod and cleans up
 // networking and storage resources.
-func (p *MikroTikProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
+func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("deleting pod")
 
@@ -230,7 +229,7 @@ func (p *MikroTikProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error
 }
 
 // GetPod returns the tracked pod object.
-func (p *MikroTikProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+func (p *MicroKubeProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	key := namespace + "/" + name
 	if pod, ok := p.pods[key]; ok {
 		return pod, nil
@@ -240,7 +239,7 @@ func (p *MikroTikProvider) GetPod(ctx context.Context, namespace, name string) (
 
 // GetPodStatus queries RouterOS for the actual container status and maps
 // it back to Kubernetes pod status.
-func (p *MikroTikProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
+func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	pod, err := p.GetPod(ctx, namespace, name)
 	if err != nil {
 		return nil, err
@@ -320,7 +319,7 @@ func (p *MikroTikProvider) GetPodStatus(ctx context.Context, namespace, name str
 }
 
 // GetPods returns all tracked pods.
-func (p *MikroTikProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
+func (p *MicroKubeProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	pods := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
 		pods = append(pods, pod)
@@ -332,7 +331,7 @@ func (p *MikroTikProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 
 // ConfigureNode sets up the Kubernetes node object that represents this
 // MikroTik device in the cluster.
-func (p *MikroTikProvider) ConfigureNode(ctx context.Context, node *corev1.Node) {
+func (p *MicroKubeProvider) ConfigureNode(ctx context.Context, node *corev1.Node) {
 	node.Status.Capacity = corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("4"),     // typical CHR/RB capacity
 		corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -342,7 +341,7 @@ func (p *MikroTikProvider) ConfigureNode(ctx context.Context, node *corev1.Node)
 	node.Status.NodeInfo = corev1.NodeSystemInfo{
 		Architecture:    "arm64",
 		OperatingSystem: "linux",
-		KubeletVersion:  "v1.29.0-mikrotik-kube",
+		KubeletVersion:  "v1.29.0-microkube",
 	}
 	node.Status.Conditions = []corev1.NodeCondition{
 		{
@@ -373,7 +372,7 @@ func (p *MikroTikProvider) ConfigureNode(ctx context.Context, node *corev1.Node)
 // RunStandaloneReconciler runs a local reconciliation loop without requiring
 // a Kubernetes API server. Reads desired state from a local YAML file and
 // reconciles against actual RouterOS container state.
-func (p *MikroTikProvider) RunStandaloneReconciler(ctx context.Context) error {
+func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 	log := p.deps.Logger
 	log.Info("standalone reconciler starting")
 
@@ -393,7 +392,7 @@ func (p *MikroTikProvider) RunStandaloneReconciler(ctx context.Context) error {
 	}
 }
 
-func (p *MikroTikProvider) reconcile(ctx context.Context) error {
+func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	log := p.deps.Logger
 
 	// 1. Load desired pods from boot manifest
@@ -489,7 +488,7 @@ func loadPodManifests(path string) ([]*corev1.Pod, error) {
 // NotifyPods is called by the Virtual Kubelet framework to set up a callback
 // for pod status updates. The provider calls this function whenever a pod's
 // status changes so the framework can update the API server.
-func (p *MikroTikProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)) {
+func (p *MicroKubeProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)) {
 	p.notifyPodStatus = cb
 	// Start a background goroutine that periodically pushes status updates
 	go func() {
@@ -519,7 +518,7 @@ func (p *MikroTikProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod))
 // with a Kubernetes API server. It loads kubeconfig, creates a Kubernetes
 // clientset, and runs a node controller that watches for pods scheduled
 // to this virtual node.
-func (p *MikroTikProvider) RunVirtualKubelet(ctx context.Context) error {
+func (p *MicroKubeProvider) RunVirtualKubelet(ctx context.Context) error {
 	log := p.deps.Logger
 	cfg := p.deps.Config
 
@@ -581,7 +580,7 @@ func (p *MikroTikProvider) RunVirtualKubelet(ctx context.Context) error {
 
 // runNodeHeartbeat periodically updates the node status so the API server
 // knows the node is still alive.
-func (p *MikroTikProvider) runNodeHeartbeat(ctx context.Context, clientset kubernetes.Interface, nodeName string) {
+func (p *MicroKubeProvider) runNodeHeartbeat(ctx context.Context, clientset kubernetes.Interface, nodeName string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -610,7 +609,7 @@ func (p *MikroTikProvider) runNodeHeartbeat(ctx context.Context, clientset kuber
 
 // watchPods uses the Kubernetes API to watch for pod events targeting this node
 // and dispatches create/update/delete operations.
-func (p *MikroTikProvider) watchPods(ctx context.Context, clientset kubernetes.Interface, nodeName string) error {
+func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.Interface, nodeName string) error {
 	log := p.deps.Logger
 
 	for {
@@ -667,125 +666,138 @@ func (p *MikroTikProvider) watchPods(ctx context.Context, clientset kubernetes.I
 	}
 }
 
-// ─── Auto-Update (CI/CD) ────────────────────────────────────────────────
+// ─── Update API (for mkube-update self-replacement) ─────────────────────
 
-// PushEvent mirrors registry.PushEvent to avoid a circular import.
-type PushEvent struct {
-	Repo      string
-	Reference string
+// UpdateContainerRequest is the JSON body for the update-container API.
+type UpdateContainerRequest struct {
+	Name string `json:"name"` // RouterOS container name
+	Tag  string `json:"tag"`  // new registry image ref
 }
 
-// RunAutoUpdater watches for image push events and redeploys pods that
-// have vkube.io/image-policy: auto and reference the pushed image.
-// Multiple pods sharing the same image (e.g., 4 MicroDNS instances) are
-// all updated, one at a time with a delay between them.
-func (p *MikroTikProvider) RunAutoUpdater(ctx context.Context, events <-chan PushEvent) {
-	log := p.deps.Logger.Named("auto-update")
-	log.Info("auto-updater watching for push events")
+// RunUpdateAPI starts an HTTP server that exposes an internal API for
+// mkube-update to request container replacements (used for self-update).
+func (p *MicroKubeProvider) RunUpdateAPI(ctx context.Context, listenAddr string) {
+	log := p.deps.Logger.Named("update-api")
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("auto-updater shutting down")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/update-container", func(w http.ResponseWriter, r *http.Request) {
+		var req UpdateContainerRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
-		case ev := <-events:
-			log.Infow("push event received", "repo", ev.Repo, "ref", ev.Reference)
-			p.handlePushEvent(ctx, ev, log)
 		}
+		if req.Name == "" || req.Tag == "" {
+			http.Error(w, `"name" and "tag" are required`, http.StatusBadRequest)
+			return
+		}
+
+		log.Infow("update-container request", "name", req.Name, "tag", req.Tag)
+
+		if err := p.replaceContainer(r.Context(), req.Name, req.Tag); err != nil {
+			log.Errorw("update-container failed", "name", req.Name, "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		log.Infow("update-container complete", "name", req.Name, "tag", req.Tag)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"status":"ok"}`)
+	})
+
+	srv := &http.Server{Addr: listenAddr, Handler: mux}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	log.Infow("update API listening", "addr", listenAddr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Errorw("update API error", "error", err)
 	}
 }
 
-func (p *MikroTikProvider) handlePushEvent(ctx context.Context, ev PushEvent, log *zap.SugaredLogger) {
-	// Find all tracked pods with auto-update enabled whose containers
-	// reference the pushed repo:tag
-	var toUpdate []*corev1.Pod
-	for _, pod := range p.pods {
-		if pod.Annotations[annotationImagePolicy] != "auto" {
-			continue
+// replaceContainer stops, removes, and recreates a container with a new image tag.
+// It preserves the existing container's config (interface, root-dir, mounts, etc.).
+func (p *MicroKubeProvider) replaceContainer(ctx context.Context, name, newTag string) error {
+	log := p.deps.Logger.Named("update-api")
+
+	// Get the existing container to preserve its config
+	ct, err := p.deps.ROS.GetContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("getting container %s: %w", name, err)
+	}
+
+	// Stop if running
+	if ct.IsRunning() {
+		log.Infow("stopping container", "name", name)
+		if err := p.deps.ROS.StopContainer(ctx, ct.ID); err != nil {
+			return fmt.Errorf("stopping container %s: %w", name, err)
 		}
-		// A pod using vkube.io/file bypasses the registry — skip it
-		if pod.Annotations[annotationFile] != "" {
-			continue
-		}
-		for _, c := range pod.Spec.Containers {
-			if imageMatchesPush(c.Image, ev.Repo, ev.Reference) {
-				toUpdate = append(toUpdate, pod)
-				break // only need to match one container per pod
+		// Wait for stopped state
+		for i := 0; i < 30; i++ {
+			time.Sleep(time.Second)
+			ct, err = p.deps.ROS.GetContainer(ctx, name)
+			if err != nil {
+				return fmt.Errorf("checking container %s: %w", name, err)
+			}
+			if ct.IsStopped() {
+				break
 			}
 		}
-	}
-
-	if len(toUpdate) == 0 {
-		log.Debugw("no auto-update pods match push", "repo", ev.Repo, "ref", ev.Reference)
-		return
-	}
-
-	log.Infow("auto-updating pods",
-		"repo", ev.Repo, "ref", ev.Reference, "count", len(toUpdate))
-
-	// Invalidate the storage manager cache so EnsureImage re-pulls
-	for _, pod := range toUpdate {
-		for _, c := range pod.Spec.Containers {
-			if imageMatchesPush(c.Image, ev.Repo, ev.Reference) {
-				p.deps.StorageMgr.ReleaseImage(c.Image)
-			}
+		if !ct.IsStopped() {
+			return fmt.Errorf("container %s did not stop within timeout", name)
 		}
 	}
 
-	// Rolling update: one pod at a time
-	for _, pod := range toUpdate {
-		log.Infow("auto-updating pod", "pod", podKey(pod))
-		if err := p.UpdatePod(ctx, pod); err != nil {
-			log.Errorw("auto-update failed", "pod", podKey(pod), "error", err)
-			continue
-		}
-		log.Infow("auto-update complete", "pod", podKey(pod))
-		// Brief pause between updates to avoid overwhelming RouterOS
-		time.Sleep(5 * time.Second)
-	}
-}
-
-// imageMatchesPush checks if an image reference matches a push event.
-// The push event has repo="microdns" ref="latest".
-// The image might be "192.168.200.2:5000/microdns:latest" or
-// "localhost:5000/library/microdns:latest" or just "microdns:latest".
-//
-// We strip the registry host (anything before the first / that contains
-// a dot or colon) and compare repo:tag.
-func imageMatchesPush(image, pushRepo, pushRef string) bool {
-	repo, tag := parseImageRepoTag(image)
-	return repo == pushRepo && tag == pushRef
-}
-
-// parseImageRepoTag splits an image ref into (repo, tag) with the registry
-// host stripped. Examples:
-//
-//	"192.168.200.2:5000/microdns:latest"   → ("microdns", "latest")
-//	"192.168.200.2:5000/lib/app:v2"        → ("lib/app", "v2")
-//	"microdns:latest"                       → ("microdns", "latest")
-//	"microdns"                              → ("microdns", "latest")
-func parseImageRepoTag(image string) (repo, tag string) {
-	// Split off tag
-	tag = "latest"
-	// Find last colon that's after the last slash (to avoid port colons)
-	lastSlash := strings.LastIndex(image, "/")
-	lastColon := strings.LastIndex(image, ":")
-	if lastColon > lastSlash {
-		tag = image[lastColon+1:]
-		image = image[:lastColon]
+	// Remove
+	log.Infow("removing container", "name", name)
+	if err := p.deps.ROS.RemoveContainer(ctx, ct.ID); err != nil {
+		return fmt.Errorf("removing container %s: %w", name, err)
 	}
 
-	// Strip registry host: the first component is a host if it contains
-	// a dot or colon (e.g., "192.168.200.2:5000", "docker.io", "localhost:5000")
-	firstSlash := strings.Index(image, "/")
-	if firstSlash > 0 {
-		firstPart := image[:firstSlash]
-		if strings.ContainsAny(firstPart, ".:") {
-			image = image[firstSlash+1:]
+	// Recreate with new tag, preserving config
+	spec := routeros.ContainerSpec{
+		Name:        ct.Name,
+		Tag:         newTag,
+		Interface:   ct.Interface,
+		RootDir:     ct.RootDir,
+		MountLists:  ct.MountLists,
+		Cmd:         ct.Cmd,
+		Entrypoint:  ct.Entrypoint,
+		WorkDir:     ct.WorkDir,
+		Hostname:    ct.Hostname,
+		DNS:         ct.DNS,
+		Logging:     ct.Logging,
+		StartOnBoot: ct.StartOnBoot,
+	}
+
+	log.Infow("creating container with new tag", "name", name, "tag", newTag)
+	if err := p.deps.ROS.CreateContainer(ctx, spec); err != nil {
+		return fmt.Errorf("creating container %s: %w", name, err)
+	}
+
+	// Wait for extraction then start
+	var newCt *routeros.Container
+	for i := 0; i < 60; i++ {
+		time.Sleep(time.Second)
+		newCt, err = p.deps.ROS.GetContainer(ctx, name)
+		if err == nil {
+			break
 		}
 	}
+	if err != nil {
+		return fmt.Errorf("waiting for container %s after create: %w", name, err)
+	}
 
-	return image, tag
+	log.Infow("starting container", "name", name)
+	if err := p.deps.ROS.StartContainer(ctx, newCt.ID); err != nil {
+		return fmt.Errorf("starting container %s: %w", name, err)
+	}
+
+	return nil
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -1,11 +1,11 @@
-// mikrotik-kube: A single-binary Virtual Kubelet provider for MikroTik RouterOS
+// microkube: A single-binary Virtual Kubelet provider for MikroTik RouterOS
 // with integrated network management, storage management, systemd boot services,
 // and an optional embedded OCI registry (Zot).
 //
 // Architecture:
 //
 //	┌──────────────────────────────────────────────────────────────────┐
-//	│  mikrotik-kube (single Go binary)                                 │
+//	│  microkube (single Go binary)                                      │
 //	│                                                                  │
 //	│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
 //	│  │ Virtual       │  │ Network      │  │ Storage Manager        │ │
@@ -49,15 +49,15 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
-	"github.com/glenneth/mikrotik-kube/pkg/discovery"
-	"github.com/glenneth/mikrotik-kube/pkg/dns"
-	"github.com/glenneth/mikrotik-kube/pkg/network"
-	"github.com/glenneth/mikrotik-kube/pkg/provider"
-	"github.com/glenneth/mikrotik-kube/pkg/registry"
-	"github.com/glenneth/mikrotik-kube/pkg/routeros"
-	"github.com/glenneth/mikrotik-kube/pkg/storage"
-	"github.com/glenneth/mikrotik-kube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/config"
+	"github.com/glenneth/microkube/pkg/discovery"
+	"github.com/glenneth/microkube/pkg/dns"
+	"github.com/glenneth/microkube/pkg/network"
+	"github.com/glenneth/microkube/pkg/provider"
+	"github.com/glenneth/microkube/pkg/registry"
+	"github.com/glenneth/microkube/pkg/routeros"
+	"github.com/glenneth/microkube/pkg/storage"
+	"github.com/glenneth/microkube/pkg/lifecycle"
 )
 
 var (
@@ -67,7 +67,7 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:     "mikrotik-kube",
+		Use:     "microkube",
 		Short:   "Virtual Kubelet provider for MikroTik RouterOS containers",
 		Version: fmt.Sprintf("%s (%s)", version, commit),
 		RunE:    run,
@@ -75,7 +75,7 @@ func main() {
 
 	// Global flags
 	f := rootCmd.Flags()
-	f.String("config", "/etc/mikrotik-kube/config.yaml", "Path to configuration file")
+	f.String("config", "/etc/microkube/config.yaml", "Path to configuration file")
 	f.String("kubeconfig", "", "Path to kubeconfig (optional, for standalone mode)")
 	f.String("node-name", "mikrotik-node", "Kubernetes node name for this device")
 	f.Bool("standalone", false, "Run without a Kubernetes API server (local reconciler only)")
@@ -107,7 +107,7 @@ func run(cmd *cobra.Command, args []string) error {
 	defer logger.Sync()
 	log := logger.Sugar()
 
-	log.Infow("starting mikrotik-kube", "version", version)
+	log.Infow("starting microkube", "version", version)
 
 	// ── Configuration ───────────────────────────────────────────────
 	cfg, err := config.Load(cmd.Flags())
@@ -221,7 +221,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Provider + Virtual Kubelet ──────────────────────────────────
-	p, err := provider.NewMikroTikProvider(provider.Deps{
+	p, err := provider.NewMicroKubeProvider(provider.Deps{
 		Config:       cfg,
 		ROS:          rosClient,
 		NetworkMgr:   netMgr,
@@ -233,35 +233,15 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating provider: %w", err)
 	}
 
-	// ── Auto-Updater (watches registry push events → redeploys pods) ─
-	if reg != nil {
-		// Bridge registry.PushEvent → provider.PushEvent to avoid circular import
-		providerEvents := make(chan provider.PushEvent, 64)
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case ev := <-reg.PushEvents:
-					providerEvents <- provider.PushEvent{
-						Repo:      ev.Repo,
-						Reference: ev.Reference,
-					}
-				}
-			}
-		}()
-		go p.RunAutoUpdater(ctx, providerEvents)
-		log.Info("auto-updater started, watching registry push events")
-
-		// Image watcher: poll upstream registries (GHCR etc.) for new digests.
-		// New images are mirrored into local store and emit PushEvents, which
-		// flow through the bridge above into the auto-updater.
-		if len(cfg.Registry.WatchImages) > 0 {
-			watcher := registry.NewImageWatcher(cfg.Registry, reg.Store(), reg.PushEvents, log)
-			go watcher.Run(ctx)
-			log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
-		}
+	// ── Image Watcher (mirrors GHCR → local registry) ──────────────
+	if reg != nil && len(cfg.Registry.WatchImages) > 0 {
+		watcher := registry.NewImageWatcher(cfg.Registry, reg.Store(), reg.PushEvents, log)
+		go watcher.Run(ctx)
+		log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
 	}
+
+	// ── Update API (internal, for mkube-update self-replacement) ────
+	go p.RunUpdateAPI(ctx, ":8080")
 
 	if cfg.Standalone {
 		log.Info("running in standalone mode (local reconciler)")

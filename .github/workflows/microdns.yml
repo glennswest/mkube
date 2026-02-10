@@ -1,6 +1,6 @@
 # Build and push MicroDNS image to GHCR on changes to its source.
 #
-# The image watcher in mikrotik-kube detects the new digest on GHCR,
+# The image watcher in microkube detects the new digest on GHCR,
 # mirrors it into the embedded registry, and triggers a rolling update
 # of all 4 MicroDNS instances (mdns-gw, mdns-g10, mdns-g11, mdns-gt).
 

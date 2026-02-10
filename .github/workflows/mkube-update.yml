@@ -1,0 +1,21 @@
+# Build and push mkube-update image to GHCR on changes to its source.
+
+name: mkube-update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/mkube-update/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image-name: mkube-update
+      context: .
+      dockerfile: cmd/mkube-update/Dockerfile
+      platforms: linux/arm64

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# deploy.sh — Build, upload, and configure mikrotik-kube on a RouterOS device.
+# deploy.sh — Build, upload, and configure microkube on a RouterOS device.
 #
 # Usage:
 #   ./hack/deploy.sh <device> <tarball>
-#   ./hack/deploy.sh rose1.gw.lo dist/mikrotik-kube-arm64.tar.gz
+#   ./hack/deploy.sh rose1.gw.lo dist/microkube-arm64.tar.gz
 #
 # Or via Makefile:
 #   make deploy                           # defaults to rose1.gw.lo
@@ -53,7 +53,7 @@ wait_state() {
 }
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  Deploying mikrotik-kube to ${DEVICE}"
+echo "  Deploying microkube to ${DEVICE}"
 echo "  Tarball: ${TARBALL}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
@@ -137,7 +137,7 @@ fi
 echo ""
 echo "▸ Creating container mounts..."
 
-ros "/container/mounts/add list=${CONTAINER_NAME}.config src=/${VOLUME_DIR}/${CONTAINER_NAME}/config dst=/etc/mikrotik-kube" 2>/dev/null || echo "  (config mount already exists)"
+ros "/container/mounts/add list=${CONTAINER_NAME}.config src=/${VOLUME_DIR}/${CONTAINER_NAME}/config dst=/etc/microkube" 2>/dev/null || echo "  (config mount already exists)"
 
 echo "  ✓ Mounts configured"
 

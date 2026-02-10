@@ -29,9 +29,9 @@ jobs:
       - name: Create tarball
         run: |
           cd dist
-          tar czf mikrotik-kube-${{ github.ref_name }}-${{ matrix.arch }}.tar.gz mikrotik-kube-${{ matrix.arch }}
+          tar czf microkube-${{ github.ref_name }}-${{ matrix.arch }}.tar.gz microkube-${{ matrix.arch }}
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/mikrotik-kube-${{ github.ref_name }}-${{ matrix.arch }}.tar.gz
+          files: dist/microkube-${{ github.ref_name }}-${{ matrix.arch }}.tar.gz

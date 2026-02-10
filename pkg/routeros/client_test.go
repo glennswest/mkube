@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/microkube/pkg/config"
 )
 
 func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {

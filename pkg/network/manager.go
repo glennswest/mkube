@@ -10,9 +10,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
-	"github.com/glenneth/mikrotik-kube/pkg/dns"
-	"github.com/glenneth/mikrotik-kube/pkg/routeros"
+	"github.com/glenneth/microkube/pkg/config"
+	"github.com/glenneth/microkube/pkg/dns"
+	"github.com/glenneth/microkube/pkg/routeros"
 )
 
 // networkState holds per-network IPAM state and cached zone ID.

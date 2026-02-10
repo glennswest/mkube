@@ -1,4 +1,4 @@
-module github.com/glenneth/mikrotik-kube
+module github.com/glenneth/microkube
 
 go 1.24.0
 

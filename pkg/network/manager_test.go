@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/microkube/pkg/config"
 )
 
 func TestIPConversion(t *testing.T) {

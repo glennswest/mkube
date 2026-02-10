@@ -1,6 +1,6 @@
 # Reusable workflow: Build ARM64 container image and push to GHCR.
 #
-# mikrotik-kube's image watcher polls GHCR for digest changes and
+# microkube's image watcher polls GHCR for digest changes and
 # automatically pulls new images into the embedded registry, triggering
 # a rolling update of all pods with vkube.io/image-policy: auto.
 #

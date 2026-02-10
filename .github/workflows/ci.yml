@@ -50,5 +50,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mikrotik-kube-${{ matrix.arch }}
-          path: dist/mikrotik-kube-${{ matrix.arch }}
+          name: microkube-${{ matrix.arch }}
+          path: dist/microkube-${{ matrix.arch }}

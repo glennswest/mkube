@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/glenneth/mikrotik-kube/pkg/config"
+	"github.com/glenneth/microkube/pkg/config"
 )
 
 func TestPodKey(t *testing.T) {
@@ -239,50 +239,8 @@ func TestLoadPodManifestsNotFound(t *testing.T) {
 	}
 }
 
-func TestParseImageRepoTag(t *testing.T) {
-	tests := []struct {
-		image    string
-		wantRepo string
-		wantTag  string
-	}{
-		{"192.168.200.2:5000/microdns:latest", "microdns", "latest"},
-		{"192.168.200.2:5000/microdns:v2.1", "microdns", "v2.1"},
-		{"localhost:5000/lib/app:v2", "lib/app", "v2"},
-		{"microdns:latest", "microdns", "latest"},
-		{"microdns", "microdns", "latest"},
-		{"docker.io/library/nginx:1.25", "library/nginx", "1.25"},
-		{"ghcr.io/org/repo:sha-abc123", "org/repo", "sha-abc123"},
-	}
-
-	for _, tt := range tests {
-		repo, tag := parseImageRepoTag(tt.image)
-		if repo != tt.wantRepo || tag != tt.wantTag {
-			t.Errorf("parseImageRepoTag(%q) = (%q, %q), want (%q, %q)",
-				tt.image, repo, tag, tt.wantRepo, tt.wantTag)
-		}
-	}
-}
-
-func TestImageMatchesPush(t *testing.T) {
-	// Positive matches
-	if !imageMatchesPush("192.168.200.2:5000/microdns:latest", "microdns", "latest") {
-		t.Error("expected match for registry image")
-	}
-	if !imageMatchesPush("localhost:5000/microdns:latest", "microdns", "latest") {
-		t.Error("expected match for localhost image")
-	}
-
-	// Negative matches
-	if imageMatchesPush("192.168.200.2:5000/microdns:v1", "microdns", "latest") {
-		t.Error("expected no match for different tag")
-	}
-	if imageMatchesPush("192.168.200.2:5000/other:latest", "microdns", "latest") {
-		t.Error("expected no match for different repo")
-	}
-}
-
-func TestNewMikroTikProvider(t *testing.T) {
-	p, err := NewMikroTikProvider(Deps{
+func TestNewMicroKubeProvider(t *testing.T) {
+	p, err := NewMicroKubeProvider(Deps{
 		Config: &config.Config{NodeName: "test"},
 	})
 	if err != nil {
