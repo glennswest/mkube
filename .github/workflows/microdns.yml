@@ -1,0 +1,22 @@
+# Build and push MicroDNS image to GHCR on changes to its source.
+#
+# The image watcher in mikrotik-kube detects the new digest on GHCR,
+# mirrors it into the embedded registry, and triggers a rolling update
+# of all 4 MicroDNS instances (mdns-gw, mdns-g10, mdns-g11, mdns-gt).
+
+name: MicroDNS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/microdns/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image-name: microdns
+      context: ./images/microdns
+      platforms: linux/arm64

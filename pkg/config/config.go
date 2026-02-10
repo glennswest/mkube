@@ -96,6 +96,19 @@ type RegistryConfig struct {
 	UpstreamRegistries []string `yaml:"upstreamRegistries"` // e.g. ["docker.io", "ghcr.io"]
 	// Local addresses that resolve to this registry (used by storage manager)
 	LocalAddresses []string `yaml:"localAddresses"` // e.g. ["192.168.200.2:5000"]
+	// Image watcher: poll upstream registries for new digests and auto-pull
+	WatchImages        []WatchImage `yaml:"watchImages"`
+	WatchPollSeconds   int          `yaml:"watchPollSeconds"` // default 120
+}
+
+// WatchImage defines an upstream image to watch for changes.
+// When a new digest is detected, the image is pulled into the local registry
+// and a PushEvent is emitted to trigger the auto-updater.
+type WatchImage struct {
+	// Upstream is the full image reference to poll (e.g., "ghcr.io/glenneth/microdns:latest")
+	Upstream string `yaml:"upstream"`
+	// LocalRepo is the repo name in the local registry (e.g., "microdns")
+	LocalRepo string `yaml:"localRepo"`
 }
 
 // DefaultNetwork returns the first configured network (the default).

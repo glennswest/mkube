@@ -83,6 +83,11 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 	return r, nil
 }
 
+// Store returns the underlying blob store (used by the image watcher).
+func (r *Registry) Store() *BlobStore {
+	return r.store
+}
+
 // Shutdown gracefully stops the registry server.
 func (r *Registry) Shutdown(ctx context.Context) error {
 	r.log.Info("shutting down registry")

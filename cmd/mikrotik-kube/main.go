@@ -252,6 +252,15 @@ func run(cmd *cobra.Command, args []string) error {
 		}()
 		go p.RunAutoUpdater(ctx, providerEvents)
 		log.Info("auto-updater started, watching registry push events")
+
+		// Image watcher: poll upstream registries (GHCR etc.) for new digests.
+		// New images are mirrored into local store and emit PushEvents, which
+		// flow through the bridge above into the auto-updater.
+		if len(cfg.Registry.WatchImages) > 0 {
+			watcher := registry.NewImageWatcher(cfg.Registry, reg.Store(), reg.PushEvents, log)
+			go watcher.Run(ctx)
+			log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
+		}
 	}
 
 	if cfg.Standalone {

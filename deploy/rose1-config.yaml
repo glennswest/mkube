@@ -67,7 +67,16 @@ registry:
   enabled: true
   listenAddr: ":5000"
   storePath: /raid1/registry
+  localAddresses:
+    - "192.168.200.2:5000"
   pullThrough: true
   upstreamRegistries:
     - "docker.io"
     - "ghcr.io"
+  # Poll GHCR for new image digests every 2 minutes.
+  # New images are mirrored locally and trigger rolling updates
+  # for pods with vkube.io/image-policy: auto.
+  watchPollSeconds: 120
+  watchImages:
+    - upstream: "ghcr.io/glenneth/microdns:latest"
+      localRepo: "microdns"
