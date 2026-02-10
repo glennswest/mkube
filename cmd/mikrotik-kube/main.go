@@ -210,8 +210,9 @@ func run(cmd *cobra.Command, args []string) error {
 	log.Info("lifecycle manager ready")
 
 	// ── Embedded Registry (optional) ────────────────────────────────
+	var reg *registry.Registry
 	if cfg.Registry.Enabled {
-		reg, err := registry.Start(ctx, cfg.Registry, log)
+		reg, err = registry.Start(ctx, cfg.Registry, log)
 		if err != nil {
 			return fmt.Errorf("starting embedded registry: %w", err)
 		}
@@ -230,6 +231,27 @@ func run(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
+	}
+
+	// ── Auto-Updater (watches registry push events → redeploys pods) ─
+	if reg != nil {
+		// Bridge registry.PushEvent → provider.PushEvent to avoid circular import
+		providerEvents := make(chan provider.PushEvent, 64)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev := <-reg.PushEvents:
+					providerEvents <- provider.PushEvent{
+						Repo:      ev.Repo,
+						Reference: ev.Reference,
+					}
+				}
+			}
+		}()
+		go p.RunAutoUpdater(ctx, providerEvents)
+		log.Info("auto-updater started, watching registry push events")
 	}
 
 	if cfg.Standalone {

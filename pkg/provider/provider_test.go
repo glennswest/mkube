@@ -78,7 +78,7 @@ func TestExtractPriority(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				"mikrotik.io/boot-priority": "42",
+				"vkube.io/boot-priority": "42",
 			},
 		},
 	}
@@ -87,7 +87,7 @@ func TestExtractPriority(t *testing.T) {
 	}
 
 	// Invalid annotation — falls back to index*10
-	pod.Annotations["mikrotik.io/boot-priority"] = "invalid"
+	pod.Annotations["vkube.io/boot-priority"] = "invalid"
 	if got := extractPriority(pod, 3); got != 30 {
 		t.Errorf("expected 30 (fallback), got %d", got)
 	}
@@ -103,7 +103,7 @@ func TestExtractDependencies(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				"mikrotik.io/depends-on": "dns-pihole,vpn-wg",
+				"vkube.io/depends-on": "dns-pihole,vpn-wg",
 			},
 		},
 	}
@@ -188,7 +188,7 @@ metadata:
   name: test-pod
   namespace: default
   annotations:
-    mikrotik.io/boot-priority: "10"
+    vkube.io/boot-priority: "10"
 spec:
   restartPolicy: Always
   containers:
@@ -236,6 +236,48 @@ func TestLoadPodManifestsNotFound(t *testing.T) {
 	_, err := loadPodManifests("/nonexistent/path.yaml")
 	if err == nil {
 		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestParseImageRepoTag(t *testing.T) {
+	tests := []struct {
+		image    string
+		wantRepo string
+		wantTag  string
+	}{
+		{"192.168.200.2:5000/microdns:latest", "microdns", "latest"},
+		{"192.168.200.2:5000/microdns:v2.1", "microdns", "v2.1"},
+		{"localhost:5000/lib/app:v2", "lib/app", "v2"},
+		{"microdns:latest", "microdns", "latest"},
+		{"microdns", "microdns", "latest"},
+		{"docker.io/library/nginx:1.25", "library/nginx", "1.25"},
+		{"ghcr.io/org/repo:sha-abc123", "org/repo", "sha-abc123"},
+	}
+
+	for _, tt := range tests {
+		repo, tag := parseImageRepoTag(tt.image)
+		if repo != tt.wantRepo || tag != tt.wantTag {
+			t.Errorf("parseImageRepoTag(%q) = (%q, %q), want (%q, %q)",
+				tt.image, repo, tag, tt.wantRepo, tt.wantTag)
+		}
+	}
+}
+
+func TestImageMatchesPush(t *testing.T) {
+	// Positive matches
+	if !imageMatchesPush("192.168.200.2:5000/microdns:latest", "microdns", "latest") {
+		t.Error("expected match for registry image")
+	}
+	if !imageMatchesPush("localhost:5000/microdns:latest", "microdns", "latest") {
+		t.Error("expected match for localhost image")
+	}
+
+	// Negative matches
+	if imageMatchesPush("192.168.200.2:5000/microdns:v1", "microdns", "latest") {
+		t.Error("expected no match for different tag")
+	}
+	if imageMatchesPush("192.168.200.2:5000/other:latest", "microdns", "latest") {
+		t.Error("expected no match for different repo")
 	}
 }
 

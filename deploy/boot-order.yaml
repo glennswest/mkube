@@ -4,10 +4,11 @@
 # reads this file and ensures each pod exists on the RouterOS device.
 #
 # Annotations:
-#   mikrotik.io/network       — target network name (default: first in config)
-#   mikrotik.io/boot-priority — lower = starts earlier (default: container index * 10)
-#   mikrotik.io/depends-on    — comma-separated container names to wait for
-#   mikrotik.io/file          — RouterOS tarball path (skips OCI image pull)
+#   vkube.io/network       — target network name (default: first in config)
+#   vkube.io/boot-priority — lower = starts earlier (default: container index * 10)
+#   vkube.io/depends-on    — comma-separated container names to wait for
+#   vkube.io/file          — host tarball path (skips OCI image pull)
+#   vkube.io/image-policy  — "auto" to redeploy when image is pushed to registry
 #
 # Networks on rose1 (auto-discovered + static config):
 #   gt   — bridge-gt    192.168.200.0/24  dns: gt.lo   (192.168.200.199)
@@ -17,6 +18,8 @@
 
 # ── MicroDNS instances (priority 10 — start first) ─────────────────────────
 # DNS servers for each subnet. All other services depend on these.
+# All 4 share the same image — pushing a new microdns:latest to the
+# embedded registry triggers a rolling update of all instances.
 
 ---
 apiVersion: v1
@@ -25,14 +28,14 @@ metadata:
   name: mdns-gw
   namespace: dns
   annotations:
-    mikrotik.io/network: gw
-    mikrotik.io/boot-priority: "10"
-    mikrotik.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/network: gw
+    vkube.io/boot-priority: "10"
+    vkube.io/image-policy: auto
 spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: docker.io/library/microdns:arm64
+      image: 192.168.200.2:5000/microdns:latest
       startupProbe:
         httpGet:
           path: /api/v1/zones
@@ -63,14 +66,31 @@ metadata:
   name: mdns-g10
   namespace: dns
   annotations:
-    mikrotik.io/network: g10
-    mikrotik.io/boot-priority: "11"
-    mikrotik.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "11"
+    vkube.io/image-policy: auto
 spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: docker.io/library/microdns:arm64
+      image: 192.168.200.2:5000/microdns:latest
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
         - name: config
           mountPath: /etc/microdns
@@ -84,14 +104,31 @@ metadata:
   name: mdns-g11
   namespace: dns
   annotations:
-    mikrotik.io/network: g11
-    mikrotik.io/boot-priority: "12"
-    mikrotik.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/network: g11
+    vkube.io/boot-priority: "12"
+    vkube.io/image-policy: auto
 spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: docker.io/library/microdns:arm64
+      image: 192.168.200.2:5000/microdns:latest
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
         - name: config
           mountPath: /etc/microdns
@@ -105,14 +142,31 @@ metadata:
   name: mdns-gt
   namespace: dns
   annotations:
-    mikrotik.io/network: gt
-    mikrotik.io/boot-priority: "13"
-    mikrotik.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/network: gt
+    vkube.io/boot-priority: "13"
+    vkube.io/image-policy: auto
 spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: docker.io/library/microdns:arm64
+      image: 192.168.200.2:5000/microdns:latest
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
         - name: config
           mountPath: /etc/microdns
@@ -128,10 +182,10 @@ metadata:
   name: network-gw
   namespace: infra
   annotations:
-    mikrotik.io/network: g10
-    mikrotik.io/boot-priority: "20"
-    mikrotik.io/depends-on: "mdns-gw-microdns,mdns-g10-microdns"
-    mikrotik.io/file: "raid1/tarballs/netman.tar"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "20"
+    vkube.io/depends-on: "mdns-gw-microdns,mdns-g10-microdns"
+    vkube.io/file: "raid1/tarballs/netman.tar"
 spec:
   restartPolicy: Always
   containers:
@@ -150,9 +204,9 @@ metadata:
   name: pxe-g10
   namespace: infra
   annotations:
-    mikrotik.io/network: g10
-    mikrotik.io/boot-priority: "30"
-    mikrotik.io/depends-on: "network-gw-netman"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "30"
+    vkube.io/depends-on: "network-gw-netman"
 spec:
   restartPolicy: Always
   containers:
@@ -173,8 +227,8 @@ metadata:
   name: fastregistry-g10
   namespace: infra
   annotations:
-    mikrotik.io/network: g10
-    mikrotik.io/boot-priority: "40"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "40"
 spec:
   restartPolicy: Always
   containers:
@@ -195,8 +249,8 @@ metadata:
   name: agentmonitor-g10
   namespace: monitoring
   annotations:
-    mikrotik.io/network: g10
-    mikrotik.io/boot-priority: "50"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "50"
 spec:
   restartPolicy: Always
   containers:
@@ -213,8 +267,8 @@ metadata:
   name: console-g11
   namespace: infra
   annotations:
-    mikrotik.io/network: g11
-    mikrotik.io/boot-priority: "60"
+    vkube.io/network: g11
+    vkube.io/boot-priority: "60"
 spec:
   restartPolicy: Always
   containers:

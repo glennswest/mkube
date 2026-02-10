@@ -29,9 +29,12 @@ import (
 
 const (
 	// annotationNetwork selects which network a pod's containers are placed on.
-	annotationNetwork = "mikrotik.io/network"
-	// annotationFile specifies a local tarball path on RouterOS, bypassing OCI pull.
-	annotationFile = "mikrotik.io/file"
+	annotationNetwork = "vkube.io/network"
+	// annotationFile specifies a local tarball path on the host, bypassing OCI pull.
+	annotationFile = "vkube.io/file"
+	// annotationImagePolicy controls automatic redeployment when an image is
+	// pushed to the embedded registry. Values: "auto" (redeploy on push).
+	annotationImagePolicy = "vkube.io/image-policy"
 )
 
 // Deps holds injected dependencies for the provider.
@@ -664,6 +667,127 @@ func (p *MikroTikProvider) watchPods(ctx context.Context, clientset kubernetes.I
 	}
 }
 
+// ─── Auto-Update (CI/CD) ────────────────────────────────────────────────
+
+// PushEvent mirrors registry.PushEvent to avoid a circular import.
+type PushEvent struct {
+	Repo      string
+	Reference string
+}
+
+// RunAutoUpdater watches for image push events and redeploys pods that
+// have vkube.io/image-policy: auto and reference the pushed image.
+// Multiple pods sharing the same image (e.g., 4 MicroDNS instances) are
+// all updated, one at a time with a delay between them.
+func (p *MikroTikProvider) RunAutoUpdater(ctx context.Context, events <-chan PushEvent) {
+	log := p.deps.Logger.Named("auto-update")
+	log.Info("auto-updater watching for push events")
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("auto-updater shutting down")
+			return
+		case ev := <-events:
+			log.Infow("push event received", "repo", ev.Repo, "ref", ev.Reference)
+			p.handlePushEvent(ctx, ev, log)
+		}
+	}
+}
+
+func (p *MikroTikProvider) handlePushEvent(ctx context.Context, ev PushEvent, log *zap.SugaredLogger) {
+	// Find all tracked pods with auto-update enabled whose containers
+	// reference the pushed repo:tag
+	var toUpdate []*corev1.Pod
+	for _, pod := range p.pods {
+		if pod.Annotations[annotationImagePolicy] != "auto" {
+			continue
+		}
+		// A pod using vkube.io/file bypasses the registry — skip it
+		if pod.Annotations[annotationFile] != "" {
+			continue
+		}
+		for _, c := range pod.Spec.Containers {
+			if imageMatchesPush(c.Image, ev.Repo, ev.Reference) {
+				toUpdate = append(toUpdate, pod)
+				break // only need to match one container per pod
+			}
+		}
+	}
+
+	if len(toUpdate) == 0 {
+		log.Debugw("no auto-update pods match push", "repo", ev.Repo, "ref", ev.Reference)
+		return
+	}
+
+	log.Infow("auto-updating pods",
+		"repo", ev.Repo, "ref", ev.Reference, "count", len(toUpdate))
+
+	// Invalidate the storage manager cache so EnsureImage re-pulls
+	for _, pod := range toUpdate {
+		for _, c := range pod.Spec.Containers {
+			if imageMatchesPush(c.Image, ev.Repo, ev.Reference) {
+				p.deps.StorageMgr.ReleaseImage(c.Image)
+			}
+		}
+	}
+
+	// Rolling update: one pod at a time
+	for _, pod := range toUpdate {
+		log.Infow("auto-updating pod", "pod", podKey(pod))
+		if err := p.UpdatePod(ctx, pod); err != nil {
+			log.Errorw("auto-update failed", "pod", podKey(pod), "error", err)
+			continue
+		}
+		log.Infow("auto-update complete", "pod", podKey(pod))
+		// Brief pause between updates to avoid overwhelming RouterOS
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// imageMatchesPush checks if an image reference matches a push event.
+// The push event has repo="microdns" ref="latest".
+// The image might be "192.168.200.2:5000/microdns:latest" or
+// "localhost:5000/library/microdns:latest" or just "microdns:latest".
+//
+// We strip the registry host (anything before the first / that contains
+// a dot or colon) and compare repo:tag.
+func imageMatchesPush(image, pushRepo, pushRef string) bool {
+	repo, tag := parseImageRepoTag(image)
+	return repo == pushRepo && tag == pushRef
+}
+
+// parseImageRepoTag splits an image ref into (repo, tag) with the registry
+// host stripped. Examples:
+//
+//	"192.168.200.2:5000/microdns:latest"   → ("microdns", "latest")
+//	"192.168.200.2:5000/lib/app:v2"        → ("lib/app", "v2")
+//	"microdns:latest"                       → ("microdns", "latest")
+//	"microdns"                              → ("microdns", "latest")
+func parseImageRepoTag(image string) (repo, tag string) {
+	// Split off tag
+	tag = "latest"
+	// Find last colon that's after the last slash (to avoid port colons)
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon > lastSlash {
+		tag = image[lastColon+1:]
+		image = image[:lastColon]
+	}
+
+	// Strip registry host: the first component is a host if it contains
+	// a dot or colon (e.g., "192.168.200.2:5000", "docker.io", "localhost:5000")
+	firstSlash := strings.Index(image, "/")
+	if firstSlash > 0 {
+		firstPart := image[:firstSlash]
+		if strings.ContainsAny(firstPart, ".:") {
+			image = image[firstSlash+1:]
+		}
+	}
+
+	return image, tag
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 func podKey(pod *corev1.Pod) string {
@@ -764,14 +888,14 @@ func probeToConfig(probe *corev1.Probe) *lifecycle.ProbeConfig {
 }
 
 func extractDependencies(pod *corev1.Pod) []string {
-	if deps, ok := pod.Annotations["mikrotik.io/depends-on"]; ok {
+	if deps, ok := pod.Annotations["vkube.io/depends-on"]; ok {
 		return strings.Split(deps, ",")
 	}
 	return nil
 }
 
 func extractPriority(pod *corev1.Pod, index int) int {
-	if v, ok := pod.Annotations["mikrotik.io/boot-priority"]; ok {
+	if v, ok := pod.Annotations["vkube.io/boot-priority"]; ok {
 		if priority, err := strconv.Atoi(v); err == nil {
 			return priority
 		}
