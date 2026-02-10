@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./hack/deploy.sh <device> <tarball>
-#   ./hack/deploy.sh rose1.gw.lo dist/mikrotik-kube-dev-arm64.tar
+#   ./hack/deploy.sh rose1.gw.lo dist/mikrotik-kube-arm64.tar.gz
 #
 # Or via Makefile:
 #   make deploy                           # defaults to rose1.gw.lo
@@ -14,7 +14,8 @@ set -euo pipefail
 DEVICE="${1:?Usage: deploy.sh <device> <tarball>}"
 TARBALL="${2:?Usage: deploy.sh <device> <tarball>}"
 SSH_USER="${SSH_USER:-admin}"
-SSH="ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new ${SSH_USER}@${DEVICE}"
+SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+SSH="ssh ${SSH_OPTS} ${SSH_USER}@${DEVICE}"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 BRIDGE_NAME="containers"
@@ -22,12 +23,34 @@ BRIDGE_ADDR="192.168.200.1/24"
 MGMT_VETH="veth-mkube"
 MGMT_IP="192.168.200.2/24"
 MGMT_GW="192.168.200.1"
-CONTAINER_NAME="mikrotik-kube"
+CONTAINER_NAME="kube.gt.lo"
 ROOT_DIR="/raid1/images/${CONTAINER_NAME}"
 TARBALL_DIR="/raid1/tarballs"
-CACHE_DIR="/raid1/cache"
 VOLUME_DIR="/raid1/volumes"
 REMOTE_TARBALL="${TARBALL_DIR}/${CONTAINER_NAME}.tar"
+DNS_SERVER="192.168.200.199"
+
+ros() {
+    ${SSH} "$1" | tr -d '\r'
+}
+
+wait_state() {
+    local name="$1" target="$2" max=30 i=0
+    printf "  Waiting for %s -> %s " "$name" "$target"
+    while [ $i -lt $max ]; do
+        local output
+        output=$(ros "/container/print" 2>/dev/null || true)
+        if [ "$target" = "missing" ]; then
+            if ! echo "$output" | grep -q "$name"; then
+                printf "done\n"; return 0
+            fi
+        elif echo "$output" | grep "$name" | grep -qE "^\s*[0-9]+\s+${target}\s"; then
+            printf "done\n"; return 0
+        fi
+        printf "."; i=$((i + 1)); sleep 2
+    done
+    printf " timeout!\n"; return 1
+}
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  Deploying mikrotik-kube to ${DEVICE}"
@@ -61,49 +84,53 @@ echo "  ✓ Container mode enabled"
 echo ""
 echo "▸ Configuring network bridge '${BRIDGE_NAME}'..."
 
-BRIDGE_EXISTS=$(${SSH} "/interface/bridge/print count-only where name=${BRIDGE_NAME}" 2>/dev/null)
-if [ "${BRIDGE_EXISTS}" = "0" ]; then
-    echo "  Creating bridge ${BRIDGE_NAME}..."
-    ${SSH} "/interface/bridge/add name=${BRIDGE_NAME} comment=\"Managed by mikrotik-kube\""
-    echo "  ✓ Bridge created"
-else
-    echo "  ✓ Bridge already exists"
-fi
+ros "/interface/bridge/add name=${BRIDGE_NAME} comment=\"Managed by mikrotik-kube\"" >/dev/null 2>&1 && echo "  ✓ Bridge created" || echo "  ✓ Bridge already exists"
 
 # Add IP to bridge if not present
-ADDR_EXISTS=$(${SSH} "/ip/address/print count-only where interface=${BRIDGE_NAME} address=${BRIDGE_ADDR}" 2>/dev/null)
-if [ "${ADDR_EXISTS}" = "0" ]; then
-    echo "  Adding ${BRIDGE_ADDR} to ${BRIDGE_NAME}..."
-    ${SSH} "/ip/address/add address=${BRIDGE_ADDR} interface=${BRIDGE_NAME} comment=\"mikrotik-kube gateway\""
-    echo "  ✓ Address added"
-else
-    echo "  ✓ Address already configured"
-fi
+ros "/ip/address/add address=${BRIDGE_ADDR} interface=${BRIDGE_NAME} comment=\"mikrotik-kube gateway\"" >/dev/null 2>&1 && echo "  ✓ Address added" || echo "  ✓ Address already configured"
 
 # ── Step 4: Create management veth ───────────────────────────────────────────
 echo ""
 echo "▸ Configuring management veth '${MGMT_VETH}'..."
 
-VETH_EXISTS=$(${SSH} "/interface/veth/print count-only where name=${MGMT_VETH}" 2>/dev/null)
-if [ "${VETH_EXISTS}" = "0" ]; then
-    echo "  Creating veth ${MGMT_VETH} (${MGMT_IP})..."
-    ${SSH} "/interface/veth/add name=${MGMT_VETH} address=${MGMT_IP} gateway=${MGMT_GW}"
-    echo "  ✓ Veth created"
-else
-    echo "  ✓ Veth already exists"
+ros "/interface/veth/add name=${MGMT_VETH} address=${MGMT_IP} gateway=${MGMT_GW}" >/dev/null 2>&1 && echo "  ✓ Veth created" || echo "  ✓ Veth already exists"
+
+# Add veth to bridge
+ros "/interface/bridge/port/add bridge=${BRIDGE_NAME} interface=${MGMT_VETH}" >/dev/null 2>&1 && echo "  ✓ Bridge port added" || echo "  ✓ Bridge port already configured"
+
+# ── Step 5: Create volume directories ─────────────────────────────────────────
+echo ""
+echo "▸ Creating volume directories..."
+
+# RouterOS SCP can't create intermediate dirs — use sftp batch mode
+sftp ${SSH_OPTS} "${SSH_USER}@${DEVICE}" <<SFTP_EOF 2>/dev/null || true
+-mkdir ${VOLUME_DIR}/${CONTAINER_NAME}
+-mkdir ${VOLUME_DIR}/${CONTAINER_NAME}/config
+SFTP_EOF
+
+echo "  ✓ Volume directories ready"
+
+# ── Step 6: Upload config ────────────────────────────────────────────────────
+echo ""
+echo "▸ Uploading configuration..."
+
+CONFIG_FILE="deploy/rose1-config.yaml"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    CONFIG_FILE="deploy/config.yaml"
 fi
 
-# Add veth to bridge if not already a port
-PORT_EXISTS=$(${SSH} "/interface/bridge/port/print count-only where bridge=${BRIDGE_NAME} interface=${MGMT_VETH}" 2>/dev/null)
-if [ "${PORT_EXISTS}" = "0" ]; then
-    echo "  Adding ${MGMT_VETH} to bridge ${BRIDGE_NAME}..."
-    ${SSH} "/interface/bridge/port/add bridge=${BRIDGE_NAME} interface=${MGMT_VETH}"
-    echo "  ✓ Bridge port added"
-else
-    echo "  ✓ Bridge port already configured"
-fi
+scp ${SSH_OPTS} "${CONFIG_FILE}" "${SSH_USER}@${DEVICE}:${VOLUME_DIR}/${CONTAINER_NAME}/config/config.yaml"
+echo "  ✓ Config uploaded"
 
-# ── Step 6: Upload tarball ───────────────────────────────────────────────────
+# ── Step 7: Create mount points ──────────────────────────────────────────────
+echo ""
+echo "▸ Creating container mounts..."
+
+ros "/container/mounts/add list=${CONTAINER_NAME}.config src=/${VOLUME_DIR}/${CONTAINER_NAME}/config dst=/etc/mikrotik-kube" 2>/dev/null || echo "  (config mount already exists)"
+
+echo "  ✓ Mounts configured"
+
+# ── Step 8: Upload tarball ───────────────────────────────────────────────────
 echo ""
 echo "▸ Uploading tarball..."
 
@@ -111,73 +138,48 @@ TARBALL_SIZE=$(du -h "${TARBALL}" | cut -f1)
 echo "  Source: ${TARBALL} (${TARBALL_SIZE})"
 echo "  Destination: ${REMOTE_TARBALL}"
 
-scp -o ConnectTimeout=10 "${TARBALL}" "${SSH_USER}@${DEVICE}:${REMOTE_TARBALL}"
+scp ${SSH_OPTS} "${TARBALL}" "${SSH_USER}@${DEVICE}:${REMOTE_TARBALL}"
 echo "  ✓ Upload complete"
 
-# ── Step 7: Upload config ────────────────────────────────────────────────────
-echo ""
-echo "▸ Uploading configuration..."
-
-# Check for device-specific config, fall back to default
-CONFIG_FILE="deploy/rose1-config.yaml"
-if [ ! -f "${CONFIG_FILE}" ]; then
-    CONFIG_FILE="deploy/config.yaml"
-fi
-
-scp -o ConnectTimeout=10 "${CONFIG_FILE}" "${SSH_USER}@${DEVICE}:/raid1/volumes/${CONTAINER_NAME}/config.yaml" 2>/dev/null || {
-    # Directory may not exist yet — that's OK, container will create it
-    echo "  Config will be mounted after first container start"
-}
-echo "  ✓ Config uploaded"
-
-# ── Step 8: Stop and remove existing container if present ────────────────────
+# ── Step 9: Stop and remove existing container if present ────────────────────
 echo ""
 echo "▸ Checking for existing container..."
 
-EXISTING=$(${SSH} "/container/print count-only where name=${CONTAINER_NAME}" 2>/dev/null)
-if [ "${EXISTING}" != "0" ]; then
+EXISTING=$(ros "/container/print count-only where name=${CONTAINER_NAME}")
+if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "0" ]; then
     echo "  Stopping existing container..."
-    ${SSH} "/container/stop [find name=${CONTAINER_NAME}]" 2>/dev/null || true
-    sleep 3
+    ros "/container/stop [find name=${CONTAINER_NAME}]" 2>/dev/null || true
+    wait_state "${CONTAINER_NAME}" "S" 2>/dev/null || true
     echo "  Removing existing container..."
-    ${SSH} "/container/remove [find name=${CONTAINER_NAME}]" 2>/dev/null || true
-    sleep 2
+    ros "/container/remove [find name=${CONTAINER_NAME}]" 2>/dev/null || true
+    wait_state "${CONTAINER_NAME}" "missing" 2>/dev/null || true
     echo "  ✓ Removed old container"
 else
     echo "  No existing container found"
 fi
 
-# ── Step 9: Create and start the container ───────────────────────────────────
+# ── Step 10: Create and start the container ──────────────────────────────────
 echo ""
 echo "▸ Creating container '${CONTAINER_NAME}'..."
 
-${SSH} "/container/add \
-    file=${REMOTE_TARBALL} \
-    name=${CONTAINER_NAME} \
-    interface=${MGMT_VETH} \
-    root-dir=${ROOT_DIR} \
-    mounts=raid1/volumes/${CONTAINER_NAME}/config.yaml:/etc/mikrotik-kube/config.yaml \
-    logging=yes \
-    start-on-boot=yes \
-    hostname=${CONTAINER_NAME} \
-    dns=8.8.8.8"
+ros "/container/add file=${REMOTE_TARBALL} interface=${MGMT_VETH} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config"
 
 echo "  ✓ Container created"
 
 echo ""
 echo "▸ Waiting for container to extract..."
-sleep 5
+wait_state "${CONTAINER_NAME}" "S"
 
 echo "▸ Starting container..."
-${SSH} "/container/start [find name=${CONTAINER_NAME}]"
+ros "/container/start [find name=${CONTAINER_NAME}]"
 echo "  ✓ Container started"
 
-# ── Step 10: Verify ──────────────────────────────────────────────────────────
+# ── Step 11: Verify ──────────────────────────────────────────────────────────
 echo ""
 echo "▸ Verifying deployment..."
 sleep 3
 
-${SSH} "/container/print where name=${CONTAINER_NAME}"
+ros "/container/print where name=${CONTAINER_NAME}"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
@@ -186,6 +188,7 @@ echo ""
 echo "  Device:    ${DEVICE}"
 echo "  Container: ${CONTAINER_NAME}"
 echo "  Network:   ${MGMT_IP} on bridge ${BRIDGE_NAME}"
+echo "  DNS:       ${DNS_SERVER} (MicroDNS gt.lo)"
 echo "  REST API:  https://${MGMT_GW}/rest"
 echo ""
 echo "  Monitor logs:"
