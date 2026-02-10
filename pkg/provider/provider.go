@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/glenneth/microkube/pkg/config"
+	"github.com/glenneth/microkube/pkg/dzo"
 	"github.com/glenneth/microkube/pkg/lifecycle"
 	"github.com/glenneth/microkube/pkg/network"
 	"github.com/glenneth/microkube/pkg/routeros"
@@ -34,16 +35,19 @@ const (
 	annotationNetwork = "vkube.io/network"
 	// annotationFile specifies a local tarball path on the host, bypassing OCI pull.
 	annotationFile = "vkube.io/file"
+	// annotationNamespace selects a DZO namespace for DNS registration.
+	annotationNamespace = "vkube.io/namespace"
 )
 
 // Deps holds injected dependencies for the provider.
 type Deps struct {
-	Config     *config.Config
-	ROS        *routeros.Client
-	NetworkMgr *network.Manager
-	StorageMgr *storage.Manager
+	Config       *config.Config
+	ROS          *routeros.Client
+	NetworkMgr   *network.Manager
+	StorageMgr   *storage.Manager
 	LifecycleMgr *lifecycle.Manager
-	Logger     *zap.SugaredLogger
+	DZO          *dzo.Operator // optional, nil if DZO is disabled
+	Logger       *zap.SugaredLogger
 }
 
 // MicroKubeProvider implements the Virtual Kubelet provider interface.
@@ -83,6 +87,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 
 	// Determine target network from annotation
 	networkName := pod.Annotations[annotationNetwork]
+	namespaceName := pod.Annotations[annotationNamespace]
 
 	for i, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
@@ -107,6 +112,25 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			return fmt.Errorf("allocating network for %s: %w", name, err)
 		}
 		log.Infow("allocated network", "veth", vethName, "ip", ip, "gateway", gw, "dns", dnsServer)
+
+		// 2b. If DZO namespace is specified, register DNS in namespace's zone instead
+		if namespaceName != "" && p.deps.DZO != nil {
+			endpoint, zoneID, err := p.deps.DZO.ResolveNamespace(namespaceName)
+			if err != nil {
+				log.Warnw("failed to resolve DZO namespace, using default DNS", "namespace", namespaceName, "error", err)
+			} else {
+				bareIP := strings.Split(ip, "/")[0]
+				dnsClient := p.deps.NetworkMgr.DNSClient()
+				if dnsClient != nil {
+					if regErr := dnsClient.RegisterHost(ctx, endpoint, zoneID, pod.Name, bareIP, 60); regErr != nil {
+						log.Warnw("failed to register in namespace zone", "namespace", namespaceName, "error", regErr)
+					} else {
+						log.Infow("registered in namespace zone", "namespace", namespaceName, "hostname", pod.Name, "ip", bareIP)
+					}
+				}
+				p.deps.DZO.AddContainerToNamespace(namespaceName, name)
+			}
+		}
 
 		// 3. Provision volumes (mount lists are managed via RouterOS mounts API)
 		for _, vm := range container.VolumeMounts {
@@ -219,6 +243,11 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 
 		// Unregister from systemd manager
 		p.deps.LifecycleMgr.Unregister(name)
+
+		// Remove from DZO namespace if applicable
+		if nsName := pod.Annotations[annotationNamespace]; nsName != "" && p.deps.DZO != nil {
+			p.deps.DZO.RemoveContainerFromNamespace(nsName, name)
+		}
 
 		// Note: storage cleanup is deferred to GC
 		log.Infow("container removed", "name", name)

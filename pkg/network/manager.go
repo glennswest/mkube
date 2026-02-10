@@ -198,6 +198,11 @@ func (m *Manager) ReleaseInterface(ctx context.Context, vethName string) error {
 	return nil
 }
 
+// DNSClient returns the underlying DNS client for direct zone operations.
+func (m *Manager) DNSClient() *dns.Client {
+	return m.dns
+}
+
 // GetAllocations returns a snapshot of current IP allocations across all networks.
 func (m *Manager) GetAllocations() map[string]string {
 	m.mu.Lock()

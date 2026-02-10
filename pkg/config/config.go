@@ -18,10 +18,20 @@ type Config struct {
 	Storage    StorageConfig  `yaml:"storage"`
 	Lifecycle  LifecycleConfig `yaml:"lifecycle"`
 	Registry   RegistryConfig `yaml:"registry"`
+	DZO        DZOConfig      `yaml:"dzo"`
 
 	// Deprecated: single-network config for backward compatibility.
 	// If present and Networks is empty, it is migrated into Networks.
 	Network *legacyNetworkConfig `yaml:"network,omitempty"`
+}
+
+// DZOConfig configures the Domain Zone Operator.
+type DZOConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	ListenAddr    string `yaml:"listenAddr"`    // e.g. ":8082"
+	StatePath     string `yaml:"statePath"`     // e.g. "/etc/microkube/dzo-state.yaml"
+	MicroDNSImage string `yaml:"microdnsImage"` // e.g. "192.168.200.2:5000/microdns:latest"
+	DefaultMode   string `yaml:"defaultMode"`   // "open" or "nested"
 }
 
 // NetworkDef defines a network that containers can be placed on.

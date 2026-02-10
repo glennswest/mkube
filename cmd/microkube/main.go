@@ -52,6 +52,7 @@ import (
 	"github.com/glenneth/microkube/pkg/config"
 	"github.com/glenneth/microkube/pkg/discovery"
 	"github.com/glenneth/microkube/pkg/dns"
+	"github.com/glenneth/microkube/pkg/dzo"
 	"github.com/glenneth/microkube/pkg/network"
 	"github.com/glenneth/microkube/pkg/provider"
 	"github.com/glenneth/microkube/pkg/registry"
@@ -209,6 +210,23 @@ func run(cmd *cobra.Command, args []string) error {
 
 	log.Info("lifecycle manager ready")
 
+	// ── Domain Zone Operator (optional) ─────────────────────────────
+	var dzoOp *dzo.Operator
+	if cfg.DZO.Enabled {
+		dzoOp = dzo.NewOperator(cfg.DZO, cfg.Networks, dnsClient, rosClient, netMgr, lcMgr, log)
+		if err := dzoOp.Bootstrap(ctx); err != nil {
+			log.Warnw("DZO bootstrap failed, continuing without DZO", "error", err)
+			dzoOp = nil
+		} else {
+			listenAddr := cfg.DZO.ListenAddr
+			if listenAddr == "" {
+				listenAddr = ":8082"
+			}
+			go dzoOp.RunAPI(ctx, listenAddr)
+			log.Infow("DZO started", "addr", listenAddr)
+		}
+	}
+
 	// ── Embedded Registry (optional) ────────────────────────────────
 	var reg *registry.Registry
 	if cfg.Registry.Enabled {
@@ -227,6 +245,7 @@ func run(cmd *cobra.Command, args []string) error {
 		NetworkMgr:   netMgr,
 		StorageMgr:   storageMgr,
 		LifecycleMgr: lcMgr,
+		DZO:          dzoOp,
 		Logger:       log,
 	})
 	if err != nil {

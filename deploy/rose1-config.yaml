@@ -63,6 +63,13 @@ lifecycle:
   maxRestarts: 5
   restartCooldown: 10
 
+dzo:
+  enabled: true
+  listenAddr: ":8082"
+  statePath: /etc/microkube/dzo-state.yaml
+  microdnsImage: "192.168.200.2:5000/microdns:latest"
+  defaultMode: "nested"
+
 registry:
   enabled: true
   listenAddr: ":5000"
