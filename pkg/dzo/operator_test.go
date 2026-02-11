@@ -126,12 +126,6 @@ func TestBootstrap(t *testing.T) {
 		t.Fatalf("expected 2 instances, got %d", len(instances))
 	}
 
-	// Should have 2 default namespaces (gt, g10)
-	namespaces := op.ListNamespaces()
-	if len(namespaces) != 2 {
-		t.Fatalf("expected 2 namespaces, got %d", len(namespaces))
-	}
-
 	// Each zone should have a MicroDNS ID
 	for _, z := range zones {
 		if z.MicroDNSID == "" {
@@ -166,11 +160,6 @@ func TestBootstrapIdempotent(t *testing.T) {
 	// Should still have 2 zones
 	if len(op.ListZones()) != 2 {
 		t.Fatalf("expected 2 zones after double bootstrap, got %d", len(op.ListZones()))
-	}
-
-	// Should still have 2 namespaces
-	if len(op.ListNamespaces()) != 2 {
-		t.Fatalf("expected 2 namespaces after double bootstrap, got %d", len(op.ListNamespaces()))
 	}
 }
 
@@ -278,7 +267,7 @@ func TestDeleteZone(t *testing.T) {
 	}
 }
 
-func TestDeleteZoneInUse(t *testing.T) {
+func TestGetZoneEndpoint(t *testing.T) {
 	mdns := mockMicroDNS(t)
 	defer mdns.Close()
 
@@ -292,173 +281,9 @@ func TestDeleteZoneInUse(t *testing.T) {
 		t.Fatalf("bootstrap failed: %v", err)
 	}
 
-	// Try to delete gt.lo which has the default "gt" namespace
-	err := op.DeleteZone(ctx, "gt.lo")
-	if err == nil {
-		t.Fatal("expected error deleting zone in use")
-	}
-}
-
-func TestCreateNamespace(t *testing.T) {
-	mdns := mockMicroDNS(t)
-	defer mdns.Close()
-
-	tmpDir := t.TempDir()
-	statePath := filepath.Join(tmpDir, "state.yaml")
-
-	op := testOperator(t, mdns.URL, statePath)
-	ctx := context.Background()
-
-	if err := op.Bootstrap(ctx); err != nil {
-		t.Fatalf("bootstrap failed: %v", err)
-	}
-
-	// Create a namespace with auto-zone creation
-	ns, err := op.CreateNamespace(ctx, CreateNamespaceRequest{
-		Name:    "kube",
-		Domain:  "kube.gt.lo",
-		Network: "gt",
-		Mode:    ModeNested,
-	})
+	endpoint, zoneID, err := op.GetZoneEndpoint("gt.lo")
 	if err != nil {
-		t.Fatalf("create namespace failed: %v", err)
-	}
-
-	if ns.Name != "kube" {
-		t.Errorf("expected name kube, got %s", ns.Name)
-	}
-	if ns.Domain != "kube.gt.lo" {
-		t.Errorf("expected domain kube.gt.lo, got %s", ns.Domain)
-	}
-	if ns.Mode != ModeNested {
-		t.Errorf("expected mode nested, got %s", ns.Mode)
-	}
-
-	// Zone kube.gt.lo should have been auto-created
-	zone, err := op.GetZone("kube.gt.lo")
-	if err != nil {
-		t.Fatalf("auto-created zone not found: %v", err)
-	}
-	if zone.Network != "gt" {
-		t.Errorf("expected zone network gt, got %s", zone.Network)
-	}
-}
-
-func TestCreateNamespaceDuplicate(t *testing.T) {
-	mdns := mockMicroDNS(t)
-	defer mdns.Close()
-
-	tmpDir := t.TempDir()
-	statePath := filepath.Join(tmpDir, "state.yaml")
-
-	op := testOperator(t, mdns.URL, statePath)
-	ctx := context.Background()
-
-	if err := op.Bootstrap(ctx); err != nil {
-		t.Fatalf("bootstrap failed: %v", err)
-	}
-
-	// Default namespace "gt" already exists
-	_, err := op.CreateNamespace(ctx, CreateNamespaceRequest{
-		Name:    "gt",
-		Domain:  "gt.lo",
-		Network: "gt",
-	})
-	if err == nil {
-		t.Fatal("expected error creating duplicate namespace")
-	}
-}
-
-func TestDeleteNamespace(t *testing.T) {
-	mdns := mockMicroDNS(t)
-	defer mdns.Close()
-
-	tmpDir := t.TempDir()
-	statePath := filepath.Join(tmpDir, "state.yaml")
-
-	op := testOperator(t, mdns.URL, statePath)
-	ctx := context.Background()
-
-	if err := op.Bootstrap(ctx); err != nil {
-		t.Fatalf("bootstrap failed: %v", err)
-	}
-
-	// Create and delete a namespace
-	_, err := op.CreateNamespace(ctx, CreateNamespaceRequest{
-		Name:    "test",
-		Domain:  "test.gt.lo",
-		Network: "gt",
-	})
-	if err != nil {
-		t.Fatalf("create namespace failed: %v", err)
-	}
-
-	if err := op.DeleteNamespace(ctx, "test"); err != nil {
-		t.Fatalf("delete namespace failed: %v", err)
-	}
-
-	_, err = op.GetNamespace("test")
-	if err == nil {
-		t.Fatal("expected error getting deleted namespace")
-	}
-}
-
-func TestDeleteNamespaceWithContainers(t *testing.T) {
-	mdns := mockMicroDNS(t)
-	defer mdns.Close()
-
-	tmpDir := t.TempDir()
-	statePath := filepath.Join(tmpDir, "state.yaml")
-
-	op := testOperator(t, mdns.URL, statePath)
-	ctx := context.Background()
-
-	if err := op.Bootstrap(ctx); err != nil {
-		t.Fatalf("bootstrap failed: %v", err)
-	}
-
-	_, err := op.CreateNamespace(ctx, CreateNamespaceRequest{
-		Name:    "test",
-		Domain:  "test.gt.lo",
-		Network: "gt",
-	})
-	if err != nil {
-		t.Fatalf("create namespace failed: %v", err)
-	}
-
-	// Add a container
-	op.AddContainerToNamespace("test", "my-container")
-
-	// Should fail to delete
-	err = op.DeleteNamespace(ctx, "test")
-	if err == nil {
-		t.Fatal("expected error deleting namespace with containers")
-	}
-
-	// Remove container and try again
-	op.RemoveContainerFromNamespace("test", "my-container")
-	if err := op.DeleteNamespace(ctx, "test"); err != nil {
-		t.Fatalf("delete namespace failed after removing containers: %v", err)
-	}
-}
-
-func TestResolveNamespace(t *testing.T) {
-	mdns := mockMicroDNS(t)
-	defer mdns.Close()
-
-	tmpDir := t.TempDir()
-	statePath := filepath.Join(tmpDir, "state.yaml")
-
-	op := testOperator(t, mdns.URL, statePath)
-	ctx := context.Background()
-
-	if err := op.Bootstrap(ctx); err != nil {
-		t.Fatalf("bootstrap failed: %v", err)
-	}
-
-	endpoint, zoneID, err := op.ResolveNamespace("gt")
-	if err != nil {
-		t.Fatalf("resolve namespace failed: %v", err)
+		t.Fatalf("GetZoneEndpoint failed: %v", err)
 	}
 	if endpoint != mdns.URL {
 		t.Errorf("expected endpoint %s, got %s", mdns.URL, endpoint)
@@ -467,10 +292,41 @@ func TestResolveNamespace(t *testing.T) {
 		t.Error("expected non-empty zone ID")
 	}
 
-	// Non-existent namespace
-	_, _, err = op.ResolveNamespace("nonexistent")
+	// Non-existent zone
+	_, _, err = op.GetZoneEndpoint("nonexistent")
 	if err == nil {
-		t.Fatal("expected error resolving non-existent namespace")
+		t.Fatal("expected error for non-existent zone")
+	}
+}
+
+func TestEnsureZone(t *testing.T) {
+	mdns := mockMicroDNS(t)
+	defer mdns.Close()
+
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "state.yaml")
+
+	op := testOperator(t, mdns.URL, statePath)
+	ctx := context.Background()
+
+	if err := op.Bootstrap(ctx); err != nil {
+		t.Fatalf("bootstrap failed: %v", err)
+	}
+
+	// EnsureZone on existing zone should be no-op
+	if err := op.EnsureZone(ctx, "gt.lo", "gt", false); err != nil {
+		t.Fatalf("EnsureZone on existing zone: %v", err)
+	}
+
+	// EnsureZone on new zone should create it
+	if err := op.EnsureZone(ctx, "new.gt.lo", "gt", false); err != nil {
+		t.Fatalf("EnsureZone on new zone: %v", err)
+	}
+
+	// Verify it exists
+	_, err := op.GetZone("new.gt.lo")
+	if err != nil {
+		t.Fatalf("new zone not found after EnsureZone: %v", err)
 	}
 }
 

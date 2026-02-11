@@ -9,21 +9,13 @@ import (
 	"time"
 )
 
-// RunAPI starts the DZO REST API server.
-func (o *Operator) RunAPI(ctx context.Context, listenAddr string) {
-	mux := http.NewServeMux()
-
+// RegisterRoutes registers DZO zone, instance, and health handlers on the provided mux.
+func (o *Operator) RegisterRoutes(mux *http.ServeMux) {
 	// Zones
 	mux.HandleFunc("GET /api/v1/zones", o.handleListZones)
 	mux.HandleFunc("GET /api/v1/zones/{name}", o.handleGetZone)
 	mux.HandleFunc("POST /api/v1/zones", o.handleCreateZone)
 	mux.HandleFunc("DELETE /api/v1/zones/{name}", o.handleDeleteZone)
-
-	// Namespaces
-	mux.HandleFunc("GET /api/v1/namespaces", o.handleListNamespaces)
-	mux.HandleFunc("GET /api/v1/namespaces/{name}", o.handleGetNamespace)
-	mux.HandleFunc("POST /api/v1/namespaces", o.handleCreateNamespace)
-	mux.HandleFunc("DELETE /api/v1/namespaces/{name}", o.handleDeleteNamespace)
 
 	// Instances (read-only)
 	mux.HandleFunc("GET /api/v1/instances", o.handleListInstances)
@@ -31,6 +23,12 @@ func (o *Operator) RunAPI(ctx context.Context, listenAddr string) {
 
 	// Health
 	mux.HandleFunc("GET /healthz", o.handleHealthz)
+}
+
+// RunAPI starts the DZO REST API server on its own mux (convenience wrapper).
+func (o *Operator) RunAPI(ctx context.Context, listenAddr string) {
+	mux := http.NewServeMux()
+	o.RegisterRoutes(mux)
 
 	srv := &http.Server{Addr: listenAddr, Handler: mux}
 
@@ -97,62 +95,6 @@ func (o *Operator) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "in use") {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// ─── Namespace Handlers ─────────────────────────────────────────────────────
-
-func (o *Operator) handleListNamespaces(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, o.ListNamespaces())
-}
-
-func (o *Operator) handleGetNamespace(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	ns, err := o.GetNamespace(name)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	writeJSON(w, http.StatusOK, ns)
-}
-
-func (o *Operator) handleCreateNamespace(w http.ResponseWriter, r *http.Request) {
-	var req CreateNamespaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" || req.Domain == "" || req.Network == "" {
-		http.Error(w, `"name", "domain", and "network" are required`, http.StatusBadRequest)
-		return
-	}
-
-	ns, err := o.CreateNamespace(r.Context(), req)
-	if err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "already exists") {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
-		return
-	}
-	writeJSON(w, http.StatusCreated, ns)
-}
-
-func (o *Operator) handleDeleteNamespace(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if err := o.DeleteNamespace(r.Context(), name); err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "still has") {
-			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
 		return

@@ -41,6 +41,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -53,12 +54,13 @@ import (
 	"github.com/glenneth/microkube/pkg/discovery"
 	"github.com/glenneth/microkube/pkg/dns"
 	"github.com/glenneth/microkube/pkg/dzo"
+	"github.com/glenneth/microkube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/namespace"
 	"github.com/glenneth/microkube/pkg/network"
 	"github.com/glenneth/microkube/pkg/provider"
 	"github.com/glenneth/microkube/pkg/registry"
 	"github.com/glenneth/microkube/pkg/routeros"
 	"github.com/glenneth/microkube/pkg/storage"
-	"github.com/glenneth/microkube/pkg/lifecycle"
 )
 
 var (
@@ -210,20 +212,45 @@ func run(cmd *cobra.Command, args []string) error {
 
 	log.Info("lifecycle manager ready")
 
-	// ── Domain Zone Operator (optional) ─────────────────────────────
+	// ── Domain Zone Operator + Namespace Manager (optional) ─────────
 	var dzoOp *dzo.Operator
+	var nsMgr *namespace.Manager
 	if cfg.DZO.Enabled {
 		dzoOp = dzo.NewOperator(cfg.DZO, cfg.Networks, dnsClient, rosClient, netMgr, lcMgr, log)
 		if err := dzoOp.Bootstrap(ctx); err != nil {
 			log.Warnw("DZO bootstrap failed, continuing without DZO", "error", err)
 			dzoOp = nil
 		} else {
+			// Create namespace manager using DZO as ZoneResolver
+			nsMgr = namespace.NewManager(cfg.Namespace, cfg.DZO, cfg.Networks, dzoOp, log)
+			if err := nsMgr.Bootstrap(ctx); err != nil {
+				log.Warnw("namespace bootstrap failed", "error", err)
+				nsMgr = nil
+			}
+
+			// Shared HTTP mux for DZO + namespace API
 			listenAddr := cfg.DZO.ListenAddr
 			if listenAddr == "" {
 				listenAddr = ":8082"
 			}
-			go dzoOp.RunAPI(ctx, listenAddr)
-			log.Infow("DZO started", "addr", listenAddr)
+			mux := http.NewServeMux()
+			dzoOp.RegisterRoutes(mux)
+			if nsMgr != nil {
+				nsMgr.RegisterRoutes(mux)
+			}
+			go func() {
+				srv := &http.Server{Addr: listenAddr, Handler: mux}
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					srv.Shutdown(shutdownCtx)
+				}()
+				log.Infow("DZO+namespace API listening", "addr", listenAddr)
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					log.Errorw("DZO+namespace API error", "error", err)
+				}
+			}()
 		}
 	}
 
@@ -245,7 +272,7 @@ func run(cmd *cobra.Command, args []string) error {
 		NetworkMgr:   netMgr,
 		StorageMgr:   storageMgr,
 		LifecycleMgr: lcMgr,
-		DZO:          dzoOp,
+		Namespace:    nsMgr,
 		Logger:       log,
 	})
 	if err != nil {

@@ -19,7 +19,7 @@ import (
 	"github.com/glenneth/microkube/pkg/routeros"
 )
 
-// Operator manages DNS zones, MicroDNS instances, and namespaces.
+// Operator manages DNS zones and MicroDNS instances.
 type Operator struct {
 	cfg        config.DZOConfig
 	networks   []config.NetworkDef
@@ -56,7 +56,7 @@ func NewOperator(
 }
 
 // Bootstrap loads persisted state, imports zones from network config,
-// probes MicroDNS endpoints, and creates default open namespaces.
+// and probes MicroDNS endpoints.
 func (o *Operator) Bootstrap(ctx context.Context) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -109,25 +109,7 @@ func (o *Operator) Bootstrap(ctx context.Context) error {
 		o.log.Infow("zone verified", "zone", zoneName, "id", zoneID, "endpoint", zone.Endpoint)
 	}
 
-	// 4. Create default open namespaces for top-level zones
-	for _, net := range o.networks {
-		if net.DNS.Zone == "" {
-			continue
-		}
-		nsName := net.Name // namespace name = network name for defaults
-		if _, exists := o.state.Namespaces[nsName]; !exists {
-			o.state.Namespaces[nsName] = &Namespace{
-				Name:    nsName,
-				Domain:  net.DNS.Zone,
-				Zone:    net.DNS.Zone,
-				Network: net.Name,
-				Mode:    ModeOpen,
-			}
-			o.log.Infow("created default namespace", "name", nsName, "domain", net.DNS.Zone, "network", net.Name)
-		}
-	}
-
-	// 5. Persist
+	// 4. Persist
 	if err := o.saveState(); err != nil {
 		o.log.Warnw("failed to save state after bootstrap", "error", err)
 	}
@@ -135,7 +117,6 @@ func (o *Operator) Bootstrap(ctx context.Context) error {
 	o.log.Infow("bootstrap complete",
 		"zones", len(o.state.Zones),
 		"instances", len(o.state.Instances),
-		"namespaces", len(o.state.Namespaces),
 	)
 	return nil
 }
@@ -266,13 +247,6 @@ func (o *Operator) DeleteZone(ctx context.Context, name string) error {
 		return fmt.Errorf("zone %q not found", name)
 	}
 
-	// Check for namespaces using this zone
-	for _, ns := range o.state.Namespaces {
-		if ns.Zone == name {
-			return fmt.Errorf("zone %q is in use by namespace %q", name, ns.Name)
-		}
-	}
-
 	// If dedicated, remove the MicroDNS container
 	if zone.Dedicated {
 		if err := o.removeDedicatedInstance(ctx, zone); err != nil {
@@ -294,111 +268,39 @@ func (o *Operator) DeleteZone(ctx context.Context, name string) error {
 	return nil
 }
 
-// ─── Namespace CRUD ─────────────────────────────────────────────────────────
+// ─── ZoneResolver Interface (for namespace.Manager) ─────────────────────────
 
-// ListNamespaces returns all namespaces.
-func (o *Operator) ListNamespaces() []*Namespace {
+// GetZoneEndpoint returns the MicroDNS endpoint and zone ID for a given zone name.
+// Satisfies namespace.ZoneResolver.
+func (o *Operator) GetZoneEndpoint(zoneName string) (endpoint, zoneID string, err error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	nss := make([]*Namespace, 0, len(o.state.Namespaces))
-	for _, ns := range o.state.Namespaces {
-		nss = append(nss, ns)
+	zone, ok := o.state.Zones[zoneName]
+	if !ok {
+		return "", "", fmt.Errorf("zone %q not found", zoneName)
 	}
-	return nss
+	return zone.Endpoint, zone.MicroDNSID, nil
 }
 
-// GetNamespace returns a namespace by name.
-func (o *Operator) GetNamespace(name string) (*Namespace, error) {
+// EnsureZone creates a zone if it doesn't already exist. Idempotent.
+// Satisfies namespace.ZoneResolver.
+func (o *Operator) EnsureZone(ctx context.Context, zoneName, network string, dedicated bool) error {
+	// Check if already exists (read lock)
 	o.mu.RLock()
-	defer o.mu.RUnlock()
+	_, exists := o.state.Zones[zoneName]
+	o.mu.RUnlock()
 
-	ns, ok := o.state.Namespaces[name]
-	if !ok {
-		return nil, fmt.Errorf("namespace %q not found", name)
-	}
-	return ns, nil
-}
-
-// CreateNamespaceRequest is the input for creating a namespace.
-type CreateNamespaceRequest struct {
-	Name      string         `json:"name"`      // e.g. "kube"
-	Domain    string         `json:"domain"`     // e.g. "kube.gt.lo"
-	Network   string         `json:"network"`    // e.g. "gt"
-	Mode      NetworkingMode `json:"mode"`       // "open" or "nested"
-	Dedicated bool           `json:"dedicated"`  // pass-through for zone creation
-}
-
-// CreateNamespace creates a namespace, auto-creating its zone if needed.
-func (o *Operator) CreateNamespace(ctx context.Context, req CreateNamespaceRequest) (*Namespace, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if _, exists := o.state.Namespaces[req.Name]; exists {
-		return nil, fmt.Errorf("namespace %q already exists", req.Name)
+	if exists {
+		return nil
 	}
 
-	if req.Mode == "" {
-		req.Mode = NetworkingMode(o.cfg.DefaultMode)
-		if req.Mode == "" {
-			req.Mode = ModeNested
-		}
-	}
-
-	// Auto-create zone if it doesn't exist
-	zoneName := req.Domain
-	if _, exists := o.state.Zones[zoneName]; !exists {
-		// Temporarily unlock to call CreateZone which also locks
-		o.mu.Unlock()
-		_, err := o.CreateZone(ctx, CreateZoneRequest{
-			Name:      zoneName,
-			Network:   req.Network,
-			Dedicated: req.Dedicated,
-		})
-		o.mu.Lock()
-		if err != nil {
-			return nil, fmt.Errorf("auto-creating zone %q: %w", zoneName, err)
-		}
-	}
-
-	ns := &Namespace{
-		Name:    req.Name,
-		Domain:  req.Domain,
-		Zone:    zoneName,
-		Network: req.Network,
-		Mode:    req.Mode,
-	}
-
-	o.state.Namespaces[req.Name] = ns
-	if err := o.saveState(); err != nil {
-		o.log.Warnw("failed to save state after namespace create", "error", err)
-	}
-
-	o.log.Infow("namespace created", "name", req.Name, "domain", req.Domain, "mode", req.Mode)
-	return ns, nil
-}
-
-// DeleteNamespace removes a namespace.
-func (o *Operator) DeleteNamespace(ctx context.Context, name string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	ns, ok := o.state.Namespaces[name]
-	if !ok {
-		return fmt.Errorf("namespace %q not found", name)
-	}
-
-	if len(ns.Containers) > 0 {
-		return fmt.Errorf("namespace %q still has %d containers", name, len(ns.Containers))
-	}
-
-	delete(o.state.Namespaces, name)
-	if err := o.saveState(); err != nil {
-		o.log.Warnw("failed to save state after namespace delete", "error", err)
-	}
-
-	o.log.Infow("namespace deleted", "name", name)
-	return nil
+	_, err := o.CreateZone(ctx, CreateZoneRequest{
+		Name:      zoneName,
+		Network:   network,
+		Dedicated: dedicated,
+	})
+	return err
 }
 
 // ─── Instance Operations ────────────────────────────────────────────────────
@@ -425,60 +327,6 @@ func (o *Operator) GetInstance(name string) (*MicroDNSInstance, error) {
 		return nil, fmt.Errorf("instance %q not found", name)
 	}
 	return inst, nil
-}
-
-// ─── Namespace Resolution (for provider integration) ────────────────────────
-
-// ResolveNamespace looks up a namespace and returns its zone endpoint and zone ID
-// so the provider can register DNS records in the correct zone.
-func (o *Operator) ResolveNamespace(name string) (endpoint, zoneID string, err error) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	ns, ok := o.state.Namespaces[name]
-	if !ok {
-		return "", "", fmt.Errorf("namespace %q not found", name)
-	}
-
-	zone, ok := o.state.Zones[ns.Zone]
-	if !ok {
-		return "", "", fmt.Errorf("zone %q for namespace %q not found", ns.Zone, name)
-	}
-
-	return zone.Endpoint, zone.MicroDNSID, nil
-}
-
-// AddContainerToNamespace records a container in a namespace.
-func (o *Operator) AddContainerToNamespace(nsName, containerName string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	ns, ok := o.state.Namespaces[nsName]
-	if !ok {
-		return
-	}
-
-	for _, c := range ns.Containers {
-		if c == containerName {
-			return
-		}
-	}
-	ns.Containers = append(ns.Containers, containerName)
-	_ = o.saveState()
-}
-
-// RemoveContainerFromNamespace removes a container from a namespace.
-func (o *Operator) RemoveContainerFromNamespace(nsName, containerName string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	ns, ok := o.state.Namespaces[nsName]
-	if !ok {
-		return
-	}
-
-	ns.Containers = removeString(ns.Containers, containerName)
-	_ = o.saveState()
 }
 
 // ─── MicroDNS Instance Management ───────────────────────────────────────────
@@ -673,12 +521,9 @@ func (o *Operator) loadState() error {
 	if state.Instances == nil {
 		state.Instances = make(map[string]*MicroDNSInstance)
 	}
-	if state.Namespaces == nil {
-		state.Namespaces = make(map[string]*Namespace)
-	}
 
 	o.state = &state
-	o.log.Infow("loaded state", "zones", len(state.Zones), "instances", len(state.Instances), "namespaces", len(state.Namespaces))
+	o.log.Infow("loaded state", "zones", len(state.Zones), "instances", len(state.Instances))
 	return nil
 }
 

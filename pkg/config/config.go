@@ -18,7 +18,8 @@ type Config struct {
 	Storage    StorageConfig  `yaml:"storage"`
 	Lifecycle  LifecycleConfig `yaml:"lifecycle"`
 	Registry   RegistryConfig `yaml:"registry"`
-	DZO        DZOConfig      `yaml:"dzo"`
+	DZO        DZOConfig       `yaml:"dzo"`
+	Namespace  NamespaceConfig `yaml:"namespace"`
 
 	// Deprecated: single-network config for backward compatibility.
 	// If present and Networks is empty, it is migrated into Networks.
@@ -32,6 +33,12 @@ type DZOConfig struct {
 	StatePath     string `yaml:"statePath"`     // e.g. "/etc/microkube/dzo-state.yaml"
 	MicroDNSImage string `yaml:"microdnsImage"` // e.g. "192.168.200.2:5000/microdns:latest"
 	DefaultMode   string `yaml:"defaultMode"`   // "open" or "nested"
+}
+
+// NamespaceConfig configures the namespace manager.
+type NamespaceConfig struct {
+	StatePath   string `yaml:"statePath"`   // e.g. "/etc/microkube/namespace-state.yaml"
+	DefaultMode string `yaml:"defaultMode"` // "open" or "nested", overrides DZO defaultMode
 }
 
 // NetworkDef defines a network that containers can be placed on.

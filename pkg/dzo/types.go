@@ -1,15 +1,5 @@
 package dzo
 
-// NetworkingMode defines how a namespace connects to the network.
-type NetworkingMode string
-
-const (
-	// ModeOpen uses existing flat network directly; namespace domain = network's zone.
-	ModeOpen NetworkingMode = "open"
-	// ModeNested creates a subdomain on the parent network, shared bridge, separate zone.
-	ModeNested NetworkingMode = "nested"
-)
-
 // Zone represents a DNS zone managed by a MicroDNS instance.
 type Zone struct {
 	Name       string `json:"name" yaml:"name"`             // "gt.lo", "kube.gt.lo"
@@ -33,28 +23,16 @@ type MicroDNSInstance struct {
 	Image       string   `json:"image" yaml:"image"`             // "192.168.200.2:5000/microdns:latest"
 }
 
-// Namespace groups containers under a domain on a specific network.
-type Namespace struct {
-	Name       string         `json:"name" yaml:"name"`             // "kube", "infra"
-	Domain     string         `json:"domain" yaml:"domain"`         // "kube.gt.lo"
-	Zone       string         `json:"zone" yaml:"zone"`             // zone name (= domain)
-	Network    string         `json:"network" yaml:"network"`       // "gt"
-	Mode       NetworkingMode `json:"mode" yaml:"mode"`             // "open" or "nested"
-	Containers []string       `json:"containers" yaml:"containers"` // container names in this namespace
-}
-
 // State is the persisted DZO state, serialized to YAML.
 type State struct {
-	Zones      map[string]*Zone             `yaml:"zones"`
-	Instances  map[string]*MicroDNSInstance  `yaml:"instances"`
-	Namespaces map[string]*Namespace        `yaml:"namespaces"`
+	Zones     map[string]*Zone            `yaml:"zones"`
+	Instances map[string]*MicroDNSInstance `yaml:"instances"`
 }
 
 // NewState returns an empty initialized state.
 func NewState() *State {
 	return &State{
-		Zones:      make(map[string]*Zone),
-		Instances:  make(map[string]*MicroDNSInstance),
-		Namespaces: make(map[string]*Namespace),
+		Zones:     make(map[string]*Zone),
+		Instances: make(map[string]*MicroDNSInstance),
 	}
 }

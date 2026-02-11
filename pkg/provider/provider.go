@@ -23,8 +23,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/glenneth/microkube/pkg/config"
-	"github.com/glenneth/microkube/pkg/dzo"
 	"github.com/glenneth/microkube/pkg/lifecycle"
+	"github.com/glenneth/microkube/pkg/namespace"
 	"github.com/glenneth/microkube/pkg/network"
 	"github.com/glenneth/microkube/pkg/routeros"
 	"github.com/glenneth/microkube/pkg/storage"
@@ -46,7 +46,7 @@ type Deps struct {
 	NetworkMgr   *network.Manager
 	StorageMgr   *storage.Manager
 	LifecycleMgr *lifecycle.Manager
-	DZO          *dzo.Operator // optional, nil if DZO is disabled
+	Namespace    *namespace.Manager // optional, nil if namespace management is disabled
 	Logger       *zap.SugaredLogger
 }
 
@@ -113,11 +113,11 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 		log.Infow("allocated network", "veth", vethName, "ip", ip, "gateway", gw, "dns", dnsServer)
 
-		// 2b. If DZO namespace is specified, register DNS in namespace's zone instead
-		if namespaceName != "" && p.deps.DZO != nil {
-			endpoint, zoneID, err := p.deps.DZO.ResolveNamespace(namespaceName)
+		// 2b. If namespace is specified, register DNS in namespace's zone instead
+		if namespaceName != "" && p.deps.Namespace != nil {
+			endpoint, zoneID, err := p.deps.Namespace.ResolveNamespace(namespaceName)
 			if err != nil {
-				log.Warnw("failed to resolve DZO namespace, using default DNS", "namespace", namespaceName, "error", err)
+				log.Warnw("failed to resolve namespace, using default DNS", "namespace", namespaceName, "error", err)
 			} else {
 				bareIP := strings.Split(ip, "/")[0]
 				dnsClient := p.deps.NetworkMgr.DNSClient()
@@ -128,7 +128,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 						log.Infow("registered in namespace zone", "namespace", namespaceName, "hostname", pod.Name, "ip", bareIP)
 					}
 				}
-				p.deps.DZO.AddContainerToNamespace(namespaceName, name)
+				p.deps.Namespace.AddContainerToNamespace(namespaceName, name)
 			}
 		}
 
@@ -244,9 +244,9 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 		// Unregister from systemd manager
 		p.deps.LifecycleMgr.Unregister(name)
 
-		// Remove from DZO namespace if applicable
-		if nsName := pod.Annotations[annotationNamespace]; nsName != "" && p.deps.DZO != nil {
-			p.deps.DZO.RemoveContainerFromNamespace(nsName, name)
+		// Remove from namespace if applicable
+		if nsName := pod.Annotations[annotationNamespace]; nsName != "" && p.deps.Namespace != nil {
+			p.deps.Namespace.RemoveContainerFromNamespace(nsName, name)
 		}
 
 		// Note: storage cleanup is deferred to GC

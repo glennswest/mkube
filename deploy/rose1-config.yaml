@@ -70,6 +70,10 @@ dzo:
   microdnsImage: "192.168.200.2:5000/microdns:latest"
   defaultMode: "nested"
 
+namespace:
+  statePath: /etc/microkube/namespace-state.yaml
+  defaultMode: "nested"
+
 registry:
   enabled: true
   listenAddr: ":5000"
