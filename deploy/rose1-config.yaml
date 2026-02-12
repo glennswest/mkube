@@ -89,9 +89,9 @@ registry:
   # for pods with vkube.io/image-policy: auto.
   watchPollSeconds: 120
   watchImages:
-    - upstream: "ghcr.io/glenneth/microkube:latest"
+    - upstream: "ghcr.io/glennswest/microkube:latest"
       localRepo: "microkube"
-    - upstream: "ghcr.io/glenneth/mkube-update:latest"
+    - upstream: "ghcr.io/glennswest/mkube-update:latest"
       localRepo: "mkube-update"
-    - upstream: "ghcr.io/glenneth/microdns:latest"
+    - upstream: "ghcr.io/glennswest/microdns:latest"
       localRepo: "microdns"
