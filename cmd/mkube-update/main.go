@@ -17,24 +17,54 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/crane"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/glennswest/mkube/pkg/dockersave"
 )
 
 var version = "dev"
 
 // Config is the top-level configuration loaded from YAML.
 type Config struct {
-	RegistryURL      string       `yaml:"registryURL"`
-	RouterOSURL      string       `yaml:"routerosURL"`
-	RouterOSUser     string       `yaml:"routerosUser"`
-	RouterOSPassword string       `yaml:"routerosPassword"`
-	MkubeAPI         string       `yaml:"mkubeAPI"`
-	PollSeconds      int          `yaml:"pollSeconds"`
-	Watches          []WatchEntry `yaml:"watches"`
+	RegistryURL      string          `yaml:"registryURL"`
+	RouterOSURL      string          `yaml:"routerosURL"`
+	RouterOSUser     string          `yaml:"routerosUser"`
+	RouterOSPassword string          `yaml:"routerosPassword"`
+	MkubeAPI         string          `yaml:"mkubeAPI"`
+	PollSeconds      int             `yaml:"pollSeconds"`
+	Watches          []WatchEntry    `yaml:"watches"`
+	Bootstrap        BootstrapConfig `yaml:"bootstrap"`
+}
+
+// BootstrapConfig defines how mkube-update bootstraps the mkube container.
+type BootstrapConfig struct {
+	Enabled     bool               `yaml:"enabled"`
+	Image       string             `yaml:"image"`
+	SelfRootDir string             `yaml:"selfRootDir"`
+	TarballDir  string             `yaml:"tarballDir"`
+	Container   BootstrapContainer `yaml:"container"`
+}
+
+// BootstrapContainer defines the RouterOS container spec for the bootstrapped mkube.
+type BootstrapContainer struct {
+	Name        string `yaml:"name"`
+	Interface   string `yaml:"interface"`
+	RootDir     string `yaml:"rootDir"`
+	Hostname    string `yaml:"hostname"`
+	DNS         string `yaml:"dns"`
+	Logging     string `yaml:"logging"`
+	StartOnBoot string `yaml:"startOnBoot"`
+	MountLists  string `yaml:"mountLists"`
 }
 
 // WatchEntry defines a single image to watch in the local registry.
@@ -98,6 +128,13 @@ func main() {
 			},
 			Timeout: 30 * time.Second,
 		},
+	}
+
+	// Bootstrap mkube if configured
+	if cfg.Bootstrap.Enabled {
+		if err := updater.bootstrap(ctx); err != nil {
+			log.Fatalw("bootstrap failed", "error", err)
+		}
 	}
 
 	// Health endpoint
@@ -364,6 +401,161 @@ func (u *Updater) requestSelfUpdate(ctx context.Context, name, imageRef string) 
 
 	u.log.Info("self-update request accepted")
 	return nil
+}
+
+// ─── Bootstrap ──────────────────────────────────────────────────────────────
+
+// bootstrap ensures the mkube container exists on RouterOS. If missing, it
+// pulls the image from GHCR, creates a docker-save tarball, and creates the
+// container via the RouterOS REST API.
+func (u *Updater) bootstrap(ctx context.Context) error {
+	bc := u.cfg.Bootstrap
+	log := u.log.With("bootstrap", bc.Container.Name)
+
+	// Check if container already exists
+	ct, err := u.rosGetContainer(ctx, bc.Container.Name)
+	if err == nil {
+		// Container exists
+		if ct.isRunning() {
+			log.Info("mkube already running, skipping bootstrap")
+			return nil
+		}
+		// Exists but stopped — start it
+		log.Info("mkube exists but stopped, starting")
+		if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
+			return fmt.Errorf("starting existing mkube: %w", err)
+		}
+		if err := u.waitForRunning(ctx, bc.Container.Name); err != nil {
+			return fmt.Errorf("waiting for mkube to start: %w", err)
+		}
+		log.Info("mkube started")
+		return nil
+	}
+
+	// Container doesn't exist — pull image and create it
+	log.Infow("mkube container not found, bootstrapping", "image", bc.Image)
+
+	// Pull image from GHCR
+	opts := []crane.Option{
+		crane.WithContext(ctx),
+		crane.WithPlatform(&v1.Platform{
+			OS:           "linux",
+			Architecture: "arm64",
+		}),
+		crane.WithAuthFromKeychain(
+			authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
+		),
+	}
+
+	log.Infow("pulling mkube image", "ref", bc.Image)
+	img, err := crane.Pull(bc.Image, opts...)
+	if err != nil {
+		return fmt.Errorf("pulling image %s: %w", bc.Image, err)
+	}
+
+	// Flatten OCI layers into rootfs
+	log.Info("flattening OCI layers to rootfs")
+	rootfsReader := mutate.Extract(img)
+	defer rootfsReader.Close()
+
+	var rootfsBuf bytes.Buffer
+	if _, err := io.Copy(&rootfsBuf, rootfsReader); err != nil {
+		return fmt.Errorf("extracting rootfs: %w", err)
+	}
+
+	// Get image config
+	imgCfg, err := img.ConfigFile()
+	if err != nil {
+		return fmt.Errorf("reading image config: %w", err)
+	}
+
+	// Build docker-save tarball
+	var dockerSave bytes.Buffer
+	if err := dockersave.Write(&dockerSave, rootfsBuf.Bytes(), bc.Image, imgCfg); err != nil {
+		return fmt.Errorf("building docker-save tarball: %w", err)
+	}
+
+	// Write tarball to local disk
+	tarballPath := filepath.Join(bc.TarballDir, "mkube.tar")
+	log.Infow("writing tarball", "path", tarballPath, "size", dockerSave.Len())
+	if err := os.MkdirAll(filepath.Dir(tarballPath), 0o755); err != nil {
+		return fmt.Errorf("creating tarball dir: %w", err)
+	}
+	if err := os.WriteFile(tarballPath, dockerSave.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("writing tarball: %w", err)
+	}
+
+	// Translate path for RouterOS host visibility
+	hostTarball := tarballPath
+	if bc.SelfRootDir != "" {
+		hostTarball = bc.SelfRootDir + "/" + strings.TrimPrefix(tarballPath, "/")
+	}
+	log.Infow("translated tarball path", "container", tarballPath, "host", hostTarball)
+
+	// Create container via RouterOS REST API
+	spec := map[string]string{
+		"name":          bc.Container.Name,
+		"file":          hostTarball,
+		"interface":     bc.Container.Interface,
+		"root-dir":      bc.Container.RootDir,
+		"hostname":      bc.Container.Hostname,
+		"dns":           bc.Container.DNS,
+		"logging":       bc.Container.Logging,
+		"start-on-boot": bc.Container.StartOnBoot,
+	}
+	if bc.Container.MountLists != "" {
+		spec["mountlists"] = bc.Container.MountLists
+	}
+
+	log.Infow("creating mkube container", "spec", spec)
+	if err := u.rosPost(ctx, "/container/add", spec); err != nil {
+		return fmt.Errorf("creating container: %w", err)
+	}
+
+	// Wait for extraction (container appears as stopped after extraction)
+	log.Info("waiting for container extraction")
+	if err := u.waitForExtraction(ctx, bc.Container.Name); err != nil {
+		return fmt.Errorf("waiting for extraction: %w", err)
+	}
+
+	// Start the container
+	newCt, err := u.rosGetContainer(ctx, bc.Container.Name)
+	if err != nil {
+		return fmt.Errorf("getting new container: %w", err)
+	}
+
+	log.Info("starting mkube container")
+	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": newCt.ID}); err != nil {
+		return fmt.Errorf("starting container: %w", err)
+	}
+
+	if err := u.waitForRunning(ctx, bc.Container.Name); err != nil {
+		return fmt.Errorf("waiting for mkube to start: %w", err)
+	}
+
+	log.Info("mkube bootstrapped successfully")
+	return nil
+}
+
+// waitForExtraction polls until the container exists and is stopped (extracted),
+// with a longer timeout since image extraction can take a while.
+func (u *Updater) waitForExtraction(ctx context.Context, name string) error {
+	for i := 0; i < 120; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		time.Sleep(time.Second)
+		ct, err := u.rosGetContainer(ctx, name)
+		if err != nil {
+			continue
+		}
+		if ct.isStopped() {
+			return nil
+		}
+	}
+	return fmt.Errorf("container %s not extracted within 120s", name)
 }
 
 // ─── RouterOS REST helpers ──────────────────────────────────────────────────

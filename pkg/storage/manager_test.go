@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/dockersave"
 )
 
 func testLogger() *zap.SugaredLogger {
@@ -28,7 +29,7 @@ func TestSanitizeImageRef(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := sanitizeImageRef(tt.input)
+		got := dockersave.SanitizeImageRef(tt.input)
 		if got != tt.want {
 			t.Errorf("sanitizeImageRef(%q) = %q, want %q", tt.input, got, tt.want)
 		}

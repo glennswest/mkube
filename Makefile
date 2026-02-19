@@ -36,6 +36,14 @@ lint:
 clean:
 	rm -rf dist/
 
+## Deploy mkube-update from GHCR (no local compilation)
+deploy-update:
+	bash hack/pull-and-deploy.sh $(DEVICE)
+
+## Build mkube-update for the target architecture (only needed for development)
+build-update:
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build $(GOFLAGS) -o dist/mkube-update-$(ARCH) ./cmd/mkube-update/
+
 ## Generate mocks for testing
 mocks:
 	mockgen -source=pkg/routeros/client.go -destination=pkg/routeros/mock_client.go -package=routeros

@@ -309,27 +309,7 @@ spec:
         - name: config
           mountPath: /etc/micrologs-collector
 
-# ── Update manager (priority 70 — after all services) ────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mkube-update
-  namespace: infra
-  annotations:
-    vkube.io/network: gt
-    vkube.io/boot-priority: "70"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: updater
-      image: 192.168.200.2:5000/mkube-update:edge
-      livenessProbe:
-        httpGet:
-          path: /healthz
-          port: 8081
-        periodSeconds: 30
-      volumeMounts:
-        - name: config
-          mountPath: /etc/mkube-update
+# ── Update manager ────────────────────────────────────────────────────────
+# mkube-update is deployed separately as a bootstrap init container.
+# It is NOT managed by mkube's boot-order reconciler.
+# Deploy with: make deploy-update

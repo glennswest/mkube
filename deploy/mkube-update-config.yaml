@@ -8,6 +8,21 @@ routerosPassword: "mkube-rest"
 mkubeAPI: "http://192.168.200.2:8080"
 pollSeconds: 60
 
+bootstrap:
+  enabled: true
+  image: "ghcr.io/glennswest/mkube:edge"
+  selfRootDir: "raid1/images/mkube-update-updater"
+  tarballDir: "/data"
+  container:
+    name: "kube.gt.lo"
+    interface: "veth-mkube"
+    rootDir: "/raid1/images/kube.gt.lo"
+    hostname: "kube.gt.lo"
+    dns: "192.168.200.199"
+    logging: "yes"
+    startOnBoot: "yes"
+    mountLists: "kube.gt.lo.config"
+
 watches:
   - repo: mkube
     tag: latest
