@@ -35,7 +35,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: 192.168.200.2:5000/microdns:latest
+      image: 192.168.200.2:5000/microdns:edge
       startupProbe:
         httpGet:
           path: /api/v1/zones
@@ -73,7 +73,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: 192.168.200.2:5000/microdns:latest
+      image: 192.168.200.2:5000/microdns:edge
       startupProbe:
         httpGet:
           path: /api/v1/zones
@@ -111,7 +111,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: 192.168.200.2:5000/microdns:latest
+      image: 192.168.200.2:5000/microdns:edge
       startupProbe:
         httpGet:
           path: /api/v1/zones
@@ -149,7 +149,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: microdns
-      image: 192.168.200.2:5000/microdns:latest
+      image: 192.168.200.2:5000/microdns:edge
       startupProbe:
         httpGet:
           path: /api/v1/zones
@@ -173,28 +173,6 @@ spec:
         - name: data
           mountPath: /data
 
-# ── Network manager (priority 20 — after DNS) ──────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: network-gw
-  namespace: infra
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "20"
-    vkube.io/depends-on: "mdns-gw-microdns,mdns-g10-microdns"
-    vkube.io/file: "raid1/tarballs/netman.tar"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: netman
-      image: localhost/netman:latest
-      volumeMounts:
-        - name: data
-          mountPath: /data
-
 # ── Fast registry (priority 40) ────────────────────────────────────────────
 
 ---
@@ -206,54 +184,15 @@ metadata:
   annotations:
     vkube.io/network: g10
     vkube.io/boot-priority: "40"
+    vkube.io/image-policy: auto
 spec:
   restartPolicy: Always
   containers:
     - name: registry
-      image: localhost/fastregistry:latest
+      image: 192.168.200.2:5000/fastregistry:edge
       volumeMounts:
         - name: config
           mountPath: /etc/fastregistry
-        - name: data
-          mountPath: /data
-
-# ── Agent monitor (priority 50) ────────────────────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: agentmonitor-g10
-  namespace: monitoring
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "50"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: monitor
-      image: localhost/agent-monitor:latest
-      command: ["/agent-monitor"]
-
-# ── Console server (priority 60) ───────────────────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: console-g11
-  namespace: infra
-  annotations:
-    vkube.io/network: g11
-    vkube.io/boot-priority: "60"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: console
-      image: localhost/console-server:latest
-      volumeMounts:
-        - name: config
-          mountPath: /etc/console
         - name: data
           mountPath: /data
 
@@ -274,7 +213,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: micrologs
-      image: 192.168.200.2:5000/micrologs:latest
+      image: 192.168.200.2:5000/micrologs:edge
       livenessProbe:
         httpGet:
           path: /healthz
@@ -299,7 +238,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: collector
-      image: 192.168.200.2:5000/micrologs-collector-routeros:latest
+      image: 192.168.200.2:5000/micrologs-collector-routeros:edge
       volumeMounts:
         - name: config
           mountPath: /etc/micrologs-collector
@@ -319,7 +258,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: updater
-      image: 192.168.200.2:5000/mkube-update:latest
+      image: 192.168.200.2:5000/mkube-update:edge
       livenessProbe:
         httpGet:
           path: /healthz

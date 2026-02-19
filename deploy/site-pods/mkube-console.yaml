@@ -1,0 +1,26 @@
+# mkube-console - Cluster dashboard and aggregated API
+# Apply via: kubectl --server=http://rose1.gw.lo:8082 apply -f mkube-console.yaml
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mkube-console
+  namespace: infra
+  annotations:
+    vkube.io/network: gt
+    vkube.io/image-policy: auto
+    vkube.io/aliases: "console"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: console
+      image: 192.168.200.2:5000/mkube-console:edge
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 9090
+        periodSeconds: 30
+      volumeMounts:
+        - name: config
+          mountPath: /etc/mkube-console

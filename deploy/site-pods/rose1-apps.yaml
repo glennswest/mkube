@@ -1,0 +1,38 @@
+# Site-specific pods for rose1
+# Apply via: kubectl --server=http://rose1.gw.lo:8082 apply -f rose1-apps.yaml
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agentmonitor-g10
+  namespace: monitoring
+  annotations:
+    vkube.io/network: g10
+    vkube.io/image-policy: auto
+spec:
+  restartPolicy: Always
+  containers:
+    - name: monitor
+      image: 192.168.200.2:5000/agent-monitor:edge
+      command: ["/agent-monitor"]
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: console-g11
+  namespace: infra
+  annotations:
+    vkube.io/network: g11
+    vkube.io/image-policy: auto
+spec:
+  restartPolicy: Always
+  containers:
+    - name: console
+      image: 192.168.200.2:5000/console-server:edge
+      volumeMounts:
+        - name: config
+          mountPath: /etc/console
+        - name: data
+          mountPath: /data

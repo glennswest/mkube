@@ -1,0 +1,9 @@
+# mkube-console config for rose1
+# Mount at /etc/mkube-console/config.yaml
+
+listenAddr: ":9090"
+nodes:
+  - name: rose1
+    address: "http://192.168.200.2:8082"
+registryURL: "http://fastregistry-g10-registry.gt.lo:5000"
+logsURL: "http://logging.kube.gt.lo:8084"

@@ -109,3 +109,5 @@ registry:
       localRepo: "agent-monitor"
     - upstream: "ghcr.io/glennswest/console-server:edge"
       localRepo: "console-server"
+    - upstream: "ghcr.io/glennswest/mkube-console:edge"
+      localRepo: "mkube-console"
