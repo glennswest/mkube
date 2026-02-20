@@ -383,4 +383,3 @@ func (m *Manager) runGC(ctx context.Context) {
 		m.log.Infow("GC completed", "imagesRemoved", removed, "volumesRemoved", orphanedVolumes)
 	}
 }
-

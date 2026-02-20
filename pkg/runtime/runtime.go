@@ -106,7 +106,7 @@ type PortMapping struct {
 // VolumeMount describes a bind mount.
 type VolumeMount struct {
 	Source   string
-	Target  string
+	Target   string
 	ReadOnly bool
 }
 
@@ -119,18 +119,18 @@ type LogEntry struct {
 
 // SystemResource represents system resource information.
 type SystemResource struct {
-	Hostname        string
-	Uptime          string
-	CPUCount        string
-	CPULoad         string
-	FreeMemory      string
-	TotalMemory     string
-	Architecture    string
-	BoardName       string
-	Version         string
-	Platform        string
-	DiskTotal       uint64
-	DiskAvailable   uint64
-	WorkloadCount   uint32
-	RunningCount    uint32
+	Hostname      string
+	Uptime        string
+	CPUCount      string
+	CPULoad       string
+	FreeMemory    string
+	TotalMemory   string
+	Architecture  string
+	BoardName     string
+	Version       string
+	Platform      string
+	DiskTotal     uint64
+	DiskAvailable uint64
+	WorkloadCount uint32
+	RunningCount  uint32
 }

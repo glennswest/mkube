@@ -84,12 +84,12 @@ func (m *mockRuntime) GetSystemResource(_ context.Context) (*runtime.SystemResou
 	return &runtime.SystemResource{Platform: m.backend}, nil
 }
 
-func (m *mockRuntime) UploadFile(_ context.Context, _ string, _ io.Reader) error   { return nil }
-func (m *mockRuntime) RemoveFile(_ context.Context, _ string) error                { return nil }
-func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error         { return nil }
-func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error        { return nil }
-func (m *mockRuntime) Backend() string                                             { return m.backend }
-func (m *mockRuntime) Close() error                                                { return nil }
+func (m *mockRuntime) UploadFile(_ context.Context, _ string, _ io.Reader) error { return nil }
+func (m *mockRuntime) RemoveFile(_ context.Context, _ string) error              { return nil }
+func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error       { return nil }
+func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error      { return nil }
+func (m *mockRuntime) Backend() string                                           { return m.backend }
+func (m *mockRuntime) Close() error                                              { return nil }
 
 // Compile-time check that mockRuntime implements ContainerRuntime.
 var _ runtime.ContainerRuntime = (*mockRuntime)(nil)

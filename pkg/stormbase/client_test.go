@@ -109,9 +109,7 @@ func startMockServer(t *testing.T) (*Client, func()) {
 	stormdpb.RegisterStormDaemonServer(srv, &mockStormDaemon{})
 
 	go func() {
-		if err := srv.Serve(lis); err != nil {
-			// Server stopped
-		}
+		_ = srv.Serve(lis)
 	}()
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))

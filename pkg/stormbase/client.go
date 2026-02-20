@@ -271,10 +271,10 @@ func (c *Client) IsNodeCordoned(ctx context.Context) (bool, string) {
 
 func workloadToContainer(w *stormdpb.WorkloadInfo) *runtime.Container {
 	return &runtime.Container{
-		ID:            w.ContainerId,
-		Name:          w.Name,
-		Status:        w.Status,
-		StartOnBoot:   boolStr(w.RestartPolicy == "always"),
+		ID:          w.ContainerId,
+		Name:        w.Name,
+		Status:      w.Status,
+		StartOnBoot: boolStr(w.RestartPolicy == "always"),
 	}
 }
 
