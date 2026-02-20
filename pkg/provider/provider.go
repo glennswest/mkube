@@ -125,7 +125,17 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		containerHostname := container.Name + "." + pod.Name
 		ip, gw, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName)
 		if err != nil {
-			return fmt.Errorf("allocating network for %s: %w", name, err)
+			// If veth exists from a previous failed attempt, clean up and retry
+			if strings.Contains(err.Error(), "already have interface") {
+				log.Warnw("cleaning up orphaned veth", "veth", vethName)
+				if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); releaseErr != nil {
+					log.Warnw("failed to release orphaned veth", "veth", vethName, "error", releaseErr)
+				}
+				ip, gw, dnsServer, err = p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName)
+			}
+			if err != nil {
+				return fmt.Errorf("allocating network for %s: %w", name, err)
+			}
 		}
 		bareIP := strings.Split(ip, "/")[0]
 		containerIPs[container.Name] = bareIP
@@ -148,7 +158,9 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
-		// 3. Provision volumes, write ConfigMap data, and create mount entries
+		// 3. Provision volumes, write ConfigMap data, and create mount entries.
+		// Clean up any orphaned mounts from previous failed attempts first.
+		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 		mountListName := ""
 		for _, vm := range container.VolumeMounts {
 			hostPath, err := p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
@@ -156,12 +168,22 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
 			}
 
-			// Write ConfigMap data files if this volume references a ConfigMap
+			// Write ConfigMap data files if this volume references a ConfigMap.
+			// Files are written locally and the path is translated via selfRootDir
+			// so RouterOS can see them.
 			if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
-				for filename, content := range data {
-					filePath := hostPath + "/" + filename
-					if err := p.deps.Runtime.UploadFile(ctx, filePath, strings.NewReader(content)); err != nil {
-						log.Warnw("failed to write configmap file", "path", filePath, "error", err)
+				localDir := fmt.Sprintf("/data/configmaps/%s/%s", name, vm.Name)
+				if mkErr := os.MkdirAll(localDir, 0o755); mkErr != nil {
+					log.Warnw("failed to create configmap dir", "path", localDir, "error", mkErr)
+				} else {
+					for filename, content := range data {
+						if wErr := os.WriteFile(localDir+"/"+filename, []byte(content), 0o644); wErr != nil {
+							log.Warnw("failed to write configmap file", "path", localDir+"/"+filename, "error", wErr)
+						}
+					}
+					// Translate local path to RouterOS-visible path
+					if p.deps.Config.Storage.SelfRootDir != "" {
+						hostPath = p.deps.Config.Storage.SelfRootDir + "/" + strings.TrimPrefix(localDir, "/")
 					}
 				}
 			}

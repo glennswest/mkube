@@ -151,15 +151,15 @@ func (c *Client) StopContainer(ctx context.Context, id string) error {
 // MountEntry represents a container mount point on RouterOS.
 type MountEntry struct {
 	ID   string `json:".id"`
-	Name string `json:"name"` // list name
+	List string `json:"list"` // mount list name
 	Src  string `json:"src"`  // host path
 	Dst  string `json:"dst"`  // container path
 }
 
 // CreateMount creates a container mount entry.
-func (c *Client) CreateMount(ctx context.Context, name, src, dst string) error {
+func (c *Client) CreateMount(ctx context.Context, listName, src, dst string) error {
 	return c.restPOST(ctx, "/container/mounts/add", map[string]string{
-		"name": name,
+		"list": listName,
 		"src":  src,
 		"dst":  dst,
 	}, nil)
@@ -179,7 +179,7 @@ func (c *Client) RemoveMountsByList(ctx context.Context, listName string) error 
 		return err
 	}
 	for _, m := range mounts {
-		if m.Name == listName {
+		if m.List == listName {
 			if err := c.restPOST(ctx, "/container/mounts/remove", map[string]string{".id": m.ID}, nil); err != nil {
 				return fmt.Errorf("removing mount %s: %w", m.ID, err)
 			}
