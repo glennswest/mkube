@@ -131,7 +131,7 @@ func (p *MicroKubeProvider) checkContainers(ctx context.Context) []CheckItem {
 			}
 
 			// Check veth exists
-			vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
+			vethName := vethName(pod, i)
 			if _, _, ok := p.deps.NetworkMgr.GetPortInfo(vethName); !ok {
 				items = append(items, CheckItem{
 					Name:    fmt.Sprintf("veth/%s", vethName),
@@ -294,8 +294,8 @@ func (p *MicroKubeProvider) buildExpectedDNSRecords(pods []*corev1.Pod, networkN
 		staticIP := pod.Annotations[annotationStaticIP]
 
 		for i, c := range pod.Spec.Containers {
-			vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
-			ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vethName)
+			veth := vethName(pod, i)
+			ip, _, ok := p.deps.NetworkMgr.GetPortInfo(veth)
 			if !ok {
 				continue
 			}
@@ -311,8 +311,8 @@ func (p *MicroKubeProvider) buildExpectedDNSRecords(pods []*corev1.Pod, networkN
 		// Pod-level alias: podName -> first container's IP
 		if len(pod.Spec.Containers) > 0 {
 			firstContainer := pod.Spec.Containers[0].Name
-			vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), 0)
-			if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vethName); ok {
+			veth := vethName(pod, 0)
+			if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(veth); ok {
 				resolvedIP := ip
 				if staticIP != "" {
 					resolvedIP = staticIP
@@ -326,7 +326,7 @@ func (p *MicroKubeProvider) buildExpectedDNSRecords(pods []*corev1.Pod, networkN
 						// Find the IP for the alias's target container
 						for ci, c := range pod.Spec.Containers {
 							if c.Name == a.containerName {
-								aVeth := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), ci)
+								aVeth := vethName(pod, ci)
 								if aIP, _, ok := p.deps.NetworkMgr.GetPortInfo(aVeth); ok {
 									aliasIP := aIP
 									if staticIP != "" {
@@ -459,7 +459,7 @@ func (p *MicroKubeProvider) checkIPAM(ctx context.Context) []CheckItem {
 
 	// Check for veths that exist on device but not in IPAM (only veth-* ports)
 	for name, port := range actualMap {
-		if !strings.HasPrefix(name, "veth-") {
+		if !strings.HasPrefix(name, "veth_") {
 			continue
 		}
 		items = append(items, CheckItem{
@@ -481,18 +481,18 @@ func (p *MicroKubeProvider) checkIPAM(ctx context.Context) []CheckItem {
 					continue
 				}
 				for i := range pod.Spec.Containers {
-					vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
-					if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vethName); ok {
+					veth := vethName(pod, i)
+					if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(veth); ok {
 						if ip == staticIP {
 							items = append(items, CheckItem{
-								Name:    fmt.Sprintf("static-ip/%s/%s", pod.Name, vethName),
+								Name:    fmt.Sprintf("static-ip/%s/%s", pod.Name, veth),
 								Status:  "pass",
 								Message: "static IP matches allocation",
 								Details: fmt.Sprintf("ip=%s", staticIP),
 							})
 						} else {
 							items = append(items, CheckItem{
-								Name:    fmt.Sprintf("static-ip/%s/%s", pod.Name, vethName),
+								Name:    fmt.Sprintf("static-ip/%s/%s", pod.Name, veth),
 								Status:  "fail",
 								Message: "static IP mismatch",
 								Details: fmt.Sprintf("expected=%s actual=%s", staticIP, ip),

@@ -73,8 +73,9 @@ func TestExtractHostname(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"veth-myapp-0", "myapp"},
-		{"veth-redis-1", "redis"},
+		{"veth_default_myapp_0", "myapp"},
+		{"veth_gw_dns_0", "dns"},
+		{"veth_g10_redis_1", "redis"},
 		{"something", "something"},
 	}
 	for _, tt := range tests {

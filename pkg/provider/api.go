@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
 )
 
 // RegisterRoutes registers Kubernetes-compatible Pod API handlers on the provided mux.
@@ -24,6 +26,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	// Write
 	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/pods", p.handleCreatePod)
 	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/pods/{name}", p.handleUpdatePod)
+	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/pods/{name}", p.handlePatchPod)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/pods/{name}", p.handleDeletePod)
 
 	// Logs
@@ -33,15 +36,29 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/configmaps", p.handleCreateConfigMap)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/configmaps", p.handleListConfigMaps)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/configmaps/{name}", p.handleGetConfigMap)
+	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/configmaps/{name}", p.handleUpdateConfigMap)
+	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/configmaps/{name}", p.handlePatchConfigMap)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/configmaps/{name}", p.handleDeleteConfigMap)
+
+	// Namespaces — registered by namespace.Manager.RegisterRoutes()
 
 	// Nodes
 	mux.HandleFunc("GET /api/v1/nodes", p.handleListNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{name}", p.handleGetNode)
 
+	// Events (stub)
+	mux.HandleFunc("GET /api/v1/events", p.handleListEvents)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/events", p.handleListEvents)
+
+	// Services (stub)
+	mux.HandleFunc("GET /api/v1/services", p.handleListServices)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/services", p.handleListServices)
+
 	// API discovery (kubectl compat)
 	mux.HandleFunc("GET /api", p.handleAPIVersions)
 	mux.HandleFunc("GET /api/v1", p.handleAPIResources)
+	mux.HandleFunc("GET /apis", p.handleAPIGroups)
+	mux.HandleFunc("GET /version", p.handleVersion)
 
 	// Export/Import
 	mux.HandleFunc("GET /api/v1/export", p.handleExport)
@@ -69,11 +86,13 @@ func (p *MicroKubeProvider) handleListAllPods(w http.ResponseWriter, r *http.Req
 	items := make([]corev1.Pod, 0, len(pods))
 	for _, pod := range pods {
 		enriched := pod.DeepCopy()
-		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
-		if status, err := p.GetPodStatus(r.Context(), pod.Namespace, pod.Name); err == nil {
-			enriched.Status = *status
-		}
+		p.enrichPod(r.Context(), enriched)
 		items = append(items, *enriched)
+	}
+
+	if wantsTable(r) {
+		podWriteJSON(w, http.StatusOK, podListToTable(items))
+		return
 	}
 
 	podWriteJSON(w, http.StatusOK, corev1.PodList{
@@ -102,11 +121,13 @@ func (p *MicroKubeProvider) handleListNamespacedPods(w http.ResponseWriter, r *h
 			continue
 		}
 		enriched := pod.DeepCopy()
-		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
-		if status, err := p.GetPodStatus(r.Context(), pod.Namespace, pod.Name); err == nil {
-			enriched.Status = *status
-		}
+		p.enrichPod(r.Context(), enriched)
 		items = append(items, *enriched)
+	}
+
+	if wantsTable(r) {
+		podWriteJSON(w, http.StatusOK, podListToTable(items))
+		return
 	}
 
 	podWriteJSON(w, http.StatusOK, corev1.PodList{
@@ -126,9 +147,11 @@ func (p *MicroKubeProvider) handleGetPod(w http.ResponseWriter, r *http.Request)
 	}
 
 	enriched := pod.DeepCopy()
-	enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
-	if status, err := p.GetPodStatus(r.Context(), ns, name); err == nil {
-		enriched.Status = *status
+	p.enrichPod(r.Context(), enriched)
+
+	if wantsTable(r) {
+		podWriteJSON(w, http.StatusOK, podListToTable([]corev1.Pod{*enriched}))
+		return
 	}
 
 	podWriteJSON(w, http.StatusOK, enriched)
@@ -151,6 +174,9 @@ func (p *MicroKubeProvider) handleCreatePod(w http.ResponseWriter, r *http.Reque
 	if pod.Name == "" {
 		http.Error(w, "pod name is required", http.StatusBadRequest)
 		return
+	}
+	if pod.CreationTimestamp.IsZero() {
+		pod.CreationTimestamp = metav1.Now()
 	}
 
 	// Check for duplicate
@@ -300,6 +326,12 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 // handleListNodes returns a NodeList with this node.
 func (p *MicroKubeProvider) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	node := p.buildNode(r)
+
+	if wantsTable(r) {
+		podWriteJSON(w, http.StatusOK, nodeListToTable([]corev1.Node{*node}))
+		return
+	}
+
 	podWriteJSON(w, http.StatusOK, corev1.NodeList{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "NodeList"},
 		Items:    []corev1.Node{*node},
@@ -314,6 +346,10 @@ func (p *MicroKubeProvider) handleGetNode(w http.ResponseWriter, r *http.Request
 		return
 	}
 	node := p.buildNode(r)
+	if wantsTable(r) {
+		podWriteJSON(w, http.StatusOK, nodeListToTable([]corev1.Node{*node}))
+		return
+	}
 	podWriteJSON(w, http.StatusOK, node)
 }
 
@@ -376,6 +412,14 @@ func (p *MicroKubeProvider) handleAPIVersions(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// handleAPIGroups returns an empty API group list (satisfies oc/kubectl discovery of /apis).
+func (p *MicroKubeProvider) handleAPIGroups(w http.ResponseWriter, r *http.Request) {
+	podWriteJSON(w, http.StatusOK, metav1.APIGroupList{
+		TypeMeta: metav1.TypeMeta{Kind: "APIGroupList"},
+		Groups:   []metav1.APIGroup{},
+	})
+}
+
 // handleAPIResources returns the available API resources for v1 (kubectl discovery).
 func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Request) {
 	podWriteJSON(w, http.StatusOK, metav1.APIResourceList{
@@ -386,7 +430,7 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Name:       "pods",
 				Namespaced: true,
 				Kind:       "Pod",
-				Verbs:      metav1.Verbs{"get", "list", "create", "update", "delete"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 			{
 				Name:       "pods/log",
@@ -404,7 +448,7 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Name:       "configmaps",
 				Namespaced: true,
 				Kind:       "ConfigMap",
-				Verbs:      metav1.Verbs{"get", "list", "create", "delete"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 			{
 				Name:       "namespaces",
@@ -416,6 +460,18 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Name:       "nodes",
 				Namespaced: false,
 				Kind:       "Node",
+				Verbs:      metav1.Verbs{"get", "list"},
+			},
+			{
+				Name:       "events",
+				Namespaced: true,
+				Kind:       "Event",
+				Verbs:      metav1.Verbs{"get", "list"},
+			},
+			{
+				Name:       "services",
+				Namespaced: true,
+				Kind:       "Service",
 				Verbs:      metav1.Verbs{"get", "list"},
 			},
 		},
@@ -470,6 +526,410 @@ func (p *MicroKubeProvider) handleImport(w http.ResponseWriter, r *http.Request)
 		"pods":       pods,
 		"configmaps": cms,
 	})
+}
+
+// enrichPod sets TypeMeta, CreationTimestamp, and live status on a pod for API responses.
+func (p *MicroKubeProvider) enrichPod(ctx context.Context, pod *corev1.Pod) {
+	pod.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+	if pod.CreationTimestamp.IsZero() {
+		pod.CreationTimestamp = metav1.Time{Time: p.startTime}
+	}
+	if status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name); err == nil {
+		pod.Status = *status
+	}
+}
+
+// handlePatchPod applies a patch (treated as full replace) to a pod.
+func (p *MicroKubeProvider) handlePatchPod(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+
+	existing, err := p.GetPod(r.Context(), ns, name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("pod %s/%s not found", ns, name), http.StatusNotFound)
+		return
+	}
+
+	var patch corev1.Pod
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Preserve identity and creation time from existing pod
+	patch.Namespace = ns
+	patch.Name = name
+	if patch.CreationTimestamp.IsZero() {
+		patch.CreationTimestamp = existing.CreationTimestamp
+	}
+
+	// Persist and update
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.Pods.PutJSON(r.Context(), storeKey, &patch); err != nil {
+			http.Error(w, fmt.Sprintf("persisting pod patch: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := p.UpdatePod(r.Context(), &patch); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	patch.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+	podWriteJSON(w, http.StatusOK, &patch)
+}
+
+// handleUpdateConfigMap replaces a ConfigMap (PUT).
+func (p *MicroKubeProvider) handleUpdateConfigMap(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+	key := ns + "/" + name
+
+	if _, ok := p.configMaps[key]; !ok {
+		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
+		return
+	}
+
+	var cm corev1.ConfigMap
+	if err := json.NewDecoder(r.Body).Decode(&cm); err != nil {
+		http.Error(w, fmt.Sprintf("invalid configmap JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	cm.Namespace = ns
+	cm.Name = name
+	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
+
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.ConfigMaps.PutJSON(r.Context(), storeKey, &cm); err != nil {
+			http.Error(w, fmt.Sprintf("persisting configmap: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	p.configMaps[key] = &cm
+	podWriteJSON(w, http.StatusOK, &cm)
+}
+
+// handlePatchConfigMap applies a patch (treated as replace) to a ConfigMap.
+func (p *MicroKubeProvider) handlePatchConfigMap(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+	key := ns + "/" + name
+
+	if _, ok := p.configMaps[key]; !ok {
+		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
+		return
+	}
+
+	var cm corev1.ConfigMap
+	if err := json.NewDecoder(r.Body).Decode(&cm); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	cm.Namespace = ns
+	cm.Name = name
+	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
+
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.ConfigMaps.PutJSON(r.Context(), storeKey, &cm); err != nil {
+			http.Error(w, fmt.Sprintf("persisting configmap patch: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	p.configMaps[key] = &cm
+	podWriteJSON(w, http.StatusOK, &cm)
+}
+
+// handleListNamespaces returns namespaces derived from tracked pods and configmaps.
+func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.Request) {
+	nsSet := make(map[string]bool)
+	for _, pod := range p.pods {
+		nsSet[pod.Namespace] = true
+	}
+	for _, cm := range p.configMaps {
+		nsSet[cm.Namespace] = true
+	}
+	// Always include "default"
+	nsSet["default"] = true
+
+	items := make([]corev1.Namespace, 0, len(nsSet))
+	for ns := range nsSet {
+		items = append(items, corev1.Namespace{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              ns,
+				CreationTimestamp: metav1.Time{Time: p.startTime},
+			},
+			Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive},
+		})
+	}
+
+	podWriteJSON(w, http.StatusOK, corev1.NamespaceList{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "NamespaceList"},
+		Items:    items,
+	})
+}
+
+// handleGetNamespace returns a single namespace.
+func (p *MicroKubeProvider) handleGetNamespace(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	// Check if namespace exists in tracked resources
+	found := name == "default"
+	if !found {
+		for _, pod := range p.pods {
+			if pod.Namespace == name {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		for _, cm := range p.configMaps {
+			if cm.Namespace == name {
+				found = true
+				break
+			}
+		}
+	}
+
+	if !found {
+		podWriteJSON(w, http.StatusNotFound, metav1.Status{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+			Status:   "Failure",
+			Message:  fmt.Sprintf("namespaces %q not found", name),
+			Reason:   metav1.StatusReasonNotFound,
+			Code:     http.StatusNotFound,
+		})
+		return
+	}
+
+	podWriteJSON(w, http.StatusOK, corev1.Namespace{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			CreationTimestamp: metav1.Time{Time: p.startTime},
+		},
+		Status: corev1.NamespaceStatus{Phase: corev1.NamespaceActive},
+	})
+}
+
+// handleListEvents returns recorded events, optionally filtered by namespace.
+func (p *MicroKubeProvider) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	fieldSelector := r.URL.Query().Get("fieldSelector")
+
+	items := make([]corev1.Event, 0)
+	for _, evt := range p.events {
+		if ns != "" && evt.Namespace != ns {
+			continue
+		}
+		// Support fieldSelector=involvedObject.name=<name> (used by oc describe)
+		if fieldSelector != "" {
+			if strings.HasPrefix(fieldSelector, "involvedObject.name=") {
+				objName := strings.TrimPrefix(fieldSelector, "involvedObject.name=")
+				// Handle compound selectors
+				if idx := strings.Index(objName, ","); idx >= 0 {
+					objName = objName[:idx]
+				}
+				if evt.InvolvedObject.Name != objName {
+					continue
+				}
+			}
+		}
+		items = append(items, evt)
+	}
+
+	podWriteJSON(w, http.StatusOK, corev1.EventList{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "EventList"},
+		Items:    items,
+	})
+}
+
+// handleListServices returns an empty ServiceList.
+func (p *MicroKubeProvider) handleListServices(w http.ResponseWriter, r *http.Request) {
+	podWriteJSON(w, http.StatusOK, corev1.ServiceList{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceList"},
+		Items:    []corev1.Service{},
+	})
+}
+
+// handleVersion returns server version info.
+func (p *MicroKubeProvider) handleVersion(w http.ResponseWriter, r *http.Request) {
+	podWriteJSON(w, http.StatusOK, map[string]string{
+		"major":        "1",
+		"minor":        "29",
+		"gitVersion":   "v1.29.0-mkube",
+		"gitCommit":    "",
+		"gitTreeState": "clean",
+		"buildDate":    p.startTime.Format(time.RFC3339),
+		"goVersion":    "go1.22",
+		"compiler":     "gc",
+		"platform":     "linux/arm64",
+	})
+}
+
+// wantsTable checks if the client requested Table format via Accept header.
+func wantsTable(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "as=Table")
+}
+
+// nodeListToTable converts a NodeList to a Table response for oc/kubectl.
+func nodeListToTable(nodes []corev1.Node) *metav1.Table {
+	table := &metav1.Table{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "meta.k8s.io/v1",
+			Kind:       "Table",
+		},
+		ColumnDefinitions: []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name"},
+			{Name: "Status", Type: "string"},
+			{Name: "Roles", Type: "string"},
+			{Name: "Age", Type: "string"},
+			{Name: "Version", Type: "string"},
+		},
+	}
+
+	for i := range nodes {
+		node := &nodes[i]
+
+		status := "NotReady"
+		for _, c := range node.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				status = "Ready"
+				break
+			}
+		}
+
+		roles := "<none>"
+		for label := range node.Labels {
+			if strings.HasPrefix(label, "node-role.kubernetes.io/") {
+				role := strings.TrimPrefix(label, "node-role.kubernetes.io/")
+				if role != "" {
+					roles = role
+				}
+			}
+		}
+
+		age := "<unknown>"
+		if !node.CreationTimestamp.IsZero() {
+			age = formatAge(time.Since(node.CreationTimestamp.Time))
+		}
+
+		raw, _ := json.Marshal(map[string]interface{}{
+			"kind":       "PartialObjectMetadata",
+			"apiVersion": "meta.k8s.io/v1",
+			"metadata": map[string]interface{}{
+				"name":              node.Name,
+				"creationTimestamp": node.CreationTimestamp.Format(time.RFC3339),
+			},
+		})
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				node.Name,
+				status,
+				roles,
+				age,
+				node.Status.NodeInfo.KubeletVersion,
+			},
+			Object: kruntime.RawExtension{Raw: raw},
+		})
+	}
+
+	return table
+}
+
+// podListToTable converts a PodList to a Table response for oc/kubectl.
+func podListToTable(pods []corev1.Pod) *metav1.Table {
+	table := &metav1.Table{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "meta.k8s.io/v1",
+			Kind:       "Table",
+		},
+		ColumnDefinitions: []metav1.TableColumnDefinition{
+			{Name: "Name", Type: "string", Format: "name"},
+			{Name: "Ready", Type: "string"},
+			{Name: "Status", Type: "string"},
+			{Name: "Restarts", Type: "integer"},
+			{Name: "Age", Type: "string"},
+		},
+	}
+
+	for i := range pods {
+		pod := &pods[i]
+		ready, total := 0, len(pod.Spec.Containers)
+		var restarts int32
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Ready {
+				ready++
+			}
+			restarts += cs.RestartCount
+		}
+
+		status := string(pod.Status.Phase)
+		// Derive status from container states (like kubectl does)
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				status = cs.State.Waiting.Reason
+			}
+			if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
+				status = cs.State.Terminated.Reason
+			}
+		}
+
+		age := "<unknown>"
+		if !pod.CreationTimestamp.IsZero() {
+			age = formatAge(time.Since(pod.CreationTimestamp.Time))
+		}
+
+		// Wrap as PartialObjectMetadata so oc can extract namespace/name
+		partialMeta := map[string]interface{}{
+			"kind":       "PartialObjectMetadata",
+			"apiVersion": "meta.k8s.io/v1",
+			"metadata": map[string]interface{}{
+				"name":              pod.Name,
+				"namespace":         pod.Namespace,
+				"creationTimestamp": pod.CreationTimestamp.Format(time.RFC3339),
+			},
+		}
+		raw, _ := json.Marshal(partialMeta)
+		table.Rows = append(table.Rows, metav1.TableRow{
+			Cells: []interface{}{
+				pod.Name,
+				fmt.Sprintf("%d/%d", ready, total),
+				status,
+				restarts,
+				age,
+			},
+			Object: kruntime.RawExtension{Raw: raw},
+		})
+	}
+
+	return table
+}
+
+// formatAge returns a human-readable age string similar to kubectl.
+func formatAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		m := int(d.Minutes()) % 60
+		if m > 0 {
+			return fmt.Sprintf("%dh%dm", h, m)
+		}
+		return fmt.Sprintf("%dh", h)
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func podWriteJSON(w http.ResponseWriter, status int, v interface{}) {

@@ -74,7 +74,14 @@ type MicroKubeProvider struct {
 	startTime       time.Time
 	pods            map[string]*corev1.Pod       // namespace/name -> pod
 	configMaps      map[string]*corev1.ConfigMap // namespace/name -> configmap
+	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
+}
+
+// SetStore sets the NATS store on the provider (used for deferred NATS connection).
+func (p *MicroKubeProvider) SetStore(s *store.Store) {
+	p.deps.Store = s
+	p.deps.Logger.Infow("NATS store attached to provider")
 }
 
 // NewMicroKubeProvider creates a new provider instance.
@@ -158,7 +165,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 
 		// 2. Allocate network (registers containerName.podName in network zone)
-		vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
+		vethName := vethName(pod, i)
 		containerHostname := container.Name + "." + pod.Name
 		staticIP := pod.Annotations[annotationStaticIP]
 		ip, gw, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName, staticIP)
@@ -297,6 +304,14 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	// Track the pod
 	p.pods[podKey(pod)] = pod.DeepCopy()
 
+	// Record events
+	p.recordEvent(pod, "Scheduled", fmt.Sprintf("Successfully assigned %s/%s to %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
+	for _, c := range pod.Spec.Containers {
+		p.recordEvent(pod, "Pulling", fmt.Sprintf("Pulling image %q", c.Image), "Normal")
+		p.recordEvent(pod, "Created", fmt.Sprintf("Created container %s", c.Name), "Normal")
+		p.recordEvent(pod, "Started", fmt.Sprintf("Started container %s", c.Name), "Normal")
+	}
+
 	return nil
 }
 
@@ -358,10 +373,17 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 	}
 
+	// Unregister ALL containers from lifecycle manager FIRST to prevent
+	// the watchdog from restarting containers while we're deleting them.
+	for _, container := range pod.Spec.Containers {
+		name := sanitizeName(pod, container.Name)
+		p.deps.LifecycleMgr.Unregister(name)
+	}
+
 	// Collect container IPs before releasing anything (needed for alias cleanup)
 	containerIPs := make(map[string]string)
 	for i, container := range pod.Spec.Containers {
-		vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
+		vethName := vethName(pod, i)
 		if portIP, _, ok := p.deps.NetworkMgr.GetPortInfo(vethName); ok {
 			containerIPs[container.Name] = portIP
 		}
@@ -370,6 +392,7 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 	// Deregister DNS aliases before releasing interfaces
 	p.deregisterPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
 
+	var lastErr error
 	for i, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
 
@@ -377,7 +400,8 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 		ct, err := p.deps.Runtime.GetContainer(ctx, name)
 		if err != nil {
 			log.Warnw("container not found during delete", "name", name, "error", err)
-			continue
+			// Container doesn't exist — still clean up mounts, veth, namespace
+			goto cleanup
 		}
 
 		if ct.IsRunning() {
@@ -394,35 +418,47 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
-		if err := p.deps.Runtime.RemoveContainer(ctx, ct.ID); err != nil {
-			log.Warnw("error removing container", "name", name, "error", err)
+		// Retry RemoveContainer — the container may still be transitioning
+		for attempt := 0; attempt < 5; attempt++ {
+			if err := p.deps.Runtime.RemoveContainer(ctx, ct.ID); err != nil {
+				log.Warnw("error removing container, retrying", "name", name, "attempt", attempt+1, "error", err)
+				time.Sleep(2 * time.Second)
+				// Re-fetch container to check if it's gone
+				if _, gerr := p.deps.Runtime.GetContainer(ctx, name); gerr != nil {
+					log.Infow("container gone after retry", "name", name)
+					break // container disappeared
+				}
+				if attempt == 4 {
+					lastErr = fmt.Errorf("failed to remove container %s after 5 attempts: %w", name, err)
+					log.Errorw("giving up on container removal", "name", name, "error", err)
+				}
+			} else {
+				log.Infow("container removed", "name", name)
+				break
+			}
 		}
 
+	cleanup:
 		// Remove mount entries for this container
 		if err := p.deps.Runtime.RemoveMountsByList(ctx, name); err != nil {
 			log.Warnw("error removing mounts", "name", name, "error", err)
 		}
 
-		// ReleaseInterface deregisters the container subdomain record (containerName.podName)
-		vethName := fmt.Sprintf("veth-%s-%d", truncate(pod.Name, 8), i)
-		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); err != nil {
-			log.Warnw("error releasing network", "veth", vethName, "error", err)
+		// ReleaseInterface deregisters the container subdomain record and removes the veth
+		vn := vethName(pod, i)
+		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
+			log.Warnw("error releasing network", "veth", vn, "error", err)
 		}
-
-		// Unregister from systemd manager
-		p.deps.LifecycleMgr.Unregister(name)
 
 		// Remove from namespace if applicable
 		if nsName := pod.Annotations[annotationNamespace]; nsName != "" && p.deps.Namespace != nil {
 			p.deps.Namespace.RemoveContainerFromNamespace(nsName, name)
 		}
-
-		// Note: storage cleanup is deferred to GC
-		log.Infow("container removed", "name", name)
 	}
 
+	p.recordEvent(pod, "Killing", fmt.Sprintf("Stopping pod %s/%s", pod.Namespace, pod.Name), "Normal")
 	delete(p.pods, podKey(pod))
-	return nil
+	return lastErr
 }
 
 // GetPod returns the tracked pod object.
@@ -497,11 +533,21 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 		phase = corev1.PodPending
 	}
 
-	return &corev1.PodStatus{
+	// Look up pod IP from first container's veth
+	var podIP string
+	if len(pod.Spec.Containers) > 0 {
+		vn := vethName(pod, 0)
+		if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vn); ok {
+			podIP = ip
+		}
+	}
+
+	status := &corev1.PodStatus{
 		Phase:             phase,
 		ContainerStatuses: containerStatuses,
 		StartTime:         &metav1.Time{Time: p.startTime},
 		HostIP:            p.deps.Config.DefaultNetwork().Gateway,
+		PodIP:             podIP,
 		Conditions: []corev1.PodCondition{
 			{
 				Type:   corev1.PodReady,
@@ -512,7 +558,11 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 				Status: corev1.ConditionTrue,
 			},
 		},
-	}, nil
+	}
+	if podIP != "" {
+		status.PodIPs = []corev1.PodIP{{IP: podIP}}
+	}
+	return status, nil
 }
 
 // GetPods returns all tracked pods.
@@ -662,6 +712,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		} else {
 			// Track already-existing pods
 			p.pods[key] = pod.DeepCopy()
+			p.recordEvent(pod, "Reconciled", fmt.Sprintf("Existing pod %s/%s tracked on node %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
 		}
 	}
 
@@ -1293,19 +1344,32 @@ func podKey(pod *corev1.Pod) string {
 }
 
 // sanitizeName converts a pod/container name pair into a valid RouterOS
-// container name (alphanumeric + hyphens, max 32 chars).
+// container name using OpenShift-style naming: namespace_pod_container.
 func sanitizeName(pod *corev1.Pod, containerName string) string {
-	name := fmt.Sprintf("%s-%s", pod.Name, containerName)
+	ns := pod.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	name := fmt.Sprintf("%s_%s_%s", ns, pod.Name, containerName)
 	name = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
 			return r
 		}
 		if r >= 'A' && r <= 'Z' {
 			return r + 32 // lowercase
 		}
-		return '-'
+		return '_'
 	}, name)
-	return truncate(name, 32)
+	return truncate(name, 64)
+}
+
+// vethName generates a deterministic veth interface name for a container.
+func vethName(pod *corev1.Pod, index int) string {
+	ns := pod.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	return fmt.Sprintf("veth_%s_%s_%d", truncate(ns, 8), truncate(pod.Name, 8), index)
 }
 
 func truncate(s string, max int) string {
@@ -1399,4 +1463,35 @@ func extractPriority(pod *corev1.Pod, index int) int {
 		}
 	}
 	return index * 10
+}
+
+const maxEvents = 256
+
+// recordEvent appends a Kubernetes event to the in-memory ring buffer.
+func (p *MicroKubeProvider) recordEvent(pod *corev1.Pod, reason, message, eventType string) {
+	now := metav1.Now()
+	evt := corev1.Event{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Event"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              fmt.Sprintf("%s.%x", pod.Name, now.UnixNano()),
+			Namespace:         pod.Namespace,
+			CreationTimestamp: now,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:      "Pod",
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           eventType,
+		FirstTimestamp: now,
+		LastTimestamp:   now,
+		Count:          1,
+		Source:         corev1.EventSource{Component: "mkube", Host: p.nodeName},
+	}
+	p.events = append(p.events, evt)
+	if len(p.events) > maxEvents {
+		p.events = p.events[len(p.events)-maxEvents:]
+	}
 }

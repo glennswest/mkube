@@ -34,9 +34,9 @@ watches:
   - repo: microdns
     tag: latest
     containers:
-      - mdns-gw-microdns
-      - mdns-g10-microdns
-      - mdns-g11-microdns
-      - mdns-gt-microdns
+      - gw_dns_microdns
+      - g10_dns_microdns
+      - g11_dns_microdns
+      - gt_dns_microdns
     rolling: true
     rollingDelay: 5s

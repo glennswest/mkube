@@ -199,11 +199,19 @@ func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) 
 	}, nil)
 }
 
-// RemoveVeth removes a virtual ethernet interface.
+// RemoveVeth removes a virtual ethernet interface by name.
+// It looks up the veth's .id first, since RouterOS requires .id for removal.
 func (c *Client) RemoveVeth(ctx context.Context, name string) error {
-	return c.restPOST(ctx, "/interface/veth/remove", map[string]string{
-		"name": name,
-	}, nil)
+	veths, err := c.ListVeths(ctx)
+	if err != nil {
+		return fmt.Errorf("listing veths to find %q: %w", name, err)
+	}
+	for _, v := range veths {
+		if v.Name == name {
+			return c.restPOST(ctx, "/interface/veth/remove", map[string]string{".id": v.ID}, nil)
+		}
+	}
+	return nil // already gone
 }
 
 // AddBridgePort adds a veth to a bridge.

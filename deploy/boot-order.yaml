@@ -1,7 +1,8 @@
-# Boot order manifest for mkube standalone reconciler on rose1.gw.lo
+# Bootstrap manifest for mkube standalone reconciler on rose1.gw.lo
 #
-# Defines all containers managed by mkube. The standalone reconciler
-# reads this file and ensures each pod exists on the RouterOS device.
+# Only contains infrastructure pods needed BEFORE the NATS database is
+# available. All other pods are deployed via `oc apply` and persisted
+# in NATS JetStream — they survive reboots without being listed here.
 #
 # Annotations:
 #   vkube.io/network       — target network name (default: first in config)
@@ -36,6 +37,7 @@ spec:
   containers:
     - name: nats
       image: 192.168.200.2:5000/nats:edge
+      command: ["nats-server", "-js", "--store_dir", "/data", "--addr", "0.0.0.0"]
       startupProbe:
         tcpSocket:
           port: 4222
@@ -52,336 +54,185 @@ spec:
         - name: data
           mountPath: /data
 
-# ── MicroDNS instances (priority 10 — start first) ─────────────────────────
-# DNS servers for each subnet. All other services depend on these.
-# All 4 share the same image — pushing a new microdns:latest to the
-# embedded registry triggers a rolling update of all instances.
+# ── MicroDNS instances (priority 10) ─────────────────────────────────────────
+# DNS servers for each subnet. Recursor ConfigMaps are auto-generated
+# from network config in defaults.go — no manual ConfigMaps needed.
 
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: mdns-gw
-  namespace: dns
+  name: dns
+  namespace: gw
   annotations:
     vkube.io/network: gw
     vkube.io/boot-priority: "10"
     vkube.io/image-policy: auto
-    vkube.io/aliases: "mdns"
+    vkube.io/file: "raid1/tarballs/microdns-arm64.tar"
     vkube.io/static-ip: "192.168.1.199"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: microdns
-      image: 192.168.200.2:5000/microdns:edge
-      startupProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 3
-        failureThreshold: 10
-      livenessProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        periodSeconds: 30
-        failureThreshold: 3
-      readinessProbe:
-        tcpSocket:
-          port: 53
-        periodSeconds: 10
-      volumeMounts:
-        - name: config
-          mountPath: /etc/microdns
-        - name: data
-          mountPath: /data
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mdns-g10
-  namespace: dns
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "11"
-    vkube.io/image-policy: auto
-    vkube.io/aliases: "mdns"
-    vkube.io/static-ip: "192.168.10.199"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: microdns
-      image: 192.168.200.2:5000/microdns:edge
-      startupProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 3
-        failureThreshold: 10
-      livenessProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        periodSeconds: 30
-        failureThreshold: 3
-      readinessProbe:
-        tcpSocket:
-          port: 53
-        periodSeconds: 10
-      volumeMounts:
-        - name: config
-          mountPath: /etc/microdns
-        - name: data
-          mountPath: /data
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mdns-g11
-  namespace: dns
-  annotations:
-    vkube.io/network: g11
-    vkube.io/boot-priority: "12"
-    vkube.io/image-policy: auto
-    vkube.io/aliases: "mdns"
-    vkube.io/static-ip: "192.168.11.199"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: microdns
-      image: 192.168.200.2:5000/microdns:edge
-      startupProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 3
-        failureThreshold: 10
-      livenessProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        periodSeconds: 30
-        failureThreshold: 3
-      readinessProbe:
-        tcpSocket:
-          port: 53
-        periodSeconds: 10
-      volumeMounts:
-        - name: config
-          mountPath: /etc/microdns
-        - name: data
-          mountPath: /data
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mdns-gt
-  namespace: dns
-  annotations:
-    vkube.io/network: gt
-    vkube.io/boot-priority: "13"
-    vkube.io/image-policy: auto
-    vkube.io/aliases: "mdns"
-    vkube.io/static-ip: "192.168.200.199"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: microdns
-      image: 192.168.200.2:5000/microdns:edge
-      startupProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        initialDelaySeconds: 5
-        periodSeconds: 3
-        failureThreshold: 10
-      livenessProbe:
-        httpGet:
-          path: /api/v1/zones
-          port: 8080
-        periodSeconds: 30
-        failureThreshold: 3
-      readinessProbe:
-        tcpSocket:
-          port: 53
-        periodSeconds: 10
-      volumeMounts:
-        - name: config
-          mountPath: /etc/microdns
-        - name: data
-          mountPath: /data
-
-# ── Network manager (priority 20 — after DNS) ──────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: network-gw
-  namespace: infra
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "20"
-    vkube.io/depends-on: "mdns-gw-microdns,mdns-g10-microdns"
-    vkube.io/file: "raid1/tarballs/netman.tar"
-    vkube.io/aliases: "network"
-    vkube.io/static-ip: "192.168.10.20"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: netman
-      image: localhost/netman:latest
-      volumeMounts:
-        - name: data
-          mountPath: /data
-
-# ── Fast registry (priority 40) ────────────────────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: fastregistry-g10
-  namespace: infra
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "40"
-    vkube.io/aliases: "registry"
-    vkube.io/static-ip: "192.168.10.30"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: registry
-      image: localhost/fastregistry:edge
-      volumeMounts:
-        - name: config
-          mountPath: /etc/fastregistry
-        - name: data
-          mountPath: /data
-
-# ── Agent monitor (priority 50) ────────────────────────────────────────────
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: agentmonitor-g10
-  namespace: monitoring
-  annotations:
-    vkube.io/network: g10
-    vkube.io/boot-priority: "50"
-    vkube.io/aliases: "agent"
-    vkube.io/static-ip: "192.168.10.40"
-spec:
-  restartPolicy: Always
-  containers:
-    - name: monitor
-      image: localhost/agent-monitor:edge
-      command: ["/agent-monitor"]
-
-# ── mkube-console (priority 60) ────────────────────────────────────────────
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mkube-console-config
-  namespace: infra
-data:
-  config.yaml: |
-    listen_port: 9090
-    nodes:
-      - name: rose1
-        address: "http://192.168.200.2:8082"
-    registry:
-      base_url: "http://192.168.200.2:5000"
-    logs_url: "http://logging.kube.gt.lo:8084"
-
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: mkube-console
-  namespace: infra
-  annotations:
-    vkube.io/network: gt
-    vkube.io/boot-priority: "60"
-    vkube.io/image-policy: auto
-    vkube.io/aliases: "console.rose1"
-    vkube.io/static-ip: "192.168.200.20"
 spec:
   restartPolicy: Always
   volumes:
     - name: config
       configMap:
-        name: mkube-console-config
+        name: dns-config
   containers:
-    - name: console
-      image: ghcr.io/glennswest/mkube-console:edge
+    - name: microdns
+      image: 192.168.200.2:5000/microdns:edge
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
       livenessProbe:
         httpGet:
-          path: /healthz
-          port: 9090
+          path: /api/v1/zones
+          port: 8080
         periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
         - name: config
-          mountPath: /etc/mkube-console
-
-# ── Logging (priority 65 — before update manager) ────────────────────────
+          mountPath: /etc/microdns
+        - name: data
+          mountPath: /data
 
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: micrologs
-  namespace: infra
+  name: dns
+  namespace: g10
   annotations:
-    vkube.io/network: gt
-    vkube.io/boot-priority: "65"
-    vkube.io/aliases: "logging"
+    vkube.io/network: g10
+    vkube.io/boot-priority: "11"
     vkube.io/image-policy: auto
-    vkube.io/static-ip: "192.168.200.30"
+    vkube.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/static-ip: "192.168.10.199"
 spec:
   restartPolicy: Always
+  volumes:
+    - name: config
+      configMap:
+        name: dns-config
   containers:
-    - name: micrologs
-      image: 192.168.200.2:5000/micrologs:edge
+    - name: microdns
+      image: 192.168.200.2:5000/microdns:edge
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
       livenessProbe:
         httpGet:
-          path: /healthz
-          port: 8084
+          path: /api/v1/zones
+          port: 8080
         periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
-        - name: logs
-          mountPath: /raid1/logs
+        - name: config
+          mountPath: /etc/microdns
+        - name: data
+          mountPath: /data
 
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: logcollector
-  namespace: infra
+  name: dns
+  namespace: g11
   annotations:
-    vkube.io/network: gt
-    vkube.io/boot-priority: "66"
-    vkube.io/depends-on: "micrologs-micrologs"
+    vkube.io/network: g11
+    vkube.io/boot-priority: "12"
     vkube.io/image-policy: auto
-    vkube.io/aliases: "logcollector"
-    vkube.io/static-ip: "192.168.200.31"
+    vkube.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/static-ip: "192.168.11.199"
 spec:
   restartPolicy: Always
+  volumes:
+    - name: config
+      configMap:
+        name: dns-config
   containers:
-    - name: collector
-      image: 192.168.200.2:5000/micrologs-collector-routeros:edge
+    - name: microdns
+      image: 192.168.200.2:5000/microdns:edge
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
       volumeMounts:
         - name: config
-          mountPath: /etc/micrologs-collector
+          mountPath: /etc/microdns
+        - name: data
+          mountPath: /data
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns
+  namespace: gt
+  annotations:
+    vkube.io/network: gt
+    vkube.io/boot-priority: "13"
+    vkube.io/image-policy: auto
+    vkube.io/file: "raid1/tarballs/microdns-arm64.tar"
+    vkube.io/static-ip: "192.168.200.199"
+spec:
+  restartPolicy: Always
+  volumes:
+    - name: config
+      configMap:
+        name: dns-config
+  containers:
+    - name: microdns
+      image: 192.168.200.2:5000/microdns:edge
+      startupProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /api/v1/zones
+          port: 8080
+        periodSeconds: 30
+        failureThreshold: 3
+      readinessProbe:
+        tcpSocket:
+          port: 53
+        periodSeconds: 10
+      volumeMounts:
+        - name: config
+          mountPath: /etc/microdns
+        - name: data
+          mountPath: /data
 
 # ── Update manager ────────────────────────────────────────────────────────
 # mkube-update is deployed separately as a bootstrap init container.

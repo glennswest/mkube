@@ -274,17 +274,17 @@ func runSharedServices(
 	rosClient *routeros.Client, // nil for stormbase
 	log *zap.SugaredLogger,
 ) error {
-	// ── NATS State Store (optional) ──────────────────────────────────
+	// ── NATS State Store (optional, deferred if NATS not ready yet) ──
 	var kvStore *store.Store
+	natsDeferred := false
 	if cfg.NATS.URL != "" {
 		var err error
 		kvStore, err = store.New(ctx, cfg.NATS, log)
 		if err != nil {
-			log.Warnw("NATS store init failed, continuing without persistent state", "error", err)
+			log.Warnw("NATS store not ready, will retry in background", "error", err)
+			natsDeferred = true
 		} else {
 			defer kvStore.Close()
-
-			// Migrate boot manifest to NATS if store is empty
 			if _, err := kvStore.MigrateIfEmpty(ctx, cfg.Lifecycle.BootManifestPath, log); err != nil {
 				log.Warnw("NATS migration failed", "error", err)
 			}
@@ -383,6 +383,36 @@ func runSharedServices(
 			log.Errorw("API server error", "error", err)
 		}
 	}()
+
+	// ── Deferred NATS connection (retry in background after boot) ───
+	if natsDeferred && cfg.NATS.URL != "" {
+		go func() {
+			for i := 0; i < 120; i++ {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				s, err := store.New(ctx, cfg.NATS, log)
+				if err != nil {
+					if i%12 == 0 {
+						log.Warnw("NATS store retry", "attempt", i+1, "error", err)
+					}
+					continue
+				}
+				if _, err := s.MigrateIfEmpty(ctx, cfg.Lifecycle.BootManifestPath, log); err != nil {
+					log.Warnw("NATS migration failed", "error", err)
+				}
+				p.SetStore(s)
+				if nsMgr != nil {
+					nsMgr.SetStore(s)
+				}
+				log.Infow("NATS store connected (deferred)", "attempt", i+1)
+				return
+			}
+			log.Warn("gave up connecting to NATS store after 10 minutes")
+		}()
+	}
 
 	// ── Update API ──────────────────────────────────────────────────
 	go p.RunUpdateAPI(ctx, ":8080")

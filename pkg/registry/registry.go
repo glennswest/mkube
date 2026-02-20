@@ -60,6 +60,7 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 	// OCI Distribution Spec v2 endpoints
 	mux.HandleFunc("/v2/", r.handleV2)
 	mux.HandleFunc("/v2/_catalog", r.handleCatalog)
+	mux.HandleFunc("POST /v2/_pull", r.handlePull)
 
 	r.server = &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -331,6 +332,224 @@ func (r *Registry) handleCatalog(w http.ResponseWriter, req *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string][]string{
 		"repositories": repos,
 	})
+}
+
+// pullRequest is the JSON body for POST /v2/_pull.
+type pullRequest struct {
+	Image string `json:"image"` // e.g. "ghcr.io/glennswest/nats:edge"
+}
+
+// handlePull triggers a pull-through fetch from an upstream registry.
+// POST /v2/_pull  {"image": "ghcr.io/user/repo:tag"}
+// This resolves the image reference, fetches the manifest and all blobs,
+// and caches them locally so subsequent OCI pulls succeed immediately.
+func (r *Registry) handlePull(w http.ResponseWriter, req *http.Request) {
+	var pr pullRequest
+	if err := json.NewDecoder(req.Body).Decode(&pr); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if pr.Image == "" {
+		http.Error(w, `"image" is required`, http.StatusBadRequest)
+		return
+	}
+
+	// Parse image ref: "ghcr.io/user/repo:tag" → host="ghcr.io", repo="user/repo", ref="tag"
+	host, repo, ref := parseImageRef(pr.Image)
+	if repo == "" || ref == "" {
+		http.Error(w, fmt.Sprintf("cannot parse image reference %q", pr.Image), http.StatusBadRequest)
+		return
+	}
+
+	r.log.Infow("pull request received", "image", pr.Image, "host", host, "repo", repo, "ref", ref)
+
+	// Fetch manifest from upstream
+	manifest, contentType, err := r.fetchUpstreamManifest(req.Context(), host, repo, ref)
+	if err != nil {
+		r.log.Errorw("pull failed: manifest fetch", "image", pr.Image, "error", err)
+		http.Error(w, fmt.Sprintf("manifest fetch failed: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	// Determine local repo name (strip host prefix)
+	localRepo := repo
+
+	// Cache manifest
+	if err := r.store.PutManifest(localRepo, ref, contentType, io.NopCloser(strings.NewReader(string(manifest)))); err != nil {
+		http.Error(w, fmt.Sprintf("caching manifest: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse manifest to find blob digests
+	var m struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		// Manifest cached but blobs not fetched — still useful
+		r.log.Warnw("pull: manifest cached but cannot parse for blobs", "error", err)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"partial","manifest":true,"blobs":0}`)
+		return
+	}
+
+	// Collect all digests to fetch
+	var digests []string
+	if m.Config.Digest != "" {
+		digests = append(digests, m.Config.Digest)
+	}
+	for _, l := range m.Layers {
+		digests = append(digests, l.Digest)
+	}
+
+	// Fetch blobs
+	fetched := 0
+	for _, digest := range digests {
+		if exists, _ := r.store.HasBlob(digest); exists {
+			fetched++
+			continue
+		}
+		if err := r.fetchUpstreamBlob(req.Context(), host, repo, digest); err != nil {
+			r.log.Warnw("pull: blob fetch failed", "digest", digest, "error", err)
+			continue
+		}
+		fetched++
+	}
+
+	r.log.Infow("pull complete", "image", pr.Image, "localRepo", localRepo, "blobs", fetched, "total", len(digests))
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"status":"ok","manifest":true,"blobs":%d,"total":%d}`, fetched, len(digests))
+}
+
+// parseImageRef splits "ghcr.io/user/repo:tag" into host, repo, tag.
+// For "repo:tag" without host, returns empty host.
+func parseImageRef(ref string) (host, repo, tag string) {
+	tag = "latest"
+	if idx := strings.LastIndex(ref, ":"); idx > 0 {
+		// Ensure it's a tag separator, not part of a port
+		afterColon := ref[idx+1:]
+		if !strings.Contains(afterColon, "/") {
+			tag = afterColon
+			ref = ref[:idx]
+		}
+	}
+
+	// Split host from repo: first component with a dot or colon is the host
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) == 2 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":")) {
+		host = parts[0]
+		repo = parts[1]
+	} else {
+		repo = ref
+	}
+	return
+}
+
+// fetchUpstreamManifest fetches a manifest from an upstream registry host.
+func (r *Registry) fetchUpstreamManifest(ctx context.Context, host, repo, ref string) ([]byte, string, error) {
+	if host == "" {
+		// Try configured upstreams
+		for _, upstream := range r.cfg.UpstreamRegistries {
+			data, ct, err := r.fetchManifestFromHost(ctx, resolveRegistryHost(upstream), repo, ref)
+			if err == nil {
+				return data, ct, nil
+			}
+		}
+		return nil, "", fmt.Errorf("manifest not found on any upstream")
+	}
+	return r.fetchManifestFromHost(ctx, host, repo, ref)
+}
+
+func (r *Registry) fetchManifestFromHost(ctx context.Context, host, repo, ref string) ([]byte, string, error) {
+	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repo, ref)
+	mReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	mReq.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+
+	resp, err := r.client.Do(mReq)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		token, err := r.getUpstreamToken(ctx, resp, host, repo)
+		if err != nil {
+			return nil, "", fmt.Errorf("auth failed: %w", err)
+		}
+		mReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		mReq.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+		mReq.Header.Set("Authorization", "Bearer "+token)
+		resp, err = r.client.Do(mReq)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, resp.Header.Get("Content-Type"), nil
+}
+
+// fetchUpstreamBlob fetches a single blob from upstream and caches it.
+func (r *Registry) fetchUpstreamBlob(ctx context.Context, host, repo, digest string) error {
+	fetchFromHost := func(h string) error {
+		url := fmt.Sprintf("https://%s/v2/%s/blobs/%s", h, repo, digest)
+		bReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := r.client.Do(bReq)
+		if err != nil {
+			return err
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			resp.Body.Close()
+			token, err := r.getUpstreamToken(ctx, resp, h, repo)
+			if err != nil {
+				return fmt.Errorf("auth failed: %w", err)
+			}
+			bReq, _ = http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			bReq.Header.Set("Authorization", "Bearer "+token)
+			resp, err = r.client.Do(bReq)
+			if err != nil {
+				return err
+			}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("upstream returned %d", resp.StatusCode)
+		}
+
+		return r.store.PutBlob(digest, resp.Body)
+	}
+
+	if host != "" {
+		return fetchFromHost(host)
+	}
+	for _, upstream := range r.cfg.UpstreamRegistries {
+		if err := fetchFromHost(resolveRegistryHost(upstream)); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("blob %s not found on any upstream", digest)
 }
 
 // pullThroughManifest fetches a manifest from upstream, caches it, and serves it.

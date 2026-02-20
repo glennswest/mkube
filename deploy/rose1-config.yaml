@@ -80,7 +80,7 @@ logging:
   url: "http://logging.kube.gt.lo:8084"
 
 nats:
-  url: "nats://nats.gt.lo:4222"
+  url: "nats://192.168.200.10:4222"
   replicas: 1
 
 registry:

@@ -36,7 +36,7 @@ registry:
   base_url: "http://%s:5000"
 `, cfg.NodeName, mkubeIP, mkubeIP)
 
-	return []*corev1.ConfigMap{
+	cms := []*corev1.ConfigMap{
 		{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 			ObjectMeta: metav1.ObjectMeta{
@@ -48,4 +48,61 @@ registry:
 			},
 		},
 	}
+
+	// Auto-generate DNS recursor ConfigMaps for each network with DNS.
+	// Each instance gets forward zones pointing to all peer DNS servers
+	// so cross-subnet and external resolution works automatically.
+	for _, net := range cfg.Networks {
+		if net.DNS.Zone == "" || net.DNS.Server == "" {
+			continue
+		}
+
+		var fwdZones strings.Builder
+		for _, peer := range cfg.Networks {
+			if peer.Name == net.Name || peer.DNS.Zone == "" || peer.DNS.Server == "" {
+				continue
+			}
+			fmt.Fprintf(&fwdZones, "    %q = [\"%s:53\"]\n", peer.DNS.Zone, peer.DNS.Server)
+		}
+
+		toml := fmt.Sprintf(`[instance]
+id = "microdns-%s"
+mode = "standalone"
+
+[dns.auth]
+enabled = true
+listen = "0.0.0.0:15353"
+zones = ["%s"]
+
+[dns.recursor]
+enabled = true
+listen = "0.0.0.0:53"
+
+[dns.recursor.forward_zones]
+%s
+[api.rest]
+enabled = true
+listen = "0.0.0.0:8080"
+
+[database]
+path = "./data/microdns.redb"
+
+[logging]
+level = "info"
+format = "text"
+`, net.Name, net.DNS.Zone, fwdZones.String())
+
+		cms = append(cms, &corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "dns-config",
+				Namespace: net.Name,
+			},
+			Data: map[string]string{
+				"microdns.toml": toml,
+			},
+		})
+	}
+
+	return cms
 }

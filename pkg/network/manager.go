@@ -387,11 +387,11 @@ func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 	return nil
 }
 
-// extractHostname attempts to derive a hostname from a veth name like "veth-myapp-0".
+// extractHostname derives a hostname from a veth name like "veth_ns_pod_0".
 func extractHostname(vethName string) string {
-	parts := strings.SplitN(vethName, "-", 3)
-	if len(parts) >= 2 {
-		return parts[1]
+	parts := strings.SplitN(vethName, "_", 4)
+	if len(parts) >= 3 {
+		return parts[2]
 	}
 	return vethName
 }

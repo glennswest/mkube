@@ -26,21 +26,24 @@ func TestPodKey(t *testing.T) {
 
 func TestSanitizeName(t *testing.T) {
 	tests := []struct {
+		namespace     string
 		podName       string
 		containerName string
 		want          string
 	}{
-		{"myapp", "web", "myapp-web"},
-		{"MyApp", "Web", "myapp-web"},
-		{"my_app", "web_server", "my-app-web-server"},
-		{"a-very-long-pod-name-that-exceeds", "container", "a-very-long-pod-name-that-exceed"},
+		{"default", "myapp", "web", "default_myapp_web"},
+		{"default", "MyApp", "Web", "default_myapp_web"},
+		{"default", "my_app", "web_server", "default_my_app_web_server"},
+		{"", "myapp", "web", "default_myapp_web"},
+		{"gw", "dns", "microdns", "gw_dns_microdns"},
+		{"g10", "dns", "microdns", "g10_dns_microdns"},
 	}
 
 	for _, tt := range tests {
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: tt.podName}}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: tt.namespace, Name: tt.podName}}
 		got := sanitizeName(pod, tt.containerName)
 		if got != tt.want {
-			t.Errorf("sanitizeName(%q, %q) = %q, want %q", tt.podName, tt.containerName, got, tt.want)
+			t.Errorf("sanitizeName(%q, %q, %q) = %q, want %q", tt.namespace, tt.podName, tt.containerName, got, tt.want)
 		}
 	}
 }
