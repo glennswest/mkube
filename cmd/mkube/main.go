@@ -29,6 +29,7 @@ import (
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/stormbase"
 	"github.com/glennswest/mkube/pkg/storage"
+	"github.com/glennswest/mkube/pkg/store"
 )
 
 var (
@@ -273,6 +274,23 @@ func runSharedServices(
 	rosClient *routeros.Client, // nil for stormbase
 	log *zap.SugaredLogger,
 ) error {
+	// ── NATS State Store (optional) ──────────────────────────────────
+	var kvStore *store.Store
+	if cfg.NATS.URL != "" {
+		var err error
+		kvStore, err = store.New(ctx, cfg.NATS, log)
+		if err != nil {
+			log.Warnw("NATS store init failed, continuing without persistent state", "error", err)
+		} else {
+			defer kvStore.Close()
+
+			// Migrate boot manifest to NATS if store is empty
+			if _, err := kvStore.MigrateIfEmpty(ctx, cfg.Lifecycle.BootManifestPath, log); err != nil {
+				log.Warnw("NATS migration failed", "error", err)
+			}
+		}
+	}
+
 	// ── HTTP API mux ────────────────────────────────────────────────
 	mux := http.NewServeMux()
 	listenAddr := ":8082"
@@ -285,6 +303,9 @@ func runSharedServices(
 			log.Warnw("DZO bootstrap failed, continuing without DZO", "error", err)
 		} else {
 			nsMgr = namespace.NewManager(cfg.Namespace, cfg.DZO, cfg.Networks, dzoOp, log)
+			if kvStore != nil {
+				nsMgr.SetStore(kvStore)
+			}
 			if err := nsMgr.Bootstrap(ctx); err != nil {
 				log.Warnw("namespace bootstrap failed", "error", err)
 				nsMgr = nil
@@ -321,6 +342,7 @@ func runSharedServices(
 		StorageMgr:   storageMgr,
 		LifecycleMgr: lcMgr,
 		Namespace:    nsMgr,
+		Store:        kvStore,
 		Logger:       log,
 	})
 	if err != nil {

@@ -29,6 +29,7 @@ import (
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/stormbase"
 	"github.com/glennswest/mkube/pkg/storage"
+	"github.com/glennswest/mkube/pkg/store"
 )
 
 const (
@@ -51,6 +52,7 @@ type Deps struct {
 	StorageMgr   *storage.Manager
 	LifecycleMgr *lifecycle.Manager
 	Namespace    *namespace.Manager // optional, nil if namespace management is disabled
+	Store        *store.Store       // optional, nil if NATS is not configured
 	Logger       *zap.SugaredLogger
 }
 
@@ -557,10 +559,21 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	log := p.deps.Logger
 
-	// 1. Load desired pods and configmaps from boot manifest
-	desiredPods, manifestCMs, err := loadManifests(p.deps.Config.Lifecycle.BootManifestPath)
-	if err != nil {
-		return fmt.Errorf("loading manifests: %w", err)
+	// 1. Load desired pods and configmaps — from NATS store if available, else from YAML manifest
+	var desiredPods []*corev1.Pod
+	var manifestCMs []*corev1.ConfigMap
+
+	if p.deps.Store != nil && p.deps.Store.Connected() {
+		desiredPods, manifestCMs = p.loadFromStore(ctx)
+	}
+
+	// Fall back to boot manifest if store is unavailable or returned nothing
+	if len(desiredPods) == 0 {
+		var err error
+		desiredPods, manifestCMs, err = loadManifests(p.deps.Config.Lifecycle.BootManifestPath)
+		if err != nil {
+			return fmt.Errorf("loading manifests: %w", err)
+		}
 	}
 
 	// Store ConfigMaps from manifest (overrides defaults)
@@ -607,6 +620,42 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// loadFromStore reads desired pods and configmaps from the NATS KV store.
+func (p *MicroKubeProvider) loadFromStore(ctx context.Context) ([]*corev1.Pod, []*corev1.ConfigMap) {
+	var pods []*corev1.Pod
+	var cms []*corev1.ConfigMap
+
+	podKeys, err := p.deps.Store.Pods.Keys(ctx, "")
+	if err != nil {
+		p.deps.Logger.Warnw("failed to list pods from store", "error", err)
+		return nil, nil
+	}
+	for _, key := range podKeys {
+		var pod corev1.Pod
+		if _, err := p.deps.Store.Pods.GetJSON(ctx, key, &pod); err != nil {
+			p.deps.Logger.Warnw("failed to read pod from store", "key", key, "error", err)
+			continue
+		}
+		pods = append(pods, &pod)
+	}
+
+	cmKeys, err := p.deps.Store.ConfigMaps.Keys(ctx, "")
+	if err != nil {
+		p.deps.Logger.Warnw("failed to list configmaps from store", "error", err)
+		return pods, nil
+	}
+	for _, key := range cmKeys {
+		var cm corev1.ConfigMap
+		if _, err := p.deps.Store.ConfigMaps.GetJSON(ctx, key, &cm); err != nil {
+			p.deps.Logger.Warnw("failed to read configmap from store", "key", key, "error", err)
+			continue
+		}
+		cms = append(cms, &cm)
+	}
+
+	return pods, cms
 }
 
 // loadManifests reads a multi-document YAML file containing Pod and ConfigMap specs.

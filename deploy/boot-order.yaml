@@ -16,6 +16,41 @@
 #   g11  — bridge-boot  192.168.11.0/24   dns: g11.lo  (192.168.11.199)
 #   gw   — bridge-lan   192.168.1.0/24    dns: gw.lo   (192.168.1.199)
 
+# ── NATS JetStream (priority 5 — before DNS) ─────────────────────────────────
+# Distributed key-value store for persistent pod/configmap state.
+# File-backed JetStream on /data for durability across restarts.
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nats
+  namespace: infra
+  annotations:
+    vkube.io/network: gt
+    vkube.io/boot-priority: "5"
+    vkube.io/image-policy: auto
+spec:
+  restartPolicy: Always
+  containers:
+    - name: nats
+      image: 192.168.200.2:5000/nats:latest
+      startupProbe:
+        tcpSocket:
+          port: 4222
+        initialDelaySeconds: 2
+        periodSeconds: 2
+        failureThreshold: 10
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8222
+        periodSeconds: 30
+        failureThreshold: 3
+      volumeMounts:
+        - name: data
+          mountPath: /data
+
 # ── MicroDNS instances (priority 10 — start first) ─────────────────────────
 # DNS servers for each subnet. All other services depend on these.
 # All 4 share the same image — pushing a new microdns:latest to the

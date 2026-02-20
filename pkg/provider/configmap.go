@@ -26,6 +26,16 @@ func (p *MicroKubeProvider) handleCreateConfigMap(w http.ResponseWriter, r *http
 
 	key := ns + "/" + cm.Name
 	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
+
+	// Persist to NATS store
+	if p.deps.Store != nil {
+		storeKey := ns + "." + cm.Name
+		if _, err := p.deps.Store.ConfigMaps.PutJSON(r.Context(), storeKey, &cm); err != nil {
+			http.Error(w, fmt.Sprintf("persisting configmap: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	p.configMaps[key] = &cm
 
 	podWriteJSON(w, http.StatusCreated, &cm)
@@ -51,6 +61,11 @@ func (p *MicroKubeProvider) handleGetConfigMap(w http.ResponseWriter, r *http.Re
 // handleListConfigMaps returns all ConfigMaps in a namespace.
 func (p *MicroKubeProvider) handleListConfigMaps(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
+
+	if r.URL.Query().Get("watch") == "true" {
+		p.handleWatchConfigMaps(w, r, ns)
+		return
+	}
 
 	items := make([]corev1.ConfigMap, 0)
 	for _, cm := range p.configMaps {
@@ -80,6 +95,14 @@ func (p *MicroKubeProvider) handleDeleteConfigMap(w http.ResponseWriter, r *http
 	}
 
 	delete(p.configMaps, key)
+
+	// Remove from NATS store
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if err := p.deps.Store.ConfigMaps.Delete(r.Context(), storeKey); err != nil {
+			p.deps.Logger.Warnw("failed to delete configmap from store", "key", storeKey, "error", err)
+		}
+	}
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},

@@ -43,11 +43,20 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api", p.handleAPIVersions)
 	mux.HandleFunc("GET /api/v1", p.handleAPIResources)
 
+	// Export/Import
+	mux.HandleFunc("GET /api/v1/export", p.handleExport)
+	mux.HandleFunc("POST /api/v1/import", p.handleImport)
+
 	// Health
 	mux.HandleFunc("GET /healthz", p.handleHealthz)
 }
 
 func (p *MicroKubeProvider) handleListAllPods(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("watch") == "true" {
+		p.handleWatchPods(w, r, "")
+		return
+	}
+
 	pods, err := p.GetPods(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -72,6 +81,11 @@ func (p *MicroKubeProvider) handleListAllPods(w http.ResponseWriter, r *http.Req
 
 func (p *MicroKubeProvider) handleListNamespacedPods(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
+
+	if r.URL.Query().Get("watch") == "true" {
+		p.handleWatchPods(w, r, ns)
+		return
+	}
 
 	pods, err := p.GetPods(r.Context())
 	if err != nil {
@@ -142,6 +156,15 @@ func (p *MicroKubeProvider) handleCreatePod(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Persist to NATS store first (source of truth)
+	if p.deps.Store != nil {
+		storeKey := ns + "." + pod.Name
+		if _, err := p.deps.Store.Pods.PutJSON(r.Context(), storeKey, &pod); err != nil {
+			http.Error(w, fmt.Sprintf("persisting pod: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	if err := p.CreatePod(r.Context(), &pod); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -169,6 +192,15 @@ func (p *MicroKubeProvider) handleUpdatePod(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Persist updated spec to NATS store
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.Pods.PutJSON(r.Context(), storeKey, &pod); err != nil {
+			http.Error(w, fmt.Sprintf("persisting pod update: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	if err := p.UpdatePod(r.Context(), &pod); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -192,6 +224,14 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 	if err := p.DeletePod(r.Context(), pod); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Remove from NATS store after successful deletion
+	if p.deps.Store != nil {
+		storeKey := ns + "." + name
+		if err := p.deps.Store.Pods.Delete(r.Context(), storeKey); err != nil {
+			p.deps.Logger.Warnw("failed to delete pod from store", "key", storeKey, "error", err)
+		}
 	}
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
@@ -384,6 +424,49 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, "ok\nnode: %s\nuptime: %s\n", p.nodeName, time.Since(p.startTime).Truncate(time.Second))
+}
+
+// handleExport returns the full state as multi-document YAML.
+func (p *MicroKubeProvider) handleExport(w http.ResponseWriter, r *http.Request) {
+	if p.deps.Store == nil {
+		http.Error(w, "NATS store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	data, err := p.deps.Store.ExportYAML(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// handleImport upserts pods and configmaps from a multi-document YAML body.
+func (p *MicroKubeProvider) handleImport(w http.ResponseWriter, r *http.Request) {
+	if p.deps.Store == nil {
+		http.Error(w, "NATS store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reading body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	pods, cms, err := p.deps.Store.ImportYAML(r.Context(), data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	podWriteJSON(w, http.StatusOK, map[string]int{
+		"pods":       pods,
+		"configmaps": cms,
+	})
 }
 
 func podWriteJSON(w http.ResponseWriter, status int, v interface{}) {

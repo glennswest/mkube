@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/store"
 )
 
 // Manager manages namespaces. It uses a ZoneResolver (typically the DZO operator)
@@ -19,6 +20,7 @@ type Manager struct {
 	dzoCfg   config.DZOConfig
 	networks []config.NetworkDef
 	zones    ZoneResolver
+	store    *store.Store // optional, nil if NATS is not configured
 	log      *zap.SugaredLogger
 
 	mu    sync.RWMutex
@@ -41,6 +43,11 @@ func NewManager(
 		log:      log.Named("namespace"),
 		state:    NewState(),
 	}
+}
+
+// SetStore sets the NATS store for persistent namespace state.
+func (m *Manager) SetStore(s *store.Store) {
+	m.store = s
 }
 
 // Bootstrap loads persisted state (migrating from DZO state if needed),
@@ -289,6 +296,26 @@ func (m *Manager) RemoveContainerFromNamespace(nsName, containerName string) {
 // ─── State Persistence ──────────────────────────────────────────────────────
 
 func (m *Manager) loadState() error {
+	// Try NATS store first
+	if m.store != nil && m.store.Connected() {
+		keys, err := m.store.Namespaces.Keys(context.Background(), "")
+		if err == nil && len(keys) > 0 {
+			state := NewState()
+			for _, key := range keys {
+				var ns Namespace
+				if _, err := m.store.Namespaces.GetJSON(context.Background(), key, &ns); err != nil {
+					m.log.Warnw("failed to load namespace from store", "key", key, "error", err)
+					continue
+				}
+				state.Namespaces[ns.Name] = &ns
+			}
+			m.state = state
+			m.log.Infow("loaded state from NATS store", "namespaces", len(state.Namespaces))
+			return nil
+		}
+	}
+
+	// Fall back to YAML file
 	path := m.statePath()
 
 	data, err := os.ReadFile(path)
@@ -311,6 +338,16 @@ func (m *Manager) loadState() error {
 }
 
 func (m *Manager) saveState() error {
+	// Save to NATS store if available
+	if m.store != nil && m.store.Connected() {
+		for _, ns := range m.state.Namespaces {
+			if _, err := m.store.Namespaces.PutJSON(context.Background(), ns.Name, ns); err != nil {
+				m.log.Warnw("failed to save namespace to store", "name", ns.Name, "error", err)
+			}
+		}
+	}
+
+	// Also save to YAML file as backup
 	path := m.statePath()
 
 	data, err := yaml.Marshal(m.state)

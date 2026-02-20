@@ -23,6 +23,7 @@ type Config struct {
 	DZO        DZOConfig       `yaml:"dzo"`
 	Namespace  NamespaceConfig `yaml:"namespace"`
 	Logging    LoggingConfig   `yaml:"logging"`
+	NATS       NATSConfig      `yaml:"nats"`
 
 	// Deprecated: single-network config for backward compatibility.
 	// If present and Networks is empty, it is migrated into Networks.
@@ -47,6 +48,12 @@ type DZOConfig struct {
 type LoggingConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	URL     string `yaml:"url"` // e.g. "http://logging.kube.gt.lo:8084"
+}
+
+// NATSConfig configures the NATS JetStream connection for persistent state.
+type NATSConfig struct {
+	URL      string `yaml:"url"`      // e.g. "nats://nats.gt.lo:4222"
+	Replicas int    `yaml:"replicas"` // 1 for single-node, 3 for cluster
 }
 
 // NamespaceConfig configures the namespace manager.
