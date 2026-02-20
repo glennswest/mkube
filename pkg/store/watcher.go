@@ -76,14 +76,12 @@ func (b *Bucket) Watch(ctx context.Context, filter string, sinceRevision uint64)
 
 				switch entry.Operation() {
 				case jetstream.KeyValuePut:
-					if entry.Revision() == entry.Revision() {
-						// We can't easily distinguish create vs update from NATS KV,
-						// but for K8s compat we use revision == 1 as a heuristic.
-						if entry.Revision() == 1 {
-							evt.Type = EventPut
-						} else {
-							evt.Type = EventUpdate
-						}
+					// We can't easily distinguish create vs update from NATS KV,
+					// but for K8s compat we use revision == 1 as a heuristic.
+					if entry.Revision() == 1 {
+						evt.Type = EventPut
+					} else {
+						evt.Type = EventUpdate
 					}
 				case jetstream.KeyValueDelete, jetstream.KeyValuePurge:
 					evt.Type = EventDelete

@@ -27,9 +27,9 @@ import (
 	"github.com/glennswest/mkube/pkg/registry"
 	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/glennswest/mkube/pkg/runtime"
-	"github.com/glennswest/mkube/pkg/stormbase"
 	"github.com/glennswest/mkube/pkg/storage"
 	"github.com/glennswest/mkube/pkg/store"
+	"github.com/glennswest/mkube/pkg/stormbase"
 )
 
 var (
@@ -367,7 +367,7 @@ func runSharedServices(
 		}
 		watcher.TriggerPoll()
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}` + "\n"))
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 	})
 
 	go func() {

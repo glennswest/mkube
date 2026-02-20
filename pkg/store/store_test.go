@@ -97,7 +97,7 @@ func TestBucketCRUD(t *testing.T) {
 	}
 
 	// Keys with prefix
-	s.Pods.Put(ctx, "kube.redis", []byte(`{}`))
+	_, _ = s.Pods.Put(ctx, "kube.redis", []byte(`{}`))
 	keys, err = s.Pods.Keys(ctx, "default.")
 	if err != nil {
 		t.Fatalf("Keys prefix: %v", err)
@@ -165,7 +165,7 @@ func TestBucketIsEmpty(t *testing.T) {
 		t.Fatal("expected empty bucket")
 	}
 
-	s.Pods.Put(ctx, "default.nginx", []byte("{}"))
+	_, _ = s.Pods.Put(ctx, "default.nginx", []byte("{}"))
 
 	empty, err = s.Pods.IsEmpty(ctx)
 	if err != nil {
@@ -251,8 +251,8 @@ func TestImportExport(t *testing.T) {
 	type SimplePod struct {
 		Name string `json:"name"`
 	}
-	s.Pods.PutJSON(ctx, "infra.nats", &SimplePod{Name: "nats"})
-	s.Pods.PutJSON(ctx, "dns.mdns-gw", &SimplePod{Name: "mdns-gw"})
+	_, _ = s.Pods.PutJSON(ctx, "infra.nats", &SimplePod{Name: "nats"})
+	_, _ = s.Pods.PutJSON(ctx, "dns.mdns-gw", &SimplePod{Name: "mdns-gw"})
 
 	// Export
 	exported, err := s.ExportYAML(ctx)
@@ -273,9 +273,9 @@ func TestMultipleBuckets(t *testing.T) {
 	ctx := context.Background()
 
 	// Verify all buckets are independent
-	s.Pods.Put(ctx, "test.key", []byte("pod"))
-	s.ConfigMaps.Put(ctx, "test.key", []byte("configmap"))
-	s.Namespaces.Put(ctx, "test", []byte("namespace"))
+	_, _ = s.Pods.Put(ctx, "test.key", []byte("pod"))
+	_, _ = s.ConfigMaps.Put(ctx, "test.key", []byte("configmap"))
+	_, _ = s.Namespaces.Put(ctx, "test", []byte("namespace"))
 
 	val, _, _ := s.Pods.Get(ctx, "test.key")
 	if string(val) != "pod" {
@@ -305,7 +305,7 @@ func TestListJSON(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		key := fmt.Sprintf("ns.item-%d", i)
-		s.Pods.PutJSON(ctx, key, &Item{Name: fmt.Sprintf("item-%d", i)})
+		_, _ = s.Pods.PutJSON(ctx, key, &Item{Name: fmt.Sprintf("item-%d", i)})
 	}
 
 	items, err := s.Pods.ListJSON(ctx, "ns.", func() interface{} { return &Item{} })

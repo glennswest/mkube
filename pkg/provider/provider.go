@@ -27,9 +27,9 @@ import (
 	"github.com/glennswest/mkube/pkg/namespace"
 	"github.com/glennswest/mkube/pkg/network"
 	"github.com/glennswest/mkube/pkg/runtime"
-	"github.com/glennswest/mkube/pkg/stormbase"
 	"github.com/glennswest/mkube/pkg/storage"
 	"github.com/glennswest/mkube/pkg/store"
+	"github.com/glennswest/mkube/pkg/stormbase"
 )
 
 const (
