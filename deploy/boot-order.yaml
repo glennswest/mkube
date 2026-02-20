@@ -250,6 +250,10 @@ metadata:
     vkube.io/aliases: "console"
 spec:
   restartPolicy: Always
+  volumes:
+    - name: config
+      configMap:
+        name: mkube-console-config
   containers:
     - name: console
       image: ghcr.io/glennswest/mkube-console:edge
