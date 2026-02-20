@@ -26,11 +26,14 @@ func generateDefaultConfigMaps(cfg *config.Config) []*corev1.ConfigMap {
 		}
 	}
 
-	consoleConfig := fmt.Sprintf(`listenAddr: ":9090"
-nodes:
-  - name: %s
-    address: "http://%s:8082"
-registryURL: "http://%s:5000"
+	consoleConfig := fmt.Sprintf(`cluster_name: %s
+listen_port: 9090
+
+mkube:
+  base_url: "http://%s:8082"
+
+registry:
+  base_url: "http://%s:5000"
 `, cfg.NodeName, mkubeIP, mkubeIP)
 
 	return []*corev1.ConfigMap{
