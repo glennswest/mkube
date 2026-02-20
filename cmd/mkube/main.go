@@ -327,8 +327,27 @@ func runSharedServices(
 		return fmt.Errorf("creating provider: %w", err)
 	}
 
+	// ── Image Watcher ───────────────────────────────────────────────
+	var watcher *registry.ImageWatcher
+	if reg != nil && len(cfg.Registry.WatchImages) > 0 {
+		watcher = registry.NewImageWatcher(cfg.Registry, reg.Store(), reg.PushEvents, log)
+		go watcher.Run(ctx)
+		log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
+	}
+
 	// ── Register routes and start HTTP server ───────────────────────
 	p.RegisterRoutes(mux)
+
+	mux.HandleFunc("POST /api/v1/registry/poll", func(w http.ResponseWriter, r *http.Request) {
+		if watcher == nil {
+			http.NotFound(w, r)
+			return
+		}
+		watcher.TriggerPoll()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}` + "\n"))
+	})
+
 	go func() {
 		srv := &http.Server{Addr: listenAddr, Handler: mux}
 		go func() {
@@ -342,13 +361,6 @@ func runSharedServices(
 			log.Errorw("API server error", "error", err)
 		}
 	}()
-
-	// ── Image Watcher ───────────────────────────────────────────────
-	if reg != nil && len(cfg.Registry.WatchImages) > 0 {
-		watcher := registry.NewImageWatcher(cfg.Registry, reg.Store(), reg.PushEvents, log)
-		go watcher.Run(ctx)
-		log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
-	}
 
 	// ── Update API ──────────────────────────────────────────────────
 	go p.RunUpdateAPI(ctx, ":8080")

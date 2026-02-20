@@ -47,6 +47,8 @@ type ImageWatcher struct {
 	log    *zap.SugaredLogger
 	client *http.Client
 
+	pollTrigger chan struct{}
+
 	mu          sync.Mutex
 	lastDigests map[string]string // upstream ref → last seen digest
 }
@@ -65,6 +67,7 @@ func NewImageWatcher(cfg config.RegistryConfig, store *BlobStore, events chan<- 
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 			},
 		},
+		pollTrigger: make(chan struct{}, 1),
 		lastDigests: make(map[string]string),
 	}
 }
@@ -105,7 +108,19 @@ func (w *ImageWatcher) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.checkAll(ctx)
+		case <-w.pollTrigger:
+			w.log.Info("manual poll triggered")
+			w.checkAll(ctx)
 		}
+	}
+}
+
+// TriggerPoll requests an immediate poll cycle. Non-blocking; if a
+// trigger is already pending it is a no-op.
+func (w *ImageWatcher) TriggerPoll() {
+	select {
+	case w.pollTrigger <- struct{}{}:
+	default:
 	}
 }
 
