@@ -336,6 +336,14 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 			if err := p.deps.Runtime.StopContainer(ctx, ct.ID); err != nil {
 				log.Warnw("error stopping container", "name", name, "error", err)
 			}
+			// Wait for the container to actually stop before removing
+			for j := 0; j < 30; j++ {
+				time.Sleep(time.Second)
+				updated, err := p.deps.Runtime.GetContainer(ctx, name)
+				if err != nil || !updated.IsRunning() {
+					break
+				}
+			}
 		}
 
 		if err := p.deps.Runtime.RemoveContainer(ctx, ct.ID); err != nil {
