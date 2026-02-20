@@ -160,33 +160,42 @@ func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, i
 	return nil
 }
 
-// DeregisterHost removes all A records matching the given hostname from a zone.
-func (c *Client) DeregisterHost(ctx context.Context, endpoint, zoneID, hostname string) error {
-	// List records in zone
+// ListRecords returns all DNS records in a zone.
+func (c *Client) ListRecords(ctx context.Context, endpoint, zoneID string) ([]Record, error) {
 	url := fmt.Sprintf("%s/api/v1/zones/%s/records", endpoint, zoneID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("building record list request: %w", err)
+		return nil, fmt.Errorf("building record list request: %w", err)
 	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("listing records in zone %s: %w", zoneID, err)
+		return nil, fmt.Errorf("listing records in zone %s: %w", zoneID, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("reading record list response: %w", err)
+		return nil, fmt.Errorf("reading record list response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("listing records: HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("listing records: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var records []Record
 	if err := json.Unmarshal(body, &records); err != nil {
-		return fmt.Errorf("decoding records: %w", err)
+		return nil, fmt.Errorf("decoding records: %w", err)
+	}
+
+	return records, nil
+}
+
+// DeregisterHost removes all A records matching the given hostname from a zone.
+func (c *Client) DeregisterHost(ctx context.Context, endpoint, zoneID, hostname string) error {
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
+	if err != nil {
+		return err
 	}
 
 	// Delete matching records
@@ -220,30 +229,9 @@ func (c *Client) DeregisterHost(ctx context.Context, endpoint, zoneID, hostname 
 // removes the specific record for one IP — used for cleaning up pod-level
 // round-robin records without removing other containers' entries.
 func (c *Client) DeregisterHostByIP(ctx context.Context, endpoint, zoneID, hostname, ip string) error {
-	url := fmt.Sprintf("%s/api/v1/zones/%s/records", endpoint, zoneID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
 	if err != nil {
-		return fmt.Errorf("building record list request: %w", err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("listing records in zone %s: %w", zoneID, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading record list response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("listing records: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var records []Record
-	if err := json.Unmarshal(body, &records); err != nil {
-		return fmt.Errorf("decoding records: %w", err)
+		return err
 	}
 
 	for _, r := range records {

@@ -321,6 +321,20 @@ func (m *Manager) NetworkDef(name string) (config.NetworkDef, bool) {
 	return ns.def, true
 }
 
+// NetworkZoneID returns the cached MicroDNS zone UUID for the named network.
+func (m *Manager) NetworkZoneID(name string) (string, bool) {
+	ns, ok := m.networks[name]
+	if !ok {
+		return "", false
+	}
+	return ns.zoneID, ns.zoneID != ""
+}
+
+// ListActualPorts delegates to the network driver to list all ports/veths.
+func (m *Manager) ListActualPorts(ctx context.Context) ([]PortInfo, error) {
+	return m.driver.ListPorts(ctx)
+}
+
 // resolveNetwork returns the networkState for the given name, or the default.
 // Must be called with m.mu held.
 func (m *Manager) resolveNetwork(name string) (*networkState, error) {

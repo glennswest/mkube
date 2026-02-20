@@ -47,6 +47,9 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/export", p.handleExport)
 	mux.HandleFunc("POST /api/v1/import", p.handleImport)
 
+	// Consistency
+	mux.HandleFunc("GET /api/v1/consistency", p.handleConsistency)
+
 	// Health
 	mux.HandleFunc("GET /healthz", p.handleHealthz)
 }
