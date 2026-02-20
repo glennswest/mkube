@@ -1,9 +1,11 @@
 # mkube-console config for rose1
-# Mount at /etc/mkube-console/config.yaml
+# This is the raw config content; the ConfigMap in boot-order.yaml
+# wraps this as data["config.yaml"].
 
-listenAddr: ":9090"
+listen_port: 9090
 nodes:
   - name: rose1
     address: "http://192.168.200.2:8082"
-registryURL: "http://fastregistry-g10-registry.gt.lo:5000"
-logsURL: "http://logging.kube.gt.lo:8084"
+registry:
+  base_url: "http://192.168.200.2:5000"
+logs_url: "http://logging.kube.gt.lo:8084"
