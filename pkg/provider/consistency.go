@@ -47,6 +47,39 @@ func (p *MicroKubeProvider) handleConsistency(w http.ResponseWriter, r *http.Req
 	podWriteJSON(w, http.StatusOK, report)
 }
 
+// handleConsistencyRepair cleans up orphaned IPAM entries where the veth
+// no longer exists on the device.
+func (p *MicroKubeProvider) handleConsistencyRepair(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ipamAllocs := p.deps.NetworkMgr.GetAllocations()
+	actualPorts, err := p.deps.NetworkMgr.ListActualPorts(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("listing ports: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	actualMap := make(map[string]bool, len(actualPorts))
+	for _, port := range actualPorts {
+		actualMap[port.Name] = true
+	}
+
+	var released []string
+	for veth := range ipamAllocs {
+		if !actualMap[veth] {
+			if err := p.deps.NetworkMgr.ReleaseInterface(ctx, veth); err != nil {
+				p.deps.Logger.Warnw("repair: failed to release orphan", "veth", veth, "error", err)
+			} else {
+				released = append(released, veth)
+			}
+		}
+	}
+
+	podWriteJSON(w, http.StatusOK, map[string]interface{}{
+		"released": released,
+		"count":    len(released),
+	})
+}
+
 func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) ConsistencyReport {
 	report := ConsistencyReport{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
