@@ -173,7 +173,7 @@ nats:
 
 bmh:
   pxeManagerURL: "http://pxe.g10.lo:8080"
-  dhcpLeaseURL: "http://dns.g11.lo:8080"
+  dhcpLeaseURL: "http://192.168.11.252:8080"
   watchInterval: 30
 
 registry:

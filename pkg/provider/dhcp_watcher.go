@@ -14,28 +14,24 @@ import (
 
 // dhcpLease is the JSON structure from microdns DHCP lease API.
 type dhcpLease struct {
-	IP      string `json:"ip"`
-	MAC     string `json:"mac"`
-	Address string `json:"address"`     // alternate field name
-	HWAddr  string `json:"mac_address"` // alternate field name
-	HWAddr2 string `json:"hw_address"`  // alternate field name
+	IP     string `json:"ip"`
+	IPAddr string `json:"ip_addr"`   // microdns field name
+	MAC    string `json:"mac"`
+	MACAddr string `json:"mac_addr"` // microdns field name
 }
 
 func (l dhcpLease) getIP() string {
-	if l.IP != "" {
-		return l.IP
+	if l.IPAddr != "" {
+		return l.IPAddr
 	}
-	return l.Address
+	return l.IP
 }
 
 func (l dhcpLease) getMAC() string {
-	if l.MAC != "" {
-		return l.MAC
+	if l.MACAddr != "" {
+		return l.MACAddr
 	}
-	if l.HWAddr != "" {
-		return l.HWAddr
-	}
-	return l.HWAddr2
+	return l.MAC
 }
 
 // RunDHCPWatcher polls the microdns DHCP lease API and auto-creates BMH objects
@@ -126,7 +122,25 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 			continue
 		}
 
-		log.Infow("auto-discovered server from DHCP", "name", hostname, "ip", ip, "mac", mac)
+		// The g11 lease is the IPMI interface. Look up the boot MAC from
+		// g10 network DHCP reservations in config (NIC-A = primary boot NIC).
+		bootMAC := ""
+		for _, net := range p.deps.Config.Networks {
+			if net.Name != "g10" {
+				continue
+			}
+			for _, r := range net.DNS.DHCP.Reservations {
+				if r.Hostname == hostname {
+					bootMAC = r.MAC
+					break
+				}
+			}
+		}
+		if bootMAC == "" {
+			bootMAC = mac // fallback to IPMI MAC if no g10 reservation found
+		}
+
+		log.Infow("auto-discovered server from DHCP", "name", hostname, "ip", ip, "ipmi_mac", mac, "boot_mac", bootMAC)
 
 		bmh := &BareMetalHost{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"},
@@ -136,7 +150,7 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 				CreationTimestamp: metav1.Now(),
 			},
 			Spec: BMHSpec{
-				BootMACAddress: mac,
+				BootMACAddress: bootMAC,
 				Image:          "localboot",
 				BMC: BMCDetails{
 					Address:  ip,
@@ -160,8 +174,8 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 			}
 		}
 
-		// Register in pxemanager
-		if err := pxeRegisterHost(ctx, cfg.PXEManagerURL, mac, hostname, "localboot"); err != nil {
+		// Register in pxemanager (skip if already registered from populate script)
+		if err := pxeRegisterHost(ctx, cfg.PXEManagerURL, bootMAC, hostname, "localboot"); err != nil {
 			log.Warnw("failed to register discovered host in pxemanager", "name", hostname, "error", err)
 		}
 	}
