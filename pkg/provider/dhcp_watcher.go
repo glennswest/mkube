@@ -9,14 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // dhcpLease is the JSON structure from microdns DHCP lease API.
 type dhcpLease struct {
-	IP     string `json:"ip"`
-	IPAddr string `json:"ip_addr"`   // microdns field name
-	MAC    string `json:"mac"`
+	IP      string `json:"ip"`
+	IPAddr  string `json:"ip_addr"`  // microdns field name
+	MAC     string `json:"mac"`
 	MACAddr string `json:"mac_addr"` // microdns field name
 }
 
@@ -34,8 +35,19 @@ func (l dhcpLease) getMAC() string {
 	return l.MAC
 }
 
-// RunDHCPWatcher polls the microdns DHCP lease API and auto-creates BMH objects
-// for discovered servers on the g11 network.
+// microdnsLeaseEvent is the JSON structure published by microdns to NATS.
+type microdnsLeaseEvent struct {
+	Type       string `json:"type"`        // "LeaseCreated" or "LeaseReleased"
+	InstanceID string `json:"instance_id"`
+	IPAddr     string `json:"ip_addr"`
+	MACAddr    string `json:"mac_addr"`
+	Hostname   string `json:"hostname"`
+	PoolID     string `json:"pool_id"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// RunDHCPWatcher subscribes to NATS lease events for instant discovery and
+// polls the microdns DHCP lease API as a fallback consistency check.
 func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 	cfg := p.deps.Config.BMH
 	if cfg.DHCPLeaseURL == "" {
@@ -43,13 +55,14 @@ func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 		return
 	}
 
-	interval := time.Duration(cfg.WatchInterval) * time.Second
-	if interval < 10*time.Second {
-		interval = 30 * time.Second
-	}
-
 	log := p.deps.Logger.Named("dhcp-watcher")
-	log.Infow("DHCP watcher starting", "url", cfg.DHCPLeaseURL, "interval", interval)
+
+	// Start NATS subscription for instant lease events
+	p.startDHCPSubscription(ctx)
+
+	// Fallback poll interval — 5 minutes for consistency checks
+	interval := 5 * time.Minute
+	log.Infow("DHCP watcher starting", "url", cfg.DHCPLeaseURL, "poll_interval", interval)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -62,6 +75,120 @@ func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 		case <-ticker.C:
 			p.reconcileDHCPLeases(ctx)
 		}
+	}
+}
+
+// startDHCPSubscription subscribes to microdns NATS lease events.
+// Safe to call when store is nil (no-op); will be retried from SetStore.
+func (p *MicroKubeProvider) startDHCPSubscription(ctx context.Context) {
+	if p.deps.Store == nil {
+		return
+	}
+
+	log := p.deps.Logger.Named("dhcp-watcher")
+
+	_, err := p.deps.Store.Subscribe("microdns.*.leases", func(msg *nats.Msg) {
+		var evt microdnsLeaseEvent
+		if err := json.Unmarshal(msg.Data, &evt); err != nil {
+			log.Warnw("failed to unmarshal lease event", "error", err)
+			return
+		}
+
+		if evt.Type != "LeaseCreated" {
+			return
+		}
+
+		log.Infow("NATS lease event received",
+			"type", evt.Type,
+			"ip", evt.IPAddr,
+			"mac", evt.MACAddr,
+			"hostname", evt.Hostname,
+		)
+
+		p.processDHCPLease(ctx, evt.IPAddr, evt.MACAddr)
+	})
+	if err != nil {
+		log.Warnw("failed to subscribe to DHCP lease events", "error", err)
+		return
+	}
+
+	log.Info("DHCP NATS subscription started on microdns.*.leases")
+}
+
+// processDHCPLease handles a single DHCP lease, creating a BMH if the IP
+// is on the 192.168.11.x discovery network. Called by both NATS events and
+// the polling reconciler.
+func (p *MicroKubeProvider) processDHCPLease(ctx context.Context, ip, mac string) {
+	cfg := p.deps.Config.BMH
+	log := p.deps.Logger.Named("dhcp-watcher")
+
+	if ip == "" || mac == "" {
+		return
+	}
+
+	// Only handle 192.168.11.x
+	if !strings.HasPrefix(ip, "192.168.11.") {
+		return
+	}
+
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return
+	}
+	lastOctet, err := strconv.Atoi(parts[3])
+	if err != nil {
+		return
+	}
+
+	// port = lastOctet - 9; server1=.10, server8=.17
+	port := lastOctet - 9
+	if port < 1 || port > 8 {
+		return
+	}
+
+	hostname := fmt.Sprintf("server%d", port)
+	key := "g11/" + hostname
+
+	if _, exists := p.bareMetalHosts[key]; exists {
+		return
+	}
+
+	log.Infow("auto-discovered server from DHCP", "name", hostname, "ip", ip, "ipmi_mac", mac)
+
+	bmh := &BareMetalHost{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              hostname,
+			Namespace:         "g11",
+			CreationTimestamp: metav1.Now(),
+		},
+		Spec: BMHSpec{
+			Image: "localboot",
+			BMC: BMCDetails{
+				Address:  ip,
+				Username: "ADMIN",
+				Password: "ADMIN",
+			},
+		},
+		Status: BMHStatus{
+			Phase: "Discovered",
+			IP:    ip,
+		},
+	}
+
+	p.bareMetalHosts[key] = bmh
+
+	// Persist to NATS
+	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+		storeKey := "g11." + hostname
+		if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bmh); err != nil {
+			log.Warnw("failed to persist discovered BMH", "name", hostname, "error", err)
+		}
+	}
+
+	// Configure IPMI in pxemanager
+	if err := pxeConfigureIPMI(ctx, cfg.PXEManagerURL, hostname, ip, "ADMIN", "ADMIN"); err != nil {
+		log.Warnw("failed to configure IPMI for discovered host", "name", hostname, "error", err)
 	}
 }
 
@@ -89,75 +216,6 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	}
 
 	for _, lease := range leases {
-		ip := lease.getIP()
-		mac := lease.getMAC()
-		if ip == "" || mac == "" {
-			continue
-		}
-
-		// Only handle 192.168.11.x
-		if !strings.HasPrefix(ip, "192.168.11.") {
-			continue
-		}
-
-		parts := strings.Split(ip, ".")
-		if len(parts) != 4 {
-			continue
-		}
-		lastOctet, err := strconv.Atoi(parts[3])
-		if err != nil {
-			continue
-		}
-
-		// port = lastOctet - 9; server1=.10, server8=.17
-		port := lastOctet - 9
-		if port < 1 || port > 8 {
-			continue
-		}
-
-		hostname := fmt.Sprintf("server%d", port)
-		key := "g11/" + hostname
-
-		if _, exists := p.bareMetalHosts[key]; exists {
-			continue
-		}
-
-		log.Infow("auto-discovered server from DHCP", "name", hostname, "ip", ip, "ipmi_mac", mac)
-
-		bmh := &BareMetalHost{
-			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              hostname,
-				Namespace:         "g11",
-				CreationTimestamp: metav1.Now(),
-			},
-			Spec: BMHSpec{
-				Image: "localboot",
-				BMC: BMCDetails{
-					Address:  ip,
-					Username: "ADMIN",
-					Password: "ADMIN",
-				},
-			},
-			Status: BMHStatus{
-				Phase: "Discovered",
-				IP:    ip,
-			},
-		}
-
-		p.bareMetalHosts[key] = bmh
-
-		// Persist to NATS
-		if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-			storeKey := "g11." + hostname
-			if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bmh); err != nil {
-				log.Warnw("failed to persist discovered BMH", "name", hostname, "error", err)
-			}
-		}
-
-		// Configure IPMI in pxemanager
-		if err := pxeConfigureIPMI(ctx, cfg.PXEManagerURL, hostname, ip, "ADMIN", "ADMIN"); err != nil {
-			log.Warnw("failed to configure IPMI for discovered host", "name", hostname, "error", err)
-		}
+		p.processDHCPLease(ctx, lease.getIP(), lease.getMAC())
 	}
 }

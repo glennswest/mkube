@@ -159,6 +159,11 @@ func (s *Store) initBucket(ctx context.Context, name string, replicas int, ttl t
 	return &Bucket{kv: kv, log: s.log.Named(strings.ToLower(name))}, nil
 }
 
+// Subscribe creates a NATS core subscription on the given subject.
+func (s *Store) Subscribe(subject string, handler nats.MsgHandler) (*nats.Subscription, error) {
+	return s.conn.Subscribe(subject, handler)
+}
+
 // Close closes the NATS connection.
 func (s *Store) Close() {
 	if s.conn != nil {

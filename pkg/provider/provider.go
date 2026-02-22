@@ -84,6 +84,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.deps.Store = s
 	p.deps.Logger.Infow("NATS store attached to provider")
 	p.LoadBMHFromStore(context.Background())
+	p.startDHCPSubscription(context.Background())
 }
 
 // NewMicroKubeProvider creates a new provider instance.
