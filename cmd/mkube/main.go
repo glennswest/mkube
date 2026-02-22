@@ -362,6 +362,7 @@ func runSharedServices(
 		p.LoadBMHFromStore(ctx)
 	}
 	go p.RunDHCPWatcher(ctx)
+	go p.RunSubnetScanner(ctx)
 	go p.RunBMHReconciler(ctx)
 
 	// ── Register routes and start HTTP server ───────────────────────

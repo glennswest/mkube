@@ -33,6 +33,11 @@ networks:
       endpoint: "http://192.168.10.252:8080"
       zone: "g10.lo"
       server: "192.168.10.252"
+      staticRecords:
+        - name: rose1
+          ip: "192.168.10.1"
+        - name: dns
+          ip: "192.168.10.252"
       dhcp:
         enabled: true
         rangeStart: "192.168.10.10"

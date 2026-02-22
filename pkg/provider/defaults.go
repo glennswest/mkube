@@ -110,6 +110,12 @@ registry:
 			fmt.Fprintf(&dhcpSection, "default_ttl = 300\n")
 		}
 
+		// TODO: Pass NATS URL to microdns via environment variable on the
+		// container (boot-order.yaml) rather than baking it into the TOML.
+		// The TOML should only contain DNS/DHCP config. Infrastructure
+		// plumbing like NATS URLs must come from the container environment
+		// so the config stays portable across different sites/networks.
+
 		toml := fmt.Sprintf(`[instance]
 id = "microdns-%s"
 mode = "standalone"

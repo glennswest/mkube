@@ -85,10 +85,11 @@ type NetworkDef struct {
 
 // DNSConfig specifies the MicroDNS instance for a network.
 type DNSConfig struct {
-	Endpoint string     `yaml:"endpoint"` // e.g. "http://192.168.200.199:8080"
-	Zone     string     `yaml:"zone"`     // e.g. "gt.lo"
-	Server   string     `yaml:"server"`   // DNS server IP for containers, e.g. "192.168.200.199"
-	DHCP     DHCPConfig `yaml:"dhcp"`     // DHCP server config for this network
+	Endpoint      string         `yaml:"endpoint"` // e.g. "http://192.168.200.199:8080"
+	Zone          string         `yaml:"zone"`     // e.g. "gt.lo"
+	Server        string         `yaml:"server"`   // DNS server IP for containers, e.g. "192.168.200.199"
+	DHCP          DHCPConfig     `yaml:"dhcp"`     // DHCP server config for this network
+	StaticRecords []StaticRecord `yaml:"staticRecords,omitempty"` // infrastructure hosts registered at startup
 }
 
 // DHCPConfig specifies DHCP settings for a MicroDNS instance.
@@ -100,6 +101,13 @@ type DHCPConfig struct {
 	NextServer   string            `yaml:"nextServer"`   // PXE server IP
 	BootFile     string            `yaml:"bootFile"`     // PXE boot file
 	Reservations []DHCPReservation `yaml:"reservations"`
+}
+
+// StaticRecord is a DNS record registered in microdns at startup.
+// Used for infrastructure hosts (routers, gateways) that aren't containers.
+type StaticRecord struct {
+	Name string `yaml:"name"` // hostname, e.g. "rose1"
+	IP   string `yaml:"ip"`   // e.g. "192.168.10.1"
 }
 
 // DHCPReservation is a static DHCP lease for a known MAC address.
