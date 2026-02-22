@@ -38,12 +38,14 @@ networks:
           ip: "192.168.10.1"
         - name: dns
           ip: "192.168.10.252"
+        - name: pxe
+          ip: "192.168.10.200"
       dhcp:
         enabled: true
         rangeStart: "192.168.10.10"
         rangeEnd: "192.168.10.210"
         leaseTime: 600
-        nextServer: "192.168.10.9"
+        nextServer: "192.168.10.200"
         bootFile: "undionly.kpxe"
         reservations:
           - mac: "AC:1F:6B:8A:A7:9C"
