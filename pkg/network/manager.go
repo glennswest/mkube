@@ -139,27 +139,58 @@ func (m *Manager) InitDNSZones(ctx context.Context) {
 		ns.zoneID = zoneID
 		m.log.Infow("DNS zone ready", "network", name, "zone", ns.def.DNS.Zone, "zoneID", zoneID)
 
-		// Register static DNS records for infrastructure hosts (routers, gateways, etc.)
 		// Fetch existing records once to avoid creating duplicates on restart.
-		if len(ns.def.DNS.StaticRecords) > 0 {
-			existing := make(map[string]string) // "name:ip" -> record ID
-			if records, err := m.dns.ListRecords(ctx, ns.def.DNS.Endpoint, zoneID); err == nil {
-				for _, r := range records {
-					if r.Type == "A" {
-						existing[r.Name+":"+r.Data.Data] = r.ID
-					}
+		existing := make(map[string]string) // "name:ip" -> record ID
+		if records, err := m.dns.ListRecords(ctx, ns.def.DNS.Endpoint, zoneID); err == nil {
+			for _, r := range records {
+				if r.Type == "A" {
+					existing[r.Name+":"+r.Data.Data] = r.ID
 				}
 			}
-			for _, rec := range ns.def.DNS.StaticRecords {
-				if _, found := existing[rec.Name+":"+rec.IP]; found {
-					m.log.Debugw("static DNS record already exists", "name", rec.Name, "ip", rec.IP)
-					continue
-				}
-				if err := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, zoneID, rec.Name, rec.IP, 300); err != nil {
-					m.log.Warnw("failed to register static DNS record", "network", name, "name", rec.Name, "ip", rec.IP, "error", err)
-				} else {
-					m.log.Infow("static DNS record registered", "network", name, "name", rec.Name, "ip", rec.IP)
-				}
+		}
+
+		// Register static DNS records for infrastructure hosts (routers, gateways, etc.)
+		for _, rec := range ns.def.DNS.StaticRecords {
+			if _, found := existing[rec.Name+":"+rec.IP]; found {
+				continue
+			}
+			if err := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, zoneID, rec.Name, rec.IP, 300); err != nil {
+				m.log.Warnw("failed to register static DNS record", "network", name, "name", rec.Name, "ip", rec.IP, "error", err)
+			} else {
+				m.log.Infow("static DNS record registered", "network", name, "name", rec.Name, "ip", rec.IP)
+			}
+		}
+
+		// Register DNS records for DHCP reservations with hostnames
+		for _, res := range ns.def.DNS.DHCP.Reservations {
+			if res.Hostname == "" || res.IP == "" {
+				continue
+			}
+			if _, found := existing[res.Hostname+":"+res.IP]; found {
+				continue
+			}
+			if err := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, zoneID, res.Hostname, res.IP, 300); err != nil {
+				m.log.Warnw("failed to register DHCP reservation DNS record", "network", name, "name", res.Hostname, "ip", res.IP, "error", err)
+			} else {
+				m.log.Infow("DHCP reservation DNS record registered", "network", name, "name", res.Hostname, "ip", res.IP)
+			}
+		}
+
+		// Register infrastructure records (gateway + DNS server)
+		for _, infra := range []struct{ name, ip string }{
+			{"rose1", ns.def.Gateway},
+			{"dns", ns.def.DNS.Server},
+		} {
+			if infra.ip == "" {
+				continue
+			}
+			if _, found := existing[infra.name+":"+infra.ip]; found {
+				continue
+			}
+			if err := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, zoneID, infra.name, infra.ip, 300); err != nil {
+				m.log.Warnw("failed to register infra DNS record", "network", name, "name", infra.name, "ip", infra.ip, "error", err)
+			} else {
+				m.log.Infow("infra DNS record registered", "network", name, "name", infra.name, "ip", infra.ip)
 			}
 		}
 	}

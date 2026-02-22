@@ -730,6 +730,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 4. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
 	p.syncConfigMapsToDisk(ctx)
 
+	// 5. Ensure DNS zones exist and records are seeded from config
+	p.deps.NetworkMgr.InitDNSZones(ctx)
+
 	return nil
 }
 
