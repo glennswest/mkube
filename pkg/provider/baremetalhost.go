@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -165,11 +166,11 @@ func (p *MicroKubeProvider) handleListAllBMH(w http.ResponseWriter, r *http.Requ
 	for _, bmh := range p.bareMetalHosts {
 		enriched := bmh.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
-		p.enrichBMHStatus(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
 
 	if wantsTable(r) {
+		p.enrichBMHListConcurrent(r.Context(), items)
 		podWriteJSON(w, http.StatusOK, bmhListToTable(items))
 		return
 	}
@@ -195,11 +196,11 @@ func (p *MicroKubeProvider) handleListNamespacedBMH(w http.ResponseWriter, r *ht
 		}
 		enriched := bmh.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
-		p.enrichBMHStatus(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
 
 	if wantsTable(r) {
+		p.enrichBMHListConcurrent(r.Context(), items)
 		podWriteJSON(w, http.StatusOK, bmhListToTable(items))
 		return
 	}
@@ -359,6 +360,22 @@ func (p *MicroKubeProvider) reconcileBMHChanges(ctx context.Context, old, new *B
 			log.Warnw("pxe IPMI config failed", "host", new.Name, "error", err)
 		}
 	}
+}
+
+// enrichBMHListConcurrent enriches all BMH items concurrently with a 3s overall timeout.
+func (p *MicroKubeProvider) enrichBMHListConcurrent(ctx context.Context, items []BareMetalHost) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := range items {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			p.enrichBMHStatus(ctx, &items[idx])
+		}(i)
+	}
+	wg.Wait()
 }
 
 // enrichBMHStatus fetches live data from pxemanager to update status fields.
