@@ -176,9 +176,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		staticIP := pod.Annotations[annotationStaticIP]
 		ip, gw, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName, staticIP)
 		if err != nil {
-			// If veth exists from a previous failed attempt, clean up and retry
-			if strings.Contains(err.Error(), "already have interface") {
-				log.Warnw("cleaning up orphaned veth", "veth", vethName)
+			// If veth/IP exists from a previous failed attempt, clean up and retry
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "already have interface") || strings.Contains(errMsg, "already allocated to") {
+				log.Warnw("cleaning up orphaned veth", "veth", vethName, "reason", errMsg)
 				if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); releaseErr != nil {
 					log.Warnw("failed to release orphaned veth", "veth", vethName, "error", releaseErr)
 				}
@@ -678,6 +679,32 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
+	// 1b. Ensure boot-order pods exist in NATS so infrastructure (DNS)
+	// is always in the desired state. Only adds pods that are completely
+	// missing from the store — existing entries are left untouched.
+	if p.deps.Store != nil && p.deps.Store.Connected() && p.deps.Config.Lifecycle.BootManifestPath != "" {
+		bootPods, _, err := loadManifests(p.deps.Config.Lifecycle.BootManifestPath)
+		if err == nil {
+			desiredByKey := make(map[string]bool, len(desiredPods))
+			for _, pod := range desiredPods {
+				desiredByKey[podKey(pod)] = true
+			}
+			for _, bootPod := range bootPods {
+				key := podKey(bootPod)
+				if desiredByKey[key] {
+					continue
+				}
+				storeKey := bootPod.Namespace + "." + bootPod.Name
+				if _, err := p.deps.Store.Pods.PutJSON(ctx, storeKey, bootPod); err != nil {
+					log.Warnw("failed to persist boot-order pod to store", "pod", key, "error", err)
+				} else {
+					log.Infow("persisted boot-order pod to store", "pod", key)
+				}
+				desiredPods = append(desiredPods, bootPod)
+			}
+		}
+	}
+
 	// Store ConfigMaps from manifest, then re-apply generated defaults
 	// so that config-derived ConfigMaps (DNS, DHCP) always reflect the
 	// live mkube config rather than stale copies persisted in NATS.
@@ -719,6 +746,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			log.Infow("creating missing pod", "pod", key)
 			if err := p.CreatePod(ctx, pod); err != nil {
 				log.Errorw("failed to create pod", "pod", key, "error", err)
+				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
 			}
 		} else {
 			// Track already-existing pods
