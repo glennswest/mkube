@@ -12,6 +12,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/glennswest/mkube/pkg/store"
 )
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -154,6 +156,11 @@ func (p *MicroKubeProvider) handleGetBMH(w http.ResponseWriter, r *http.Request)
 }
 
 func (p *MicroKubeProvider) handleListAllBMH(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("watch") == "true" {
+		p.handleWatchBMH(w, r, "")
+		return
+	}
+
 	items := make([]BareMetalHost, 0, len(p.bareMetalHosts))
 	for _, bmh := range p.bareMetalHosts {
 		enriched := bmh.DeepCopy()
@@ -175,6 +182,11 @@ func (p *MicroKubeProvider) handleListAllBMH(w http.ResponseWriter, r *http.Requ
 
 func (p *MicroKubeProvider) handleListNamespacedBMH(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
+
+	if r.URL.Query().Get("watch") == "true" {
+		p.handleWatchBMH(w, r, ns)
+		return
+	}
 
 	items := make([]BareMetalHost, 0)
 	for _, bmh := range p.bareMetalHosts {
@@ -599,5 +611,92 @@ func (p *MicroKubeProvider) LoadBMHFromStore(ctx context.Context) {
 
 	if len(keys) > 0 {
 		p.deps.Logger.Infow("loaded BMH from store", "count", len(keys))
+	}
+}
+
+// handleWatchBMH streams BMH events as newline-delimited JSON (K8s watch format).
+func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Request, nsFilter string) {
+	if p.deps.Store == nil || p.deps.Store.BareMetalHosts == nil {
+		http.Error(w, "watch requires NATS store", http.StatusServiceUnavailable)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ctx := r.Context()
+
+	// Send existing BMH objects as ADDED events first
+	enc := json.NewEncoder(w)
+	for _, bmh := range p.bareMetalHosts {
+		if nsFilter != "" && bmh.Namespace != nsFilter {
+			continue
+		}
+		enriched := bmh.DeepCopy()
+		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
+		p.enrichBMHStatus(ctx, enriched)
+		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}
+		if err := enc.Encode(evt); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+
+	// Open watch on the NATS KV store
+	events, err := p.deps.Store.BareMetalHosts.WatchAll(ctx)
+	if err != nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+
+			var bmh BareMetalHost
+			if evt.Type == store.EventDelete {
+				ns, name := parseStoreKey(evt.Key)
+				if nsFilter != "" && ns != nsFilter {
+					continue
+				}
+				bmh = BareMetalHost{
+					TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"},
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				}
+			} else {
+				if err := json.Unmarshal(evt.Value, &bmh); err != nil {
+					continue
+				}
+				if nsFilter != "" && bmh.Namespace != nsFilter {
+					continue
+				}
+				bmh.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
+				p.enrichBMHStatus(ctx, &bmh)
+			}
+
+			watchEvt := K8sWatchEvent{
+				Type:   string(evt.Type),
+				Object: &bmh,
+			}
+
+			if err := enc.Encode(watchEvt); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
 	}
 }

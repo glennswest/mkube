@@ -287,7 +287,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			p.deps.LifecycleMgr.Register(name, lifecycle.ContainerUnit{
 				Name:          name,
 				ContainerID:   ct.ID,
-				ContainerIP:   ip,
+				ContainerIP:   bareIP,
 				RestartPolicy: string(pod.Spec.RestartPolicy),
 				StartOnBoot:   true,
 				Managed:       true,
