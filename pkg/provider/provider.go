@@ -678,8 +678,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Store ConfigMaps from manifest (overrides defaults)
+	// Store ConfigMaps from manifest, then re-apply generated defaults
+	// so that config-derived ConfigMaps (DNS, DHCP) always reflect the
+	// live mkube config rather than stale copies persisted in NATS.
 	for _, cm := range manifestCMs {
+		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
+	}
+	for _, cm := range generateDefaultConfigMaps(p.deps.Config) {
 		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
 	}
 

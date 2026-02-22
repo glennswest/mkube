@@ -82,14 +82,41 @@ func (p *MicroKubeProvider) scanSubnets(ctx context.Context) {
 	}
 }
 
-// probeIPMI attempts a TCP connection to IPMI/RMCP port 623.
-// Returns true if the port is open (host is reachable).
+// probeIPMI checks if a BMC/iDRAC is reachable by trying its HTTPS
+// management interface (TCP 443), then falling back to an RMCP ping
+// on UDP 623. Most BMCs expose a web UI on 443; RMCP is UDP-only so
+// a TCP probe on 623 won't work.
 func probeIPMI(ctx context.Context, ip string) bool {
 	d := net.Dialer{Timeout: 2 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "623"))
+
+	// Try HTTPS management port first (works for iDRAC, Supermicro, etc.)
+	if conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "443")); err == nil {
+		conn.Close()
+		return true
+	}
+
+	// Try HTTP management port
+	if conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "80")); err == nil {
+		conn.Close()
+		return true
+	}
+
+	// Fall back to RMCP ping (UDP 623). Send an ASF Presence Ping and
+	// check for any response.
+	udpConn, err := d.DialContext(ctx, "udp", net.JoinHostPort(ip, "623"))
 	if err != nil {
 		return false
 	}
-	conn.Close()
-	return true
+	defer udpConn.Close()
+
+	// ASF RMCP Presence Ping
+	rmcpPing := []byte{0x06, 0x00, 0xff, 0x06, 0x00, 0x00, 0x11, 0xbe, 0x80, 0x00, 0x00, 0x00}
+	_ = udpConn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := udpConn.Write(rmcpPing); err != nil {
+		return false
+	}
+
+	buf := make([]byte, 64)
+	n, err := udpConn.Read(buf)
+	return err == nil && n > 0
 }
