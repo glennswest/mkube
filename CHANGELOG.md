@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **fix:** Store data volumes under `/raid1/volumes/` instead of `/raid1/images/` — prevents tarball extraction from wiping persistent data (DNS databases, etc.) on container recreation
 - **fix:** Reinitialize NATS KV buckets on reconnect — prevents stale stream handles after NATS container restart
 - **feat:** Add static DNS records for all zones — rose1, dns, dnsx, nats, mkube in gt/g10/g11/gw networks
 - **fix:** Enable NATS monitoring port (`-m 8222`) so liveness probe works — was causing max restart failures and JetStream stream-not-found errors

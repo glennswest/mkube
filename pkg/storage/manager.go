@@ -372,12 +372,17 @@ func (m *Manager) ReleaseImage(imageRef string) {
 }
 
 // ProvisionVolume creates a directory on the RouterOS filesystem for a
-// container's volume mount.
+// container's volume mount. Volumes are stored under a separate path from
+// the container root-dir so that data survives container recreation
+// (tarball extraction overwrites root-dir contents).
 func (m *Manager) ProvisionVolume(ctx context.Context, containerName, volumeName, mountPath string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	hostPath := fmt.Sprintf("%s/%s/%s", m.cfg.BasePath, containerName, volumeName)
+	// Use a dedicated volumes directory parallel to the images directory.
+	// e.g. /raid1/images → /raid1/volumes
+	volumesBase := strings.TrimSuffix(m.cfg.BasePath, "/images") + "/volumes"
+	hostPath := fmt.Sprintf("%s/%s/%s", volumesBase, containerName, volumeName)
 	key := fmt.Sprintf("%s/%s", containerName, volumeName)
 
 	// Create the directory on RouterOS
