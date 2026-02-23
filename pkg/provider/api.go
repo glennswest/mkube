@@ -556,7 +556,8 @@ type redeployRequest struct {
 }
 
 // handleImageRedeploy forces immediate redeployment of all pods using a given image.
-// Clears cached digest so RefreshImage detects a change, then recreates each pod.
+// Clears cached digest so RefreshImage detects a change, then recreates each pod
+// asynchronously. Returns immediately with the list of pods queued for redeployment.
 // Usage: curl -X POST http://192.168.200.2:8082/api/v1/images/redeploy -d '{"image":"microdns:edge"}'
 func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.Request) {
 	var req redeployRequest
@@ -573,7 +574,7 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 	log.Infow("image redeploy requested", "image", req.Image)
 
 	// Find all tracked pods using this image
-	var redeployed []string
+	var podKeys []string
 	var targets []*corev1.Pod
 	for _, pod := range p.pods {
 		if pod.Annotations[annotationImagePolicy] != "auto" {
@@ -582,32 +583,38 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 		for _, c := range pod.Spec.Containers {
 			if imageMatches(c.Image, req.Image) {
 				targets = append(targets, pod.DeepCopy())
+				podKeys = append(podKeys, pod.Namespace+"/"+pod.Name)
 				break
 			}
 		}
 	}
 
+	// Clear cached digests and kick off redeployment asynchronously
 	for _, pod := range targets {
-		key := pod.Namespace + "/" + pod.Name
-		// Clear cached digest so RefreshImage detects a change
 		for _, c := range pod.Spec.Containers {
 			if imageMatches(c.Image, req.Image) {
 				p.deps.StorageMgr.ClearImageDigest(c.Image)
 			}
 		}
-		log.Infow("redeploying pod", "pod", key, "image", req.Image)
-		if err := p.UpdatePod(r.Context(), pod); err != nil {
-			log.Errorw("redeploy failed", "pod", key, "error", err)
-		} else {
-			redeployed = append(redeployed, key)
-		}
 	}
+
+	go func() {
+		for _, pod := range targets {
+			key := pod.Namespace + "/" + pod.Name
+			log.Infow("redeploying pod", "pod", key, "image", req.Image)
+			if err := p.UpdatePod(context.Background(), pod); err != nil {
+				log.Errorw("redeploy failed", "pod", key, "error", err)
+			} else {
+				log.Infow("redeploy complete", "pod", key, "image", req.Image)
+			}
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	resp, _ := json.Marshal(map[string]interface{}{
-		"status":     "ok",
-		"image":      req.Image,
-		"redeployed": redeployed,
+		"status":  "ok",
+		"image":   req.Image,
+		"queued":  podKeys,
 	})
 	_, _ = w.Write(resp)
 	_, _ = w.Write([]byte("\n"))
