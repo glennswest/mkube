@@ -1,0 +1,843 @@
+{
+  "server": "192.168.10.252:8080",
+  "network": "g10",
+  "zones": [
+    {
+      "zone": {
+        "id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+        "name": "g10.lo",
+        "soa": {
+          "mname": "ns1.g10.lo",
+          "rname": "admin.g10.lo",
+          "serial": 2026022369,
+          "refresh": 3600,
+          "retry": 900,
+          "expire": 604800,
+          "minimum": 300
+        },
+        "default_ttl": 300,
+        "record_count": 29,
+        "created_at": "2026-02-23T21:31:08.344013+00:00",
+        "updated_at": "2026-02-23T21:40:09.893440740+00:00"
+      },
+      "records": [
+        {
+          "id": "511369c6-2911-4161-a69a-8ff9af5e2bd6",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "agentmonitor",
+          "ttl": 3600,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.203"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:41.826632115+00:00",
+          "updated_at": "2026-02-23T21:39:41.826632528+00:00"
+        },
+        {
+          "id": "f3b8916b-d0a7-4bd4-b5e8-f61a0fe02cc1",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "dns",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.252"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.354728720+00:00",
+          "updated_at": "2026-02-23T21:31:08.354729120+00:00"
+        },
+        {
+          "id": "4921540f-5e80-40c2-b1c4-ba82b710cb84",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "dnsx",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.1.51"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.361452307+00:00",
+          "updated_at": "2026-02-23T21:31:08.361452733+00:00"
+        },
+        {
+          "id": "5fd728c0-e57f-4561-8bd0-c4169f807703",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "fastregistry",
+          "ttl": 3600,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.202"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:41.843562288+00:00",
+          "updated_at": "2026-02-23T21:39:41.843562542+00:00"
+        },
+        {
+          "id": "8cefa6b3-acf5-4818-a585-832c66e2092d",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "gb10",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.40"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:17.016793360+00:00",
+          "updated_at": "2026-02-23T21:31:17.016793574+00:00"
+        },
+        {
+          "id": "6f037dc7-51eb-4720-b697-ca6eeb544b32",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "gb10",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.30"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:19.017587357+00:00",
+          "updated_at": "2026-02-23T21:31:19.017587571+00:00"
+        },
+        {
+          "id": "b21d98c6-83a0-452c-a724-a1c490fe2e10",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "macmini",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.190"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.478777600+00:00",
+          "updated_at": "2026-02-23T21:31:08.478777933+00:00"
+        },
+        {
+          "id": "64f5f0a5-ee2e-4bb5-8b11-618f235a17f3",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "network",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.201"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:41.856712715+00:00",
+          "updated_at": "2026-02-23T21:39:41.856712968+00:00"
+        },
+        {
+          "id": "e2e55962-3e1d-47f6-b161-dc2aa710a3c5",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "pxe",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.200"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.366259867+00:00",
+          "updated_at": "2026-02-23T21:31:08.366260280+00:00"
+        },
+        {
+          "id": "0a503544-509d-4bfd-bfa7-993da5f802fb",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "rose1",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.1"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.348138387+00:00",
+          "updated_at": "2026-02-23T21:31:08.348138720+00:00"
+        },
+        {
+          "id": "603d8439-d311-4179-8036-584560b0a526",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server1",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.10"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.371285867+00:00",
+          "updated_at": "2026-02-23T21:31:08.371286187+00:00"
+        },
+        {
+          "id": "ba6e0a4d-cdb5-45dc-8a02-adedeb483e39",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server1b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.20"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.376469560+00:00",
+          "updated_at": "2026-02-23T21:31:08.376470293+00:00"
+        },
+        {
+          "id": "2977e8d5-b4d7-43f6-9d32-6563342b7e60",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server2",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.11"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.381435067+00:00",
+          "updated_at": "2026-02-23T21:31:08.381435360+00:00"
+        },
+        {
+          "id": "2a5d1781-7262-4b50-b6c4-bb6d13194e98",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server2b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.21"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.386486747+00:00",
+          "updated_at": "2026-02-23T21:31:08.386487107+00:00"
+        },
+        {
+          "id": "6833ab0c-f6ff-4aaf-a03b-65282eb712d4",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server30",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.30"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.466773013+00:00",
+          "updated_at": "2026-02-23T21:31:08.466773253+00:00"
+        },
+        {
+          "id": "989d037a-97c5-4e11-9229-0b02ec2c7d9b",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server30b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.40"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.472819107+00:00",
+          "updated_at": "2026-02-23T21:31:08.472819347+00:00"
+        },
+        {
+          "id": "19c500af-f55b-4e48-bc8a-1213e75cea83",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server3",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.12"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.391411027+00:00",
+          "updated_at": "2026-02-23T21:31:08.391411360+00:00"
+        },
+        {
+          "id": "62f51681-7f63-41c3-85d0-b8be0c1f472b",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server3b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.22"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.396494120+00:00",
+          "updated_at": "2026-02-23T21:31:08.396494467+00:00"
+        },
+        {
+          "id": "d3f5b482-ed7a-4637-bdc3-b6c2df1b235b",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server4",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.13"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.401582480+00:00",
+          "updated_at": "2026-02-23T21:31:08.401582733+00:00"
+        },
+        {
+          "id": "996dbfa9-dbc8-465c-beef-cfe3833bde93",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server4b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.23"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.407554307+00:00",
+          "updated_at": "2026-02-23T21:31:08.407554573+00:00"
+        },
+        {
+          "id": "20f0c6fa-b07a-44e9-82ab-3562f276d74e",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server5",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.14"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.414574733+00:00",
+          "updated_at": "2026-02-23T21:31:08.414574973+00:00"
+        },
+        {
+          "id": "9da45008-5942-4235-9e02-e9e0b534c127",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server5b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.24"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.421642587+00:00",
+          "updated_at": "2026-02-23T21:31:08.421642867+00:00"
+        },
+        {
+          "id": "e37a601f-ec9e-4796-9663-d2b8285db3bd",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server6",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.15"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.428702853+00:00",
+          "updated_at": "2026-02-23T21:31:08.428703133+00:00"
+        },
+        {
+          "id": "bc13a324-341b-4773-ba0c-206cb86237fb",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server6b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.25"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.435708493+00:00",
+          "updated_at": "2026-02-23T21:31:08.435708813+00:00"
+        },
+        {
+          "id": "691bb800-6019-418e-a918-80712b2f9c9a",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server7",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.16"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.441725213+00:00",
+          "updated_at": "2026-02-23T21:31:08.441725533+00:00"
+        },
+        {
+          "id": "be9662da-07cd-4880-994c-8ffc81d3c71b",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server7b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.26"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.447624960+00:00",
+          "updated_at": "2026-02-23T21:31:08.447625200+00:00"
+        },
+        {
+          "id": "e623ef36-1d62-4415-801f-153595eecd3c",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server8",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.17"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.454764533+00:00",
+          "updated_at": "2026-02-23T21:31:08.454765267+00:00"
+        },
+        {
+          "id": "74a19a3d-57e4-48a6-ba39-66be864a2e3e",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "server8b",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.27"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.460689013+00:00",
+          "updated_at": "2026-02-23T21:31:08.460689253+00:00"
+        },
+        {
+          "id": "87ee738a-a76f-4d1e-93d5-b36144a5b703",
+          "zone_id": "b932e5f4-d295-4d20-abe3-4d9b33180fec",
+          "name": "switch10",
+          "ttl": 3600,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.10.254"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:42.057445821+00:00",
+          "updated_at": "2026-02-23T21:39:42.057446061+00:00"
+        }
+      ]
+    },
+    {
+      "zone": {
+        "id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+        "name": "10.168.192.in-addr.arpa",
+        "soa": {
+          "mname": "ns1.10.168.192.in-addr.arpa",
+          "rname": "admin.10.168.192.in-addr.arpa",
+          "serial": 2026022324,
+          "refresh": 3600,
+          "retry": 900,
+          "expire": 604800,
+          "minimum": 300
+        },
+        "default_ttl": 3600,
+        "record_count": 24,
+        "created_at": "2026-02-23T21:43:10.906928950+00:00",
+        "updated_at": "2026-02-23T21:43:42.254031263+00:00"
+      },
+      "records": [
+        {
+          "id": "46bc7ca8-5087-408a-8272-1debdec3a7b0",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "10",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server1.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:41.962622717+00:00",
+          "updated_at": "2026-02-23T21:43:41.962623130+00:00"
+        },
+        {
+          "id": "b4496653-519b-4d70-96c6-d3a3bc8f385b",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "11",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server2.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:41.978881224+00:00",
+          "updated_at": "2026-02-23T21:43:41.978881477+00:00"
+        },
+        {
+          "id": "b992426b-534e-40b0-9693-d8e5e50d83ba",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "12",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:41.993605677+00:00",
+          "updated_at": "2026-02-23T21:43:41.993605904+00:00"
+        },
+        {
+          "id": "40918314-4b34-4812-85bb-8ae5212aa055",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "12",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.006372357+00:00",
+          "updated_at": "2026-02-23T21:43:42.006372704+00:00"
+        },
+        {
+          "id": "a2825bc3-050f-4197-ba6a-312a539f5821",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "13",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.019207637+00:00",
+          "updated_at": "2026-02-23T21:43:42.019207877+00:00"
+        },
+        {
+          "id": "7ef36f4e-d249-4557-b161-5b49f1e0040e",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "13",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.032783317+00:00",
+          "updated_at": "2026-02-23T21:43:42.032783544+00:00"
+        },
+        {
+          "id": "9e183f28-5366-41e7-9d2c-9b050b76acda",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "14",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server5.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.044945490+00:00",
+          "updated_at": "2026-02-23T21:43:42.044945730+00:00"
+        },
+        {
+          "id": "c5cf89ea-b3c8-45ef-874c-dd8f61ac7ef1",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "15",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server6.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.056752104+00:00",
+          "updated_at": "2026-02-23T21:43:42.056752357+00:00"
+        },
+        {
+          "id": "db70e262-3128-4199-8275-7ae603932307",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "17",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server8.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.068847117+00:00",
+          "updated_at": "2026-02-23T21:43:42.068847357+00:00"
+        },
+        {
+          "id": "5aac605d-f627-47a8-8fb4-989f2d30cbcd",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "201",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "network.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.093958264+00:00",
+          "updated_at": "2026-02-23T21:43:42.093958504+00:00"
+        },
+        {
+          "id": "9b2559f4-433e-4deb-8fb0-edfc30be71b4",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "203",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "agent-monitor.gw.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.105864544+00:00",
+          "updated_at": "2026-02-23T21:43:42.105864877+00:00"
+        },
+        {
+          "id": "f918718f-7290-46a6-9219-48298607f32c",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "203",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "agentmonitor.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.118327824+00:00",
+          "updated_at": "2026-02-23T21:43:42.118328077+00:00"
+        },
+        {
+          "id": "b4bf55bb-f53d-40a9-ab94-2538bd1c5e6a",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "20",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server1b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.080108477+00:00",
+          "updated_at": "2026-02-23T21:43:42.080108717+00:00"
+        },
+        {
+          "id": "207ae0ba-ab28-42a6-b1ce-aaac13d32f5a",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "21",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server2b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.130771677+00:00",
+          "updated_at": "2026-02-23T21:43:42.130771930+00:00"
+        },
+        {
+          "id": "5b47add9-d108-42ad-ab0d-fc30234cf3eb",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "22",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.142075543+00:00",
+          "updated_at": "2026-02-23T21:43:42.142075837+00:00"
+        },
+        {
+          "id": "cea468fa-4b2f-4b2e-bbad-7618c6157ee7",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "22",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.155068797+00:00",
+          "updated_at": "2026-02-23T21:43:42.155069090+00:00"
+        },
+        {
+          "id": "6b8026ad-44ab-4dd7-b5b6-787eb8574588",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "22",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.167343010+00:00",
+          "updated_at": "2026-02-23T21:43:42.167343263+00:00"
+        },
+        {
+          "id": "351a7a67-38ce-4339-9380-e37776e5c428",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "23",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.179759557+00:00",
+          "updated_at": "2026-02-23T21:43:42.179759823+00:00"
+        },
+        {
+          "id": "17316993-15dc-4b15-add3-4a4d8bf47699",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "23",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.191451783+00:00",
+          "updated_at": "2026-02-23T21:43:42.191452037+00:00"
+        },
+        {
+          "id": "19eb096e-9882-42d6-9ff6-c8619a0391a8",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "24",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server5b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.202421583+00:00",
+          "updated_at": "2026-02-23T21:43:42.202421877+00:00"
+        },
+        {
+          "id": "5bfebfd7-8854-4871-9bc0-d29b771e6c27",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "254",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "switch10.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.226367103+00:00",
+          "updated_at": "2026-02-23T21:43:42.226367370+00:00"
+        },
+        {
+          "id": "b625c51c-ce1b-4c44-8f30-6efb5cb5b587",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "25",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server6b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.213189250+00:00",
+          "updated_at": "2026-02-23T21:43:42.213189490+00:00"
+        },
+        {
+          "id": "7f321045-e383-42c5-9944-8bcbc6676f11",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "27",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server8b.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.238789957+00:00",
+          "updated_at": "2026-02-23T21:43:42.238790237+00:00"
+        },
+        {
+          "id": "3f425f0f-6728-4370-8db0-f60904c39c5a",
+          "zone_id": "ed41c9b1-3053-449f-8519-1b51706e88e3",
+          "name": "3",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "network.g10.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.251991343+00:00",
+          "updated_at": "2026-02-23T21:43:42.251991610+00:00"
+        }
+      ]
+    }
+  ]
+}

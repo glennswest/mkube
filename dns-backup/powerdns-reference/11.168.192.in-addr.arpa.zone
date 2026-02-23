@@ -1,0 +1,18 @@
+$ORIGIN .
+10.11.168.192.in-addr.arpa	3600	IN	PTR	server1.g11.lo
+11.11.168.192.in-addr.arpa	3600	IN	PTR	server2.g11.lo
+11.168.192.in-addr.arpa	3600	IN	NS	dnsx.gw.lo.
+11.168.192.in-addr.arpa	3600	IN	SOA	a.misconfigured.dns.server.invalid hostmaster.11.168.192.in-addr.arpa 0 10800 3600 604800 3600
+12.11.168.192.in-addr.arpa	3600	IN	PTR	server3.g11.lo
+12.11.168.192.in-addr.arpa	3600	IN	PTR	server3.g11.lo
+13.11.168.192.in-addr.arpa	3600	IN	PTR	server4.g11.lo
+13.11.168.192.in-addr.arpa	3600	IN	PTR	server4.g11.lo
+14.11.168.192.in-addr.arpa	3600	IN	PTR	server5.g11.lo
+14.11.168.192.in-addr.arpa	3600	IN	PTR	server5.g11.lo
+15.11.168.192.in-addr.arpa	3600	IN	PTR	server6.g11.lo
+15.11.168.192.in-addr.arpa	3600	IN	PTR	server6.g11.lo
+16.11.168.192.in-addr.arpa	3600	IN	PTR	server7.g11.lo
+17.11.168.192.in-addr.arpa	3600	IN	PTR	server8.g11.lo
+17.11.168.192.in-addr.arpa	3600	IN	PTR	server8.g11.lo
+200.11.168.192.in-addr.arpa	3600	IN	PTR	console.g11.lo
+254.11.168.192.in-addr.arpa	3600	IN	PTR	switch11.g11.lo

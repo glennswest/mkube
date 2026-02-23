@@ -1,0 +1,3 @@
+$ORIGIN .
+ai.gw.lo	3600	IN	NS	ns1.gw.lo.
+ai.gw.lo	3600	IN	SOA	a.misconfigured.dns.server.invalid hostmaster.ai.gw.lo 0 10800 3600 604800 3600

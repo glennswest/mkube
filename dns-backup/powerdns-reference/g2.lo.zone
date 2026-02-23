@@ -1,0 +1,6 @@
+$ORIGIN .
+*.apps.g2.lo	100	IN	A	192.168.2.10
+api.g2.lo	86400	IN	A	192.168.2.10
+g2.lo	86400	IN	NS	ns1.gw.lo.
+g2.lo	86400	IN	SOA	ns1.gw.lo server.g2.lo 2 10800 3600 604800 3600
+node.g2.lo	86400	IN	A	192.168.2.10

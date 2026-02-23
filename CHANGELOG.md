@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **feat:** DNS backup system — JSON exports of all microdns zones saved to `dns-backup/` for disaster recovery
+- **feat:** PowerDNS migration — imported all gw.lo, g10.lo, g11.lo records + reverse zones from legacy PowerDNS (dnsx)
 - **fix:** Store data volumes under `/raid1/volumes/` instead of `/raid1/images/` — prevents tarball extraction from wiping persistent data (DNS databases, etc.) on container recreation
 - **fix:** Reinitialize NATS KV buckets on reconnect — prevents stale stream handles after NATS container restart
 - **feat:** Add static DNS records for all zones — rose1, dns, dnsx, nats, mkube in gt/g10/g11/gw networks

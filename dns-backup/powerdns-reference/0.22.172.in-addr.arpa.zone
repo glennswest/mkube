@@ -1,0 +1,5 @@
+$ORIGIN .
+0.22.172.in-addr.arpa	86400	IN	NS	dnsx.gw.lo.
+0.22.172.in-addr.arpa	86400	IN	SOA	dnsx.gw.lo admin.gw.lo 2024092301 10800 3600 604800 86400
+1.0.22.172.in-addr.arpa	3600	IN	PTR	provisioner.pv.lo
+1.0.22.172.in-addr.arpa	3600	IN	PTR	prov.pv.lo

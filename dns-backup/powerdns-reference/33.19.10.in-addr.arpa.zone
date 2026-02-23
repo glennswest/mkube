@@ -1,0 +1,13 @@
+$ORIGIN .
+10.33.19.10.in-addr.arpa	3600	IN	PTR	api.bm.lo
+100.33.19.10.in-addr.arpa	3600	IN	PTR	prov.bm.lo
+100.33.19.10.in-addr.arpa	3600	IN	PTR	provisioner.bm.lo
+101.33.19.10.in-addr.arpa	3600	IN	PTR	master-0.bm.lo
+102.33.19.10.in-addr.arpa	3600	IN	PTR	master-1.bm.lo
+103.33.19.10.in-addr.arpa	3600	IN	PTR	master-2.bm.lo
+111.33.19.10.in-addr.arpa	3600	IN	PTR	worker-0.bm.lo
+112.33.19.10.in-addr.arpa	3600	IN	PTR	worker-1.bm.lo
+113.33.19.10.in-addr.arpa	3600	IN	PTR	worker-2.bm.lo
+20.33.19.10.in-addr.arpa	3600	IN	PTR	*.apps.bm.lo
+33.19.10.in-addr.arpa	86400	IN	NS	dnsx.gw.lo.
+33.19.10.in-addr.arpa	86400	IN	SOA	dnsx.gw.lo admin.gw.lo 2024092301 10800 3600 604800 86400

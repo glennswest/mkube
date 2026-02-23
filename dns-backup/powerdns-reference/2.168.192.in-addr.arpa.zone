@@ -1,0 +1,7 @@
+$ORIGIN .
+10.2.168.192.in-addr.arpa	3600	IN	PTR	node.g2.lo
+10.2.168.192.in-addr.arpa	3600	IN	PTR	api.g2.lo
+10.2.168.192.in-addr.arpa	3600	IN	PTR	*.apps.g2.lo
+12.2.168.192.in-addr.arpa	3600	IN	PTR	*.apps.g2.lo
+2.168.192.in-addr.arpa	86400	IN	NS	dnsx.gw.lo.
+2.168.192.in-addr.arpa	86400	IN	SOA	dnsx.gw.lo admin.gw.lo 2024092301 10800 3600 604800 86400

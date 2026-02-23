@@ -1,0 +1,483 @@
+{
+  "server": "192.168.11.252:8080",
+  "network": "g11",
+  "zones": [
+    {
+      "zone": {
+        "id": "07d26330-acf7-4b13-a047-4683edaeb379",
+        "name": "g11.lo",
+        "soa": {
+          "mname": "ns1.g11.lo",
+          "rname": "admin.g11.lo",
+          "serial": 2026022330,
+          "refresh": 3600,
+          "retry": 900,
+          "expire": 604800,
+          "minimum": 300
+        },
+        "default_ttl": 300,
+        "record_count": 14,
+        "created_at": "2026-02-23T21:31:08.486593626+00:00",
+        "updated_at": "2026-02-23T21:39:57.296200639+00:00"
+      },
+      "records": [
+        {
+          "id": "079db04a-23e4-49c3-82dd-fe1580a7ff7a",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "console",
+          "ttl": 3600,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.200"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:53.598815191+00:00",
+          "updated_at": "2026-02-23T21:39:53.598815671+00:00"
+        },
+        {
+          "id": "726b687a-3804-4097-8a06-e46305064603",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "dns",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.252"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.498733453+00:00",
+          "updated_at": "2026-02-23T21:31:08.498733840+00:00"
+        },
+        {
+          "id": "26ac15b6-9392-4427-91ad-9bd672ed08f1",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "dnsx",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.1.51"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.505387293+00:00",
+          "updated_at": "2026-02-23T21:31:08.505387573+00:00"
+        },
+        {
+          "id": "ff7e3b41-1e00-44b4-ac96-dfeb904e004c",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "rose1",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.1"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.490796413+00:00",
+          "updated_at": "2026-02-23T21:31:08.490796733+00:00"
+        },
+        {
+          "id": "9456a48f-c7d0-4d61-a8aa-744abda672df",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server1",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.10"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.511431826+00:00",
+          "updated_at": "2026-02-23T21:31:08.511432093+00:00"
+        },
+        {
+          "id": "47e89262-7030-46c6-8093-48198f758516",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server2",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.11"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.517322973+00:00",
+          "updated_at": "2026-02-23T21:31:08.517323266+00:00"
+        },
+        {
+          "id": "35cc8ad5-0fd0-4d13-9971-53430938720d",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server30",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.30"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.552458693+00:00",
+          "updated_at": "2026-02-23T21:31:08.552458973+00:00"
+        },
+        {
+          "id": "44816a46-35cd-4dc8-9333-f572eb639d74",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server3",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.12"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.522449293+00:00",
+          "updated_at": "2026-02-23T21:31:08.522449546+00:00"
+        },
+        {
+          "id": "0b0ae51a-6186-46fd-82a5-bbdc83016074",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server4",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.13"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.527407560+00:00",
+          "updated_at": "2026-02-23T21:31:08.527407800+00:00"
+        },
+        {
+          "id": "0d3e71fb-cc0a-4324-8ea5-3865aa7e330b",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server5",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.14"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.532467986+00:00",
+          "updated_at": "2026-02-23T21:31:08.532468293+00:00"
+        },
+        {
+          "id": "6d64497a-c881-4395-b30c-321cfa1a2af4",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server6",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.15"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.537392826+00:00",
+          "updated_at": "2026-02-23T21:31:08.537393106+00:00"
+        },
+        {
+          "id": "f63a55e5-e944-4f87-aee0-b73f370f2f71",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server7",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.16"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.542443680+00:00",
+          "updated_at": "2026-02-23T21:31:08.542443933+00:00"
+        },
+        {
+          "id": "ebc7ed81-646c-4caa-9275-fd17acc66ae1",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "server8",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.17"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.547493240+00:00",
+          "updated_at": "2026-02-23T21:31:08.547493520+00:00"
+        },
+        {
+          "id": "c6f60da5-ac81-47bd-ae67-c5840cd25b9a",
+          "zone_id": "07d26330-acf7-4b13-a047-4683edaeb379",
+          "name": "switch11",
+          "ttl": 3600,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.11.254"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:39:53.724808524+00:00",
+          "updated_at": "2026-02-23T21:39:53.724808804+00:00"
+        }
+      ]
+    },
+    {
+      "zone": {
+        "id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+        "name": "11.168.192.in-addr.arpa",
+        "soa": {
+          "mname": "ns1.11.168.192.in-addr.arpa",
+          "rname": "admin.11.168.192.in-addr.arpa",
+          "serial": 2026022315,
+          "refresh": 3600,
+          "retry": 900,
+          "expire": 604800,
+          "minimum": 300
+        },
+        "default_ttl": 3600,
+        "record_count": 15,
+        "created_at": "2026-02-23T21:43:13.904603519+00:00",
+        "updated_at": "2026-02-23T21:43:42.635648329+00:00"
+      },
+      "records": [
+        {
+          "id": "65926d7c-eb38-42a7-9587-82b1b0374422",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "10",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server1.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.447986930+00:00",
+          "updated_at": "2026-02-23T21:43:42.447987423+00:00"
+        },
+        {
+          "id": "cfb50a86-7206-446e-bfcb-90fac8b5eef3",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "11",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server2.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.464388343+00:00",
+          "updated_at": "2026-02-23T21:43:42.464388663+00:00"
+        },
+        {
+          "id": "f29c3ad4-3ef8-4e7b-a5bd-7e1186a72313",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "12",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.479899103+00:00",
+          "updated_at": "2026-02-23T21:43:42.479899490+00:00"
+        },
+        {
+          "id": "c9d1b576-3212-4a7c-bd8b-b07973a25689",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "12",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server3.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.493403436+00:00",
+          "updated_at": "2026-02-23T21:43:42.493403823+00:00"
+        },
+        {
+          "id": "daa20ca4-3c43-4a56-bce4-8a19810f8dc8",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "13",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.506849716+00:00",
+          "updated_at": "2026-02-23T21:43:42.506850010+00:00"
+        },
+        {
+          "id": "c2b74de1-64b5-430d-b1cb-c3e5f8bf6744",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "13",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server4.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.519371370+00:00",
+          "updated_at": "2026-02-23T21:43:42.519371663+00:00"
+        },
+        {
+          "id": "4ea77a3f-8927-46e1-a6d8-c8f09ee019cf",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "14",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server5.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.532459223+00:00",
+          "updated_at": "2026-02-23T21:43:42.532459516+00:00"
+        },
+        {
+          "id": "94c2fdea-07b0-4ff6-8827-fd0038e821eb",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "14",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server5.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.545544490+00:00",
+          "updated_at": "2026-02-23T21:43:42.545544796+00:00"
+        },
+        {
+          "id": "46471e49-f697-4334-b435-73c4c1cfb965",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "15",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server6.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.557451703+00:00",
+          "updated_at": "2026-02-23T21:43:42.557452023+00:00"
+        },
+        {
+          "id": "91baa61b-2b8e-4d01-93f4-bf7a703378c5",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "15",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server6.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.570251343+00:00",
+          "updated_at": "2026-02-23T21:43:42.570251676+00:00"
+        },
+        {
+          "id": "69072125-5c98-47c4-840f-6eefa79194d6",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "16",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server7.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.583342756+00:00",
+          "updated_at": "2026-02-23T21:43:42.583343076+00:00"
+        },
+        {
+          "id": "dea86d16-d196-4d55-a709-ca91898c5bca",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "17",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server8.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.595367849+00:00",
+          "updated_at": "2026-02-23T21:43:42.595368169+00:00"
+        },
+        {
+          "id": "d8f7e6bf-67f0-4920-a1a8-ced997d73ea2",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "17",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "server8.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.608650303+00:00",
+          "updated_at": "2026-02-23T21:43:42.608650623+00:00"
+        },
+        {
+          "id": "87a36fdf-2c4d-4726-b0dc-fb30347bfba9",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "200",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "console.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.621179143+00:00",
+          "updated_at": "2026-02-23T21:43:42.621179463+00:00"
+        },
+        {
+          "id": "c402fd94-01dc-4579-b812-81b252e0f243",
+          "zone_id": "4fad0cc0-9733-440d-b487-4c776baaff8b",
+          "name": "254",
+          "ttl": 3600,
+          "type": "PTR",
+          "data": {
+            "type": "PTR",
+            "data": "switch11.g11.lo"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:43:42.633260329+00:00",
+          "updated_at": "2026-02-23T21:43:42.633260663+00:00"
+        }
+      ]
+    }
+  ]
+}

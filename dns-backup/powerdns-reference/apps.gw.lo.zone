@@ -1,0 +1,4 @@
+$ORIGIN .
+*.apps.gw.lo	30	IN	A	192.168.1.206
+apps.gw.lo	3600	IN	NS	ns1.gw.lo.
+apps.gw.lo	3600	IN	SOA	ns1.gw.lo hostmaster.apps.gw.lo 7 10800 3600 604800 3600

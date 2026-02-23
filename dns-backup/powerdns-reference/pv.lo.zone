@@ -1,0 +1,5 @@
+$ORIGIN .
+prov.pv.lo	86400	IN	A	172.22.0.1
+provisioner.pv.lo	86400	IN	A	172.22.0.1
+pv.lo	86400	IN	NS	ns1.gw.lo.
+pv.lo	86400	IN	SOA	ns1.gw.lo server.gw.lo 2019080601 10 30 30 30

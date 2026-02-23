@@ -1,0 +1,102 @@
+{
+  "server": "192.168.200.199:8080",
+  "network": "gt",
+  "zones": [
+    {
+      "zone": {
+        "id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+        "name": "gt.lo",
+        "soa": {
+          "mname": "ns1.gt.lo",
+          "rname": "admin.gt.lo",
+          "serial": 2026022305,
+          "refresh": 3600,
+          "retry": 900,
+          "expire": 604800,
+          "minimum": 300
+        },
+        "default_ttl": 300,
+        "record_count": 5,
+        "created_at": "2026-02-23T21:31:08.309915520+00:00",
+        "updated_at": "2026-02-23T21:31:08.340574027+00:00"
+      },
+      "records": [
+        {
+          "id": "cf47c992-6c7e-4dfb-a80b-fd333314670d",
+          "zone_id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+          "name": "dns",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.200.199"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.321892480+00:00",
+          "updated_at": "2026-02-23T21:31:08.321892720+00:00"
+        },
+        {
+          "id": "1e57626f-df84-45bc-9305-4cf796e76694",
+          "zone_id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+          "name": "dnsx",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.1.51"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.328128013+00:00",
+          "updated_at": "2026-02-23T21:31:08.328128347+00:00"
+        },
+        {
+          "id": "f1e68ffd-409c-4735-89fe-2e9d07124e9e",
+          "zone_id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+          "name": "mkube",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.200.2"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.338245333+00:00",
+          "updated_at": "2026-02-23T21:31:08.338245600+00:00"
+        },
+        {
+          "id": "df50049e-9d45-4112-b3a3-9c7d99fbe170",
+          "zone_id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+          "name": "nats",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.200.10"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.333220360+00:00",
+          "updated_at": "2026-02-23T21:31:08.333220600+00:00"
+        },
+        {
+          "id": "b61522b1-f131-432c-bb21-bfdef589326a",
+          "zone_id": "7aefb29a-7bc9-40dc-bbc3-18ed4e20e19e",
+          "name": "rose1",
+          "ttl": 300,
+          "type": "A",
+          "data": {
+            "type": "A",
+            "data": "192.168.200.1"
+          },
+          "enabled": true,
+          "health_check": null,
+          "created_at": "2026-02-23T21:31:08.315150493+00:00",
+          "updated_at": "2026-02-23T21:31:08.315150760+00:00"
+        }
+      ]
+    }
+  ]
+}

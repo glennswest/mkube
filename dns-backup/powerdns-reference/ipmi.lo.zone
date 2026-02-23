@@ -1,0 +1,4 @@
+$ORIGIN .
+bmc.ipmi.lo	86400	IN	A	10.19.28.100
+ipmi.lo	86400	IN	NS	ns1.gw.lo.
+ipmi.lo	86400	IN	SOA	ns1.gw.lo server.gw.lo 2019080601 10 30 30 30

@@ -1,0 +1,4 @@
+$ORIGIN .
+100.28.19.10.in-addr.arpa	3600	IN	PTR	bmc.ipmi.lo
+28.19.10.in-addr.arpa	86400	IN	NS	dnsx.gw.lo.
+28.19.10.in-addr.arpa	86400	IN	SOA	dnsx.gw.lo admin.gw.lo 2024092301 10800 3600 604800 86400

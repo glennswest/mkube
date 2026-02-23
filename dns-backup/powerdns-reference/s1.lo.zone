@@ -1,0 +1,32 @@
+$ORIGIN .
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+*.apps.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api-int.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+api.s1.lo	3600	IN	A	192.168.10.10
+s1.lo	3600	IN	SOA	a.misconfigured.dns.server.invalid hostmaster.s1.lo 0 10800 3600 604800 3600
