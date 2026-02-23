@@ -81,16 +81,18 @@ func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, err
 	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
 	tarballPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
 
-	// If cached, quick-check the registry digest to catch new pushes.
-	// This is a HEAD request — cheap for local registries.
+	// Always check registry digest — registry is the source of truth.
+	// If the cached digest matches, skip the re-pull.
 	if cached, ok := m.images[imageRef]; ok {
 		if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && cached.Digest != "" && currentDigest == cached.Digest {
 			cached.InUse++
 			m.log.Debugw("image cache hit", "ref", imageRef, "path", cached.TarballPath)
 			return cached.TarballPath, nil
 		}
-		// Digest changed or unavailable — fall through to re-pull
-		m.log.Infow("image digest changed in registry, re-pulling", "ref", imageRef)
+		// Digest changed or unavailable — delete stale tarball and re-pull.
+		m.log.Infow("image digest changed in registry, deleting stale tarball and re-pulling", "ref", imageRef)
+		_ = os.Remove(tarballPath)
+		_ = os.Remove(tarballPath + ".digest")
 	}
 
 	m.log.Infow("pulling image", "ref", imageRef)
@@ -167,11 +169,14 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 		return hostPath, false, nil
 	}
 
-	// Digest changed — re-pull
-	m.log.Infow("stale image detected, re-pulling",
+	// Digest changed — delete stale tarball and re-pull from registry.
+	// Registry is the source of truth; tarballs are ephemeral cache.
+	m.log.Infow("stale image detected, deleting tarball and re-pulling",
 		"ref", imageRef,
 		"old_digest", truncDigest(storedDigest),
 		"new_digest", truncDigest(currentDigest))
+	_ = os.Remove(localTarball)
+	_ = os.Remove(localTarball + ".digest")
 
 	if err := m.pullAndUpload(ctx, imageRef, localTarball); err != nil {
 		return "", false, fmt.Errorf("re-pulling image %s: %w", imageRef, err)
@@ -352,10 +357,32 @@ func (m *Manager) ClearImageDigest(imageRef string) {
 		cached.Digest = ""
 	}
 
-	// Also remove the .digest file on disk
+	// Also remove the .digest file and stale tarball on disk.
+	// Registry is the source of truth — tarballs are rebuilt on demand.
 	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
-	digestFile := fmt.Sprintf("%s/%s.digest", m.cfg.TarballCache, tarballName)
+	tarballFile := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
+	digestFile := tarballFile + ".digest"
 	_ = os.Remove(digestFile)
+	_ = os.Remove(tarballFile)
+}
+
+// ClearImageDigestByRepo removes cached digests for all images matching
+// a given repository name (e.g. "microdns"). This is used when a push
+// event is received from the registry to ensure stale tarballs are invalidated.
+func (m *Manager) ClearImageDigestByRepo(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for ref, cached := range m.images {
+		if strings.Contains(ref, "/"+repo+":") || strings.HasPrefix(ref, repo+":") {
+			m.log.Infow("clearing cached digest for repo push", "ref", ref, "repo", repo)
+			cached.Digest = ""
+			tarballName := dockersave.SanitizeImageRef(ref) + ".tar"
+			tarballFile := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
+			_ = os.Remove(tarballFile + ".digest")
+			_ = os.Remove(tarballFile)
+		}
+	}
 }
 
 // ReleaseImage decrements the use count of an image.

@@ -109,6 +109,7 @@ echo "▸ Creating volume directories..."
 sftp ${SSH_OPTS} "${SSH_USER}@${DEVICE}" <<SFTP_EOF 2>/dev/null || true
 -mkdir ${VOLUME_DIR}/${CONTAINER_NAME}
 -mkdir ${VOLUME_DIR}/${CONTAINER_NAME}/config
+-mkdir ${VOLUME_DIR}/${CONTAINER_NAME}/registry
 SFTP_EOF
 
 echo "  ✓ Volume directories ready"
@@ -137,7 +138,23 @@ fi
 echo ""
 echo "▸ Creating container mounts..."
 
-ros "/container/mounts/add list=${CONTAINER_NAME}.config src=/${VOLUME_DIR}/${CONTAINER_NAME}/config dst=/etc/mkube" 2>/dev/null || echo "  (config mount already exists)"
+# Only create mounts if they don't already exist (prevents duplicates on re-deploy)
+EXISTING_CONFIG=$(ros "/container/mounts/print count-only where list=${CONTAINER_NAME}.config and dst=/etc/mkube")
+if [ "${EXISTING_CONFIG}" = "0" ] || [ -z "${EXISTING_CONFIG}" ]; then
+    ros "/container/mounts/add list=${CONTAINER_NAME}.config src=/${VOLUME_DIR}/${CONTAINER_NAME}/config dst=/etc/mkube" 2>/dev/null
+    echo "  ✓ Config mount created"
+else
+    echo "  ✓ Config mount already exists"
+fi
+
+# Registry blob store — persistent volume so data survives container redeploy
+EXISTING_REGISTRY=$(ros "/container/mounts/print count-only where list=${CONTAINER_NAME}.registry and dst=/raid1/registry")
+if [ "${EXISTING_REGISTRY}" = "0" ] || [ -z "${EXISTING_REGISTRY}" ]; then
+    ros "/container/mounts/add list=${CONTAINER_NAME}.registry src=/${VOLUME_DIR}/${CONTAINER_NAME}/registry dst=/raid1/registry" 2>/dev/null
+    echo "  ✓ Registry mount created"
+else
+    echo "  ✓ Registry mount already exists"
+fi
 
 echo "  ✓ Mounts configured"
 
@@ -173,7 +190,7 @@ fi
 echo ""
 echo "▸ Creating container '${CONTAINER_NAME}'..."
 
-ros "/container/add file=${REMOTE_TARBALL} interface=${MGMT_VETH} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config"
+ros "/container/add file=${REMOTE_TARBALL} interface=${MGMT_VETH} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config,${CONTAINER_NAME}.registry"
 
 echo "  ✓ Container created"
 

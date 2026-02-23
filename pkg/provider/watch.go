@@ -271,15 +271,19 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 			if !ok {
 				continue
 			}
-			log.Infow("registry push event, triggering immediate reconcile",
+			log.Infow("registry push event, clearing tarball cache and reconciling",
 				"repo", pushEvt.Repo, "ref", pushEvt.Reference)
+			// Clear stale tarballs for this repo — registry is source of truth.
+			p.deps.StorageMgr.ClearImageDigestByRepo(pushEvt.Repo)
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (push-triggered)", "error", err)
 			}
 
 		case pushEvt := <-p.pushNotify:
-			log.Infow("push-notify received, triggering immediate reconcile",
+			log.Infow("push-notify received, clearing tarball cache and reconciling",
 				"repo", pushEvt.Repo, "ref", pushEvt.Reference)
+			// Clear stale tarballs for this repo — registry is source of truth.
+			p.deps.StorageMgr.ClearImageDigestByRepo(pushEvt.Repo)
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (push-notify)", "error", err)
 			}

@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **fix:** Always delete stale tarball cache and rebuild from registry — registry is the source of truth for container images
+- **fix:** Clear image digest cache on registry push events — ensures immediate detection of new image pushes
+- **fix:** Add persistent mount for registry blob store (`/raid1/volumes/kube.gt.lo/registry`) — data survives mkube redeploy
+- **fix:** Make deploy.sh idempotent for mount creation — prevents duplicate mount entries on re-deploy
+- **fix:** Paginate DNS ListRecords to find all duplicates — was only fetching first 100 records
 - **feat:** Async consistency checker — runs after CreatePod, DeletePod, and reconcile to clean up orphaned veths and stale IPAM entries
 - **feat:** DNS backup system — JSON exports of all microdns zones saved to `dns-backup/` for disaster recovery
 - **feat:** PowerDNS migration — imported all gw.lo, g10.lo, g11.lo records + reverse zones from legacy PowerDNS (dnsx)
