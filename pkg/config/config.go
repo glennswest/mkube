@@ -206,6 +206,10 @@ type RegistryConfig struct {
 	// Image watcher: poll upstream registries for new digests and auto-pull
 	WatchImages      []WatchImage `yaml:"watchImages"`
 	WatchPollSeconds int          `yaml:"watchPollSeconds"` // default 120
+	// Upstream sync: push locally-pushed images to GHCR as backup
+	UpstreamSyncEnabled bool   `yaml:"upstreamSyncEnabled"` // master toggle
+	UpstreamToken       string `yaml:"upstreamToken"`       // inline GHCR PAT (write:packages scope)
+	UpstreamTokenFile   string `yaml:"upstreamTokenFile"`   // path to file containing token
 }
 
 // WatchImage defines an upstream image to watch for changes.

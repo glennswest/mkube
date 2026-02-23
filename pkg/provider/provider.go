@@ -848,6 +848,29 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
+	// 3c. Check tracked auto-update pods for stale images.
+	// When a new image is pushed to the local registry, the registry
+	// emits a PushEvent that triggers this reconcile. We must check
+	// every running pod with image-policy=auto against the current
+	// registry digest to detect updates from podman push.
+	for key, pod := range p.pods {
+		if pod.Annotations[annotationImagePolicy] != "auto" || pod.Annotations[annotationFile] != "" {
+			continue
+		}
+		for _, c := range pod.Spec.Containers {
+			_, changed, err := p.deps.StorageMgr.RefreshImage(ctx, c.Image)
+			if err != nil {
+				log.Debugw("image freshness check failed", "pod", key, "image", c.Image, "error", err)
+			} else if changed {
+				log.Infow("new image detected, recreating pod", "pod", key, "image", c.Image)
+				if err := p.UpdatePod(ctx, pod.DeepCopy()); err != nil {
+					log.Errorw("failed to update pod for new image", "pod", key, "error", err)
+				}
+				break
+			}
+		}
+	}
+
 	// 4. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
 	p.syncConfigMapsToDisk(ctx)
 
@@ -909,8 +932,25 @@ func (p *MicroKubeProvider) syncConfigMapsToDisk(ctx context.Context) {
 		}
 	}
 
-	// Trigger rolling updates for pods whose ConfigMap files changed
+	// Trigger rolling updates for pods whose ConfigMap files changed,
+	// but only if all container images are available in the registry.
 	for key, pod := range podsToRecreate {
+		// Pre-flight: verify images are pullable before destroying the container
+		imagesMissing := false
+		if pod.Annotations[annotationFile] == "" {
+			for _, c := range pod.Spec.Containers {
+				if _, err := p.deps.StorageMgr.CheckImageAvailable(ctx, c.Image); err != nil {
+					log.Warnw("skipping ConfigMap recreation: image not available",
+						"pod", key, "image", c.Image, "error", err)
+					imagesMissing = true
+					break
+				}
+			}
+		}
+		if imagesMissing {
+			continue // will retry on next reconcile cycle
+		}
+
 		log.Infow("recreating pod for ConfigMap update", "pod", key)
 		if err := p.UpdatePod(ctx, pod); err != nil {
 			log.Errorw("failed to recreate pod after ConfigMap change", "pod", key, "error", err)

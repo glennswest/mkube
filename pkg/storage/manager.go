@@ -215,6 +215,13 @@ func (m *Manager) getRegistryDigest(ctx context.Context, imageRef string) (strin
 	return crane.Digest(imageRef, opts...)
 }
 
+// CheckImageAvailable verifies that an image is available in the registry
+// by performing a HEAD request for the manifest digest. Returns the digest
+// string and any error (e.g. 404 if the image is not present).
+func (m *Manager) CheckImageAvailable(ctx context.Context, imageRef string) (string, error) {
+	return m.getRegistryDigest(ctx, imageRef)
+}
+
 func truncDigest(d string) string {
 	if len(d) > 19 {
 		return d[:19] + "..."

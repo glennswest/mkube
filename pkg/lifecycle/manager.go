@@ -340,7 +340,9 @@ func (m *Manager) checkAll(ctx context.Context) {
 					}
 					if unit.ReadinessState.ConsecutiveFailures >= threshold && unit.Ready {
 						unit.Ready = false
-						m.log.Warnw("readiness probe failed, marking not-ready", "name", name)
+						m.log.Warnw("readiness probe failed, marking not-ready", "name", name,
+							"type", probe.Type, "port", probe.Port, "ip", unit.ContainerIP,
+							"failures", unit.ReadinessState.ConsecutiveFailures)
 						// No restart — readiness failures only affect Ready state
 					}
 				}
@@ -436,6 +438,7 @@ func (m *Manager) tcpProbe(ctx context.Context, ip string, port int, timeout tim
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
+		m.log.Debugw("tcp probe failed", "addr", addr, "timeout", timeout, "error", err)
 		return false
 	}
 	conn.Close()

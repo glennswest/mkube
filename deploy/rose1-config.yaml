@@ -230,3 +230,7 @@ registry:
       localRepo: "mkube-console"
     - upstream: "ghcr.io/glennswest/nats:edge"
       localRepo: "nats"
+  # Upstream sync: push locally-pushed images to GHCR as backup.
+  # Requires a GHCR PAT with write:packages scope.
+  # upstreamSyncEnabled: true
+  # upstreamTokenFile: /etc/mkube/ghcr-token

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,7 @@ type Registry struct {
 	store      *BlobStore
 	client     *http.Client
 	PushEvents chan PushEvent
+	SyncEvents chan PushEvent // external manifest PUTs only (for upstream sync, avoids loop)
 }
 
 // Start launches the embedded registry server.
@@ -53,6 +55,7 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 			},
 		},
 		PushEvents: make(chan PushEvent, 64),
+		SyncEvents: make(chan PushEvent, 64),
 	}
 
 	mux := http.NewServeMux()
@@ -157,8 +160,9 @@ func (r *Registry) handleManifest(w http.ResponseWriter, req *http.Request, repo
 	case http.MethodGet:
 		data, contentType, err := r.store.GetManifest(repo, ref)
 		if err == nil {
+			digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Docker-Content-Digest", ref)
+			w.Header().Set("Docker-Content-Digest", digest)
 			_, _ = w.Write(data)
 			return
 		}
@@ -172,9 +176,10 @@ func (r *Registry) handleManifest(w http.ResponseWriter, req *http.Request, repo
 	case http.MethodHead:
 		data, contentType, err := r.store.GetManifest(repo, ref)
 		if err == nil {
+			digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-			w.Header().Set("Docker-Content-Digest", ref)
+			w.Header().Set("Docker-Content-Digest", digest)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -189,16 +194,22 @@ func (r *Registry) handleManifest(w http.ResponseWriter, req *http.Request, repo
 		w.Header().Set("Docker-Content-Digest", ref)
 		w.WriteHeader(http.StatusCreated)
 
-		// Emit push event for CI/CD
-		select {
-		case r.PushEvents <- PushEvent{
+		// Emit push event for CI/CD and upstream sync
+		evt := PushEvent{
 			Repo:      repo,
 			Reference: ref,
 			Digest:    req.Header.Get("Docker-Content-Digest"),
 			Time:      time.Now(),
-		}:
+		}
+		select {
+		case r.PushEvents <- evt:
 		default:
 			r.log.Warnw("push event channel full, dropping event", "repo", repo, "ref", ref)
+		}
+		select {
+		case r.SyncEvents <- evt:
+		default:
+			r.log.Warnw("sync event channel full, dropping event", "repo", repo, "ref", ref)
 		}
 
 	default:
@@ -552,8 +563,42 @@ func (r *Registry) fetchUpstreamBlob(ctx context.Context, host, repo, digest str
 	return fmt.Errorf("blob %s not found on any upstream", digest)
 }
 
+// resolveUpstreamRepo looks up the watchImages config to find the correct
+// upstream host/repo/ref for a local repo name. Returns empty strings if
+// no mapping is found.
+func (r *Registry) resolveUpstreamRepo(localRepo string) (host, repo, ref string) {
+	for _, wi := range r.cfg.WatchImages {
+		if wi.LocalRepo == localRepo {
+			return parseUpstreamRef(wi.Upstream)
+		}
+	}
+	return "", "", ""
+}
+
 // pullThroughManifest fetches a manifest from upstream, caches it, and serves it.
 func (r *Registry) pullThroughManifest(w http.ResponseWriter, req *http.Request, repo, ref string) {
+	// Try watchImages mapping first — this has the correct upstream path
+	// (e.g. localRepo "microdns" → "ghcr.io/glennswest/microdns")
+	if upHost, upRepo, _ := r.resolveUpstreamRepo(repo); upHost != "" && upRepo != "" {
+		if data, contentType, digest, err := r.tryPullThroughManifest(req, upHost, upRepo, ref); err == nil {
+			if err := r.store.PutManifest(repo, ref, contentType, io.NopCloser(strings.NewReader(string(data)))); err != nil {
+				r.log.Warnw("failed to cache manifest", "repo", repo, "ref", ref, "error", err)
+				http.Error(w, "cache error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", contentType)
+			if digest != "" {
+				w.Header().Set("Docker-Content-Digest", digest)
+			}
+			_, _ = w.Write(data)
+			r.log.Infow("pull-through manifest via watchImages", "repo", repo, "ref", ref, "upstream", upHost+"/"+upRepo)
+			return
+		} else {
+			r.log.Debugw("pull-through via watchImages failed, trying upstreamRegistries",
+				"repo", repo, "upstream", upHost+"/"+upRepo, "error", err)
+		}
+	}
+
 	for _, upstream := range r.cfg.UpstreamRegistries {
 		host := resolveRegistryHost(upstream)
 		upstreamURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repo, ref)
@@ -633,8 +678,120 @@ func (r *Registry) pullThroughManifest(w http.ResponseWriter, req *http.Request,
 	http.Error(w, "manifest not found on any upstream", http.StatusNotFound)
 }
 
+// tryPullThroughManifest attempts to fetch a manifest from a specific upstream host/repo.
+// Returns the manifest data, content type, digest, and any error.
+func (r *Registry) tryPullThroughManifest(req *http.Request, host, repo, ref string) ([]byte, string, string, error) {
+	upstreamURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", resolveRegistryHost(host), repo, ref)
+	proxyReq, err := http.NewRequestWithContext(req.Context(), http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	proxyReq.Header.Set("Accept", req.Header.Get("Accept"))
+
+	resp, err := r.client.Do(proxyReq)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		token, err := r.getUpstreamToken(req.Context(), resp, host, repo)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("auth failed: %w", err)
+		}
+		proxyReq, _ = http.NewRequestWithContext(req.Context(), http.MethodGet, upstreamURL, nil)
+		proxyReq.Header.Set("Accept", req.Header.Get("Accept"))
+		proxyReq.Header.Set("Authorization", "Bearer "+token)
+		resp, err = r.client.Do(proxyReq)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, "", "", fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !isJSONContentType(contentType) {
+		return nil, "", "", fmt.Errorf("not JSON content-type: %s", contentType)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if len(data) > 0 && data[0] != '{' && data[0] != '[' {
+		return nil, "", "", fmt.Errorf("body not JSON")
+	}
+
+	return data, contentType, resp.Header.Get("Docker-Content-Digest"), nil
+}
+
+// tryPullThroughBlob attempts to fetch a blob from a specific upstream host/repo,
+// caches it locally, and returns any error.
+func (r *Registry) tryPullThroughBlob(req *http.Request, host, repo, digest string) error {
+	upstreamURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", resolveRegistryHost(host), repo, digest)
+	proxyReq, err := http.NewRequestWithContext(req.Context(), http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := r.client.Do(proxyReq)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		token, err := r.getUpstreamToken(req.Context(), resp, host, repo)
+		if err != nil {
+			return fmt.Errorf("auth failed: %w", err)
+		}
+		proxyReq, _ = http.NewRequestWithContext(req.Context(), http.MethodGet, upstreamURL, nil)
+		proxyReq.Header.Set("Authorization", "Bearer "+token)
+		resp, err = r.client.Do(proxyReq)
+		if err != nil {
+			return err
+		}
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "text/html") {
+		return fmt.Errorf("HTML response")
+	}
+
+	return r.store.PutBlob(digest, resp.Body)
+}
+
 // pullThroughBlob fetches a blob from upstream, caches it, and serves it.
 func (r *Registry) pullThroughBlob(w http.ResponseWriter, req *http.Request, repo, digest string) {
+	// Try watchImages mapping first for correct upstream path
+	if upHost, upRepo, _ := r.resolveUpstreamRepo(repo); upHost != "" && upRepo != "" {
+		if err := r.tryPullThroughBlob(req, upHost, upRepo, digest); err == nil {
+			data, err := r.store.GetBlob(digest)
+			if err != nil {
+				http.Error(w, "cache read error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+			w.Header().Set("Docker-Content-Digest", digest)
+			_, _ = w.Write(data)
+			r.log.Debugw("pull-through blob via watchImages", "digest", digest, "upstream", upHost+"/"+upRepo)
+			return
+		} else {
+			r.log.Debugw("pull-through blob via watchImages failed, trying upstreamRegistries",
+				"repo", repo, "digest", digest, "error", err)
+		}
+	}
+
 	for _, upstream := range r.cfg.UpstreamRegistries {
 		host := resolveRegistryHost(upstream)
 		upstreamURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, repo, digest)

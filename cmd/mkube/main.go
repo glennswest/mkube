@@ -363,6 +363,15 @@ func runSharedServices(
 		log.Infow("image watcher started", "images", len(cfg.Registry.WatchImages))
 	}
 
+	// ── Upstream Syncer (local → GHCR backup) ───────────────────────
+	if reg != nil && cfg.Registry.UpstreamSyncEnabled {
+		syncer := registry.NewUpstreamSyncer(cfg.Registry, reg.Store(), reg.SyncEvents, log)
+		if syncer != nil {
+			go syncer.Run(ctx)
+			log.Info("upstream syncer started")
+		}
+	}
+
 	// ── Load BMH from store + start DHCP watcher ────────────────────
 	if kvStore != nil {
 		p.LoadBMHFromStore(ctx)
