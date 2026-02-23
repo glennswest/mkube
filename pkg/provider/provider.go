@@ -26,6 +26,7 @@ import (
 	"github.com/glennswest/mkube/pkg/lifecycle"
 	"github.com/glennswest/mkube/pkg/namespace"
 	"github.com/glennswest/mkube/pkg/network"
+	"github.com/glennswest/mkube/pkg/registry"
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/storage"
 	"github.com/glennswest/mkube/pkg/store"
@@ -45,6 +46,10 @@ const (
 	// annotationStaticIP requests a specific IP address for the pod's containers.
 	annotationStaticIP = "vkube.io/static-ip"
 
+	// annotationImagePolicy controls automatic image updates.
+	// "auto" triggers a rolling update when the registry digest changes.
+	annotationImagePolicy = "vkube.io/image-policy"
+
 	// Device passthrough annotations (StormBase only)
 	annotationDeviceClass = "stormbase.io/device-class"
 	annotationDeviceCount = "stormbase.io/device-count"
@@ -59,8 +64,9 @@ type Deps struct {
 	NetworkMgr   *network.Manager
 	StorageMgr   *storage.Manager
 	LifecycleMgr *lifecycle.Manager
-	Namespace    *namespace.Manager // optional, nil if namespace management is disabled
-	Store        *store.Store       // optional, nil if NATS is not configured
+	Namespace    *namespace.Manager          // optional, nil if namespace management is disabled
+	Store        *store.Store                // optional, nil if NATS is not configured
+	PushEvents   <-chan registry.PushEvent   // optional, receives push events from embedded registry
 	Logger       *zap.SugaredLogger
 }
 
@@ -78,6 +84,7 @@ type MicroKubeProvider struct {
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
+	pushNotify      chan registry.PushEvent       // internal channel for API push notifications
 }
 
 // SetStore sets the NATS store on the provider (used for deferred NATS connection).
@@ -98,6 +105,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		configMaps:      make(map[string]*corev1.ConfigMap),
 		bareMetalHosts:  make(map[string]*BareMetalHost),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
+		pushNotify:      make(chan registry.PushEvent, 16),
 	}
 
 	// Load built-in default ConfigMaps derived from mkube config
@@ -406,6 +414,14 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 	// Deregister DNS aliases before releasing interfaces
 	p.deregisterPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
 
+	// Progressive backoff durations for container removal retries.
+	backoffs := []time.Duration{
+		1 * time.Second, 1 * time.Second,
+		2 * time.Second, 2 * time.Second,
+		3 * time.Second, 3 * time.Second,
+		4 * time.Second, 5 * time.Second,
+	}
+
 	var lastErr error
 	for i, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
@@ -423,7 +439,7 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 				log.Warnw("error stopping container", "name", name, "error", err)
 			}
 			// Wait for the container to actually stop before removing
-			for j := 0; j < 30; j++ {
+			for j := 0; j < 15; j++ {
 				time.Sleep(time.Second)
 				updated, err := p.deps.Runtime.GetContainer(ctx, name)
 				if err != nil || !updated.IsRunning() {
@@ -432,20 +448,30 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
-		// Retry RemoveContainer — the container may still be transitioning
-		for attempt := 0; attempt < 5; attempt++ {
+		// Retry RemoveContainer with progressive backoff.
+		// On "cannot remove running" errors, re-issue stop before retrying.
+		for attempt := 0; attempt < len(backoffs); attempt++ {
 			if err := p.deps.Runtime.RemoveContainer(ctx, ct.ID); err != nil {
+				errMsg := err.Error()
 				log.Warnw("error removing container, retrying", "name", name, "attempt", attempt+1, "error", err)
-				time.Sleep(2 * time.Second)
+
 				// Re-fetch container to check if it's gone
 				if _, gerr := p.deps.Runtime.GetContainer(ctx, name); gerr != nil {
 					log.Infow("container gone after retry", "name", name)
-					break // container disappeared
+					break
 				}
-				if attempt == 4 {
-					lastErr = fmt.Errorf("failed to remove container %s after 5 attempts: %w", name, err)
+
+				// If still running, re-issue stop before next attempt
+				if strings.Contains(errMsg, "cannot remove running") || strings.Contains(errMsg, "running") {
+					log.Infow("container still running, re-issuing stop", "name", name)
+					_ = p.deps.Runtime.StopContainer(ctx, ct.ID)
+				}
+
+				if attempt == len(backoffs)-1 {
+					lastErr = fmt.Errorf("failed to remove container %s after %d attempts: %w", name, len(backoffs), err)
 					log.Errorw("giving up on container removal", "name", name, "error", err)
 				}
+				time.Sleep(backoffs[attempt])
 			} else {
 				log.Infow("container removed", "name", name)
 				break
@@ -662,8 +688,31 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error", "error", err)
 			}
+		case evt, ok := <-p.pushEventsChan():
+			if !ok {
+				continue
+			}
+			log.Infow("registry push event, triggering immediate reconcile",
+				"repo", evt.Repo, "ref", evt.Reference)
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (push-triggered)", "error", err)
+			}
+		case evt := <-p.pushNotify:
+			log.Infow("push-notify received, triggering immediate reconcile",
+				"repo", evt.Repo, "ref", evt.Reference)
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (push-notify)", "error", err)
+			}
 		}
 	}
+}
+
+// pushEventsChan returns the PushEvents channel or a nil channel (blocks forever) if unset.
+func (p *MicroKubeProvider) pushEventsChan() <-chan registry.PushEvent {
+	if p.deps.PushEvents != nil {
+		return p.deps.PushEvents
+	}
+	return nil
 }
 
 func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
@@ -759,6 +808,43 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			// Track already-existing pods
 			p.pods[key] = pod.DeepCopy()
 			p.recordEvent(pod, "Reconciled", fmt.Sprintf("Existing pod %s/%s tracked on node %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
+
+			// For pods with image-policy=auto, check if the registry has a
+			// newer image than what's currently running. This handles the case
+			// where a container starts from a stale root-dir on boot before
+			// mkube has a chance to update the tarball.
+			if pod.Annotations[annotationImagePolicy] == "auto" && pod.Annotations[annotationFile] == "" {
+				for _, c := range pod.Spec.Containers {
+					_, changed, err := p.deps.StorageMgr.RefreshImage(ctx, c.Image)
+					if err != nil {
+						log.Warnw("failed to check image freshness", "pod", key, "image", c.Image, "error", err)
+					} else if changed {
+						log.Infow("stale image detected, recreating pod", "pod", key, "image", c.Image)
+						if err := p.UpdatePod(ctx, pod.DeepCopy()); err != nil {
+							log.Errorw("failed to update pod for stale image", "pod", key, "error", err)
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// 3b. Check tracked pods for missing containers (orphan detection).
+	// If a container was manually removed or orphaned, untrack and recreate.
+	for key, pod := range p.pods {
+		for _, c := range pod.Spec.Containers {
+			name := sanitizeName(pod, c.Name)
+			if _, exists := actualByName[name]; !exists {
+				log.Warnw("tracked pod has missing container, recreating",
+					"pod", key, "container", name)
+				delete(p.pods, key)
+				if err := p.CreatePod(ctx, pod); err != nil {
+					log.Errorw("failed to recreate pod with missing container",
+						"pod", key, "error", err)
+				}
+				break
+			}
 		}
 	}
 

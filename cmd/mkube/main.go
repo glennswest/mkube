@@ -335,6 +335,11 @@ func runSharedServices(
 	}
 
 	// ── Provider ────────────────────────────────────────────────────
+	var pushEvents <-chan registry.PushEvent
+	if reg != nil {
+		pushEvents = reg.PushEvents
+	}
+
 	p, err := provider.NewMicroKubeProvider(provider.Deps{
 		Config:       cfg,
 		Runtime:      rt,
@@ -343,6 +348,7 @@ func runSharedServices(
 		LifecycleMgr: lcMgr,
 		Namespace:    nsMgr,
 		Store:        kvStore,
+		PushEvents:   pushEvents,
 		Logger:       log,
 	})
 	if err != nil {

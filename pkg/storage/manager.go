@@ -42,6 +42,7 @@ type Manager struct {
 type CachedImage struct {
 	Ref         string // e.g. "docker.io/library/nginx:latest"
 	TarballPath string // path on RouterOS, e.g. "/container-cache/nginx-latest.tar"
+	Digest      string // registry manifest digest, e.g. "sha256:abc..."
 	PulledAt    time.Time
 	Size        int64
 	InUse       int // reference count
@@ -77,29 +78,31 @@ func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check cache
+	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
+	tarballPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
+
+	// If cached, quick-check the registry digest to catch new pushes.
+	// This is a HEAD request — cheap for local registries.
 	if cached, ok := m.images[imageRef]; ok {
-		cached.InUse++
-		m.log.Debugw("image cache hit", "ref", imageRef, "path", cached.TarballPath)
-		return cached.TarballPath, nil
+		if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && cached.Digest != "" && currentDigest == cached.Digest {
+			cached.InUse++
+			m.log.Debugw("image cache hit", "ref", imageRef, "path", cached.TarballPath)
+			return cached.TarballPath, nil
+		}
+		// Digest changed or unavailable — fall through to re-pull
+		m.log.Infow("image digest changed in registry, re-pulling", "ref", imageRef)
 	}
 
 	m.log.Infow("pulling image", "ref", imageRef)
 
-	// Determine tarball filename from image ref
-	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
-	tarballPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
-
-	// Pull the image and convert to tarball.
-	// In practice this would use:
-	//   - crane/go-containerregistry to pull OCI images
-	//   - Convert to a flat tarball that RouterOS expects
-	//   - Upload via RouterOS file API or SFTP
-	//
-	// For images from the embedded Zot registry (localhost:5000),
-	// this is a local operation.
 	if err := m.pullAndUpload(ctx, imageRef, tarballPath); err != nil {
 		return "", fmt.Errorf("pulling image %s: %w", imageRef, err)
+	}
+
+	// Get and store the registry digest for freshness checking
+	digest, _ := m.getRegistryDigest(ctx, imageRef)
+	if digest != "" {
+		_ = os.WriteFile(tarballPath+".digest", []byte(digest), 0o644)
 	}
 
 	// When selfRootDir is set, translate the container-internal path to the
@@ -114,11 +117,109 @@ func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, err
 	m.images[imageRef] = &CachedImage{
 		Ref:         imageRef,
 		TarballPath: hostPath,
+		Digest:      digest,
 		PulledAt:    time.Now(),
 		InUse:       1,
 	}
 
 	return hostPath, nil
+}
+
+// RefreshImage checks whether the registry has a newer version of the
+// image than what was last pulled. If the digest has changed it re-pulls
+// the image, rewrites the tarball, and returns changed=true. Callers
+// should recreate the container when changed is true.
+func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPath string, changed bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	currentDigest, err := m.getRegistryDigest(ctx, imageRef)
+	if err != nil {
+		return "", false, fmt.Errorf("getting digest for %s: %w", imageRef, err)
+	}
+
+	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
+	localTarball := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
+
+	// Read the stored digest from last pull (persisted across restarts)
+	storedDigest := ""
+	if cached, ok := m.images[imageRef]; ok {
+		storedDigest = cached.Digest
+	} else if data, err := os.ReadFile(localTarball + ".digest"); err == nil {
+		storedDigest = strings.TrimSpace(string(data))
+	}
+
+	if storedDigest == currentDigest {
+		// Image is fresh — populate cache if not already and return
+		hostPath := localTarball
+		if m.cfg.SelfRootDir != "" {
+			hostPath = m.cfg.SelfRootDir + "/" + strings.TrimPrefix(localTarball, "/")
+		}
+		if _, ok := m.images[imageRef]; !ok {
+			m.images[imageRef] = &CachedImage{
+				Ref:         imageRef,
+				TarballPath: hostPath,
+				Digest:      currentDigest,
+				PulledAt:    time.Now(),
+				InUse:       1,
+			}
+		}
+		return hostPath, false, nil
+	}
+
+	// Digest changed — re-pull
+	m.log.Infow("stale image detected, re-pulling",
+		"ref", imageRef,
+		"old_digest", truncDigest(storedDigest),
+		"new_digest", truncDigest(currentDigest))
+
+	if err := m.pullAndUpload(ctx, imageRef, localTarball); err != nil {
+		return "", false, fmt.Errorf("re-pulling image %s: %w", imageRef, err)
+	}
+	_ = os.WriteFile(localTarball+".digest", []byte(currentDigest), 0o644)
+
+	hostPath := localTarball
+	if m.cfg.SelfRootDir != "" {
+		hostPath = m.cfg.SelfRootDir + "/" + strings.TrimPrefix(localTarball, "/")
+	}
+
+	m.images[imageRef] = &CachedImage{
+		Ref:         imageRef,
+		TarballPath: hostPath,
+		Digest:      currentDigest,
+		PulledAt:    time.Now(),
+		InUse:       1,
+	}
+
+	return hostPath, true, nil
+}
+
+// getRegistryDigest queries the registry for the current manifest digest.
+func (m *Manager) getRegistryDigest(ctx context.Context, imageRef string) (string, error) {
+	imageRef = m.rewriteLocalhost(imageRef)
+
+	opts := []crane.Option{crane.WithContext(ctx)}
+	opts = append(opts, crane.WithPlatform(&v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}))
+
+	if m.isLocalRegistry(imageRef) {
+		opts = append(opts, crane.Insecure)
+	} else {
+		opts = append(opts, crane.WithAuthFromKeychain(
+			authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
+		))
+	}
+
+	return crane.Digest(imageRef, opts...)
+}
+
+func truncDigest(d string) string {
+	if len(d) > 19 {
+		return d[:19] + "..."
+	}
+	return d
 }
 
 // pullAndUpload pulls an OCI image from a registry, converts it to a

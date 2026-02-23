@@ -13,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/glennswest/mkube/pkg/registry"
 )
 
 // RegisterRoutes registers Kubernetes-compatible Pod API handlers on the provided mux.
@@ -79,6 +81,9 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 
 	// DNS validation
 	mux.HandleFunc("GET /api/v1/dns/validate", p.handleDNSValidate)
+
+	// Registry push notification
+	mux.HandleFunc("POST /api/v1/registry/push-notify", p.handlePushNotify)
 
 	// Health
 	mux.HandleFunc("GET /healthz", p.handleHealthz)
@@ -503,6 +508,43 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, "ok\nnode: %s\nuptime: %s\n", p.nodeName, time.Since(p.startTime).Truncate(time.Second))
+}
+
+// pushNotifyRequest is the JSON body for POST /api/v1/registry/push-notify.
+type pushNotifyRequest struct {
+	Image string `json:"image"` // e.g. "microdns:edge"
+}
+
+// handlePushNotify accepts a push notification and triggers an immediate reconcile.
+// Usage: curl -X POST http://192.168.200.2:8082/api/v1/registry/push-notify -d '{"image":"microdns:edge"}'
+func (p *MicroKubeProvider) handlePushNotify(w http.ResponseWriter, r *http.Request) {
+	var req pushNotifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	repo := req.Image
+	ref := "latest"
+	if idx := strings.LastIndex(req.Image, ":"); idx > 0 {
+		repo = req.Image[:idx]
+		ref = req.Image[idx+1:]
+	}
+
+	p.deps.Logger.Infow("push-notify received", "image", req.Image, "repo", repo, "ref", ref)
+
+	select {
+	case p.pushNotify <- registry.PushEvent{
+		Repo:      repo,
+		Reference: ref,
+		Time:      time.Now(),
+	}:
+	default:
+		p.deps.Logger.Warnw("push-notify channel full, dropping", "image", req.Image)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"status":"ok","image":%q}`+"\n", req.Image)
 }
 
 // handleExport returns the full state as multi-document YAML.

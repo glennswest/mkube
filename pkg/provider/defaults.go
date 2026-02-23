@@ -177,6 +177,10 @@ func buildDHCPSection(net config.NetworkDef) string {
 	}
 	if net.DNS.DHCP.BootFile != "" {
 		fmt.Fprintf(&dhcp, "boot_file = %q\n", net.DNS.DHCP.BootFile)
+		// Auto-derive iPXE boot URL from the PXE server
+		if net.DNS.DHCP.NextServer != "" {
+			fmt.Fprintf(&dhcp, "ipxe_boot_url = \"http://%s:8080/boot.ipxe\"\n", net.DNS.DHCP.NextServer)
+		}
 	}
 	for _, r := range net.DNS.DHCP.Reservations {
 		fmt.Fprintf(&dhcp, "\n[[dhcp.v4.reservations]]\n")

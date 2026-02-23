@@ -266,6 +266,23 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 					}
 				}
 			}
+
+		case pushEvt, ok := <-p.pushEventsChan():
+			if !ok {
+				continue
+			}
+			log.Infow("registry push event, triggering immediate reconcile",
+				"repo", pushEvt.Repo, "ref", pushEvt.Reference)
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (push-triggered)", "error", err)
+			}
+
+		case pushEvt := <-p.pushNotify:
+			log.Infow("push-notify received, triggering immediate reconcile",
+				"repo", pushEvt.Repo, "ref", pushEvt.Reference)
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (push-notify)", "error", err)
+			}
 		}
 	}
 }
