@@ -336,6 +336,9 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		p.recordEvent(pod, "Started", fmt.Sprintf("Started container %s", c.Name), "Normal")
 	}
 
+	// Run async consistency check to clean up any orphaned resources
+	p.CheckConsistencyAsync("create-pod/" + podKey(pod))
+
 	return nil
 }
 
@@ -500,6 +503,10 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 
 	p.recordEvent(pod, "Killing", fmt.Sprintf("Stopping pod %s/%s", pod.Namespace, pod.Name), "Normal")
 	delete(p.pods, podKey(pod))
+
+	// Run async consistency check to clean up any orphaned resources
+	p.CheckConsistencyAsync("delete-pod/" + podKey(pod))
+
 	return lastErr
 }
 
@@ -893,6 +900,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 	// 6. Re-register DNS aliases for all tracked pods so they survive DNS container restarts
 	p.reregisterPodDNS(ctx)
+
+	// 7. Async consistency check for orphaned veths/IPAM
+	p.CheckConsistencyAsync("reconcile")
 
 	return nil
 }

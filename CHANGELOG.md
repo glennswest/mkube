@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **feat:** Async consistency checker — runs after CreatePod, DeletePod, and reconcile to clean up orphaned veths and stale IPAM entries
 - **feat:** DNS backup system — JSON exports of all microdns zones saved to `dns-backup/` for disaster recovery
 - **feat:** PowerDNS migration — imported all gw.lo, g10.lo, g11.lo records + reverse zones from legacy PowerDNS (dnsx)
 - **fix:** Store data volumes under `/raid1/volumes/` instead of `/raid1/images/` — prevents tarball extraction from wiping persistent data (DNS databases, etc.) on container recreation

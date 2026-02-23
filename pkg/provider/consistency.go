@@ -540,3 +540,104 @@ func (p *MicroKubeProvider) checkIPAM(ctx context.Context) []CheckItem {
 	return items
 }
 
+// CheckConsistencyAsync runs a consistency check in the background after
+// container operations. It detects and cleans up orphaned veths and IPAM entries.
+// The delay gives the system time to settle after the triggering operation.
+func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
+	go func() {
+		time.Sleep(5 * time.Second) // let the operation settle
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		p.deps.Logger.Infow("running async consistency check", "trigger", reason)
+
+		var cleaned int
+
+		n, err := p.cleanOrphanedVeths(ctx)
+		if err != nil {
+			p.deps.Logger.Warnw("orphaned veth check failed", "error", err)
+		}
+		cleaned += n
+
+		n, err = p.cleanOrphanedIPAM(ctx)
+		if err != nil {
+			p.deps.Logger.Warnw("orphaned IPAM check failed", "error", err)
+		}
+		cleaned += n
+
+		if cleaned > 0 {
+			p.deps.Logger.Infow("consistency check cleaned up resources", "trigger", reason, "cleaned", cleaned)
+		} else {
+			p.deps.Logger.Debugw("consistency check passed", "trigger", reason)
+		}
+	}()
+}
+
+// cleanOrphanedVeths finds veths on the device that have no corresponding
+// tracked pod or container and removes them.
+func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error) {
+	actualPorts, err := p.deps.NetworkMgr.ListActualPorts(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("listing actual ports: %w", err)
+	}
+
+	// Build set of veths that tracked pods expect to exist
+	expectedVeths := make(map[string]bool)
+	for _, pod := range p.pods {
+		for i := range pod.Spec.Containers {
+			expectedVeths[vethName(pod, i)] = true
+		}
+	}
+
+	cleaned := 0
+	for _, port := range actualPorts {
+		if !strings.HasPrefix(port.Name, "veth_") {
+			continue
+		}
+		if expectedVeths[port.Name] {
+			continue
+		}
+
+		// This veth has no tracked pod — it's orphaned
+		p.deps.Logger.Infow("removing orphaned veth", "name", port.Name, "address", port.Address)
+		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, port.Name); err != nil {
+			p.deps.Logger.Warnw("failed to release orphaned veth", "name", port.Name, "error", err)
+		} else {
+			cleaned++
+		}
+	}
+
+	return cleaned, nil
+}
+
+// cleanOrphanedIPAM removes IPAM allocations for veths that no longer exist
+// on the device.
+func (p *MicroKubeProvider) cleanOrphanedIPAM(ctx context.Context) (int, error) {
+	ipamAllocs := p.deps.NetworkMgr.GetAllocations()
+	actualPorts, err := p.deps.NetworkMgr.ListActualPorts(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("listing actual ports: %w", err)
+	}
+
+	actualMap := make(map[string]bool, len(actualPorts))
+	for _, port := range actualPorts {
+		actualMap[port.Name] = true
+	}
+
+	cleaned := 0
+	for veth := range ipamAllocs {
+		if actualMap[veth] {
+			continue
+		}
+		p.deps.Logger.Infow("releasing orphaned IPAM entry", "veth", veth)
+		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, veth); err != nil {
+			p.deps.Logger.Warnw("failed to release orphaned IPAM", "veth", veth, "error", err)
+		} else {
+			cleaned++
+		}
+	}
+
+	return cleaned, nil
+}
+
