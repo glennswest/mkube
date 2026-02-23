@@ -194,33 +194,45 @@ func (c *Client) DeleteRecord(ctx context.Context, endpoint, zoneID, recordID st
 
 // ListRecords returns all DNS records in a zone.
 func (c *Client) ListRecords(ctx context.Context, endpoint, zoneID string) ([]Record, error) {
-	url := fmt.Sprintf("%s/api/v1/zones/%s/records", endpoint, zoneID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building record list request: %w", err)
+	var all []Record
+	const pageSize = 100
+	offset := 0
+
+	for {
+		url := fmt.Sprintf("%s/api/v1/zones/%s/records?limit=%d&offset=%d", endpoint, zoneID, pageSize, offset)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("building record list request: %w", err)
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("listing records in zone %s: %w", zoneID, err)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading record list response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("listing records: HTTP %d: %s", resp.StatusCode, string(body))
+		}
+
+		var page []Record
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("decoding records: %w", err)
+		}
+
+		all = append(all, page...)
+		if len(page) < pageSize {
+			break
+		}
+		offset += len(page)
 	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("listing records in zone %s: %w", zoneID, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading record list response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("listing records: HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var records []Record
-	if err := json.Unmarshal(body, &records); err != nil {
-		return nil, fmt.Errorf("decoding records: %w", err)
-	}
-
-	return records, nil
+	return all, nil
 }
 
 // DeregisterHost removes all A records matching the given hostname from a zone.
