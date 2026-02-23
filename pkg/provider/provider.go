@@ -955,16 +955,24 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// 4. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
+	// 4. Re-sync IPAM allocations from actual veths on the device.
+	// Pods tracked via the "already exists" path above don't call
+	// AllocateInterface, so their veths may not be in IPAM yet.
+	// This ensures GetPodStatus can always return pod IPs.
+	if err := p.deps.NetworkMgr.ResyncAllocations(ctx); err != nil {
+		log.Warnw("failed to re-sync IPAM allocations", "error", err)
+	}
+
+	// 5. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
 	p.syncConfigMapsToDisk(ctx)
 
-	// 5. Ensure DNS zones exist and records are seeded from config
+	// 6. Ensure DNS zones exist and records are seeded from config
 	p.deps.NetworkMgr.InitDNSZones(ctx)
 
-	// 6. Re-register DNS aliases for all tracked pods so they survive DNS container restarts
+	// 7. Re-register DNS aliases for all tracked pods so they survive DNS container restarts
 	p.reregisterPodDNS(ctx)
 
-	// 7. Async consistency check for orphaned veths/IPAM
+	// 8. Async consistency check for orphaned veths/IPAM
 	p.CheckConsistencyAsync("reconcile")
 
 	return nil

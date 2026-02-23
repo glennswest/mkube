@@ -552,6 +552,13 @@ func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
 
 		p.deps.Logger.Infow("running async consistency check", "trigger", reason)
 
+		// Re-sync IPAM allocations from device before orphan detection.
+		// Ensures veths added by other reconcile cycles are registered
+		// in IPAM before we decide what's orphaned.
+		if err := p.deps.NetworkMgr.ResyncAllocations(ctx); err != nil {
+			p.deps.Logger.Warnw("IPAM re-sync failed", "error", err)
+		}
+
 		var cleaned int
 
 		n, err := p.cleanOrphanedContainers(ctx)

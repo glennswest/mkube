@@ -454,6 +454,15 @@ func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 	return nil
 }
 
+// ResyncAllocations re-queries all veths from the device and fills in any
+// missing IPAM allocations. Idempotent — existing entries are overwritten
+// with the same data. Called during reconcile to ensure IPAM tracks veths
+// for pods that were tracked via the "already exists" path without calling
+// AllocateInterface.
+func (m *Manager) ResyncAllocations(ctx context.Context) error {
+	return m.syncExistingAllocations(ctx)
+}
+
 // extractHostname derives a hostname from a veth name like "veth_ns_pod_0".
 func extractHostname(vethName string) string {
 	parts := strings.SplitN(vethName, "_", 4)
