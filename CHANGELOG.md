@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **fix:** Auto-cleanup stale containers in CreatePod — detects and removes orphaned RouterOS containers before recreation, preventing "in use by container" veth errors
+- **fix:** Force-release veths held by orphaned containers — when veth allocation fails, finds the container holding the veth, stops/removes it, and retries
+- **feat:** Orphaned container detection in consistency checker — async cleanup removes RouterOS containers that follow mkube naming but aren't tracked by any pod
 - **fix:** Always delete stale tarball cache and rebuild from registry — registry is the source of truth for container images
 - **fix:** Clear image digest cache on registry push events — ensures immediate detection of new image pushes
 - **fix:** Add persistent mount for registry blob store (`/raid1/volumes/kube.gt.lo/registry`) — data survives mkube redeploy

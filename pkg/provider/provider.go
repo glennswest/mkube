@@ -167,6 +167,16 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	for i, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
 
+		// 0. Pre-creation cleanup: remove any stale RouterOS container with
+		// the same name from a previous failed CreatePod attempt. Without this,
+		// the orphaned container holds the veth interface and blocks recreation.
+		if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil {
+			log.Warnw("stale container found, cleaning up before recreation",
+				"name", name, "status", ct.Status, "id", ct.ID)
+			p.stopAndRemoveContainer(ctx, name, ct.ID)
+			_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
+		}
+
 		// 1. Resolve image → tarball path
 		var tarballPath string
 		if filePath := pod.Annotations[annotationFile]; filePath != "" {
@@ -186,12 +196,15 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		staticIP := pod.Annotations[annotationStaticIP]
 		ip, gw, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName, staticIP)
 		if err != nil {
-			// If veth/IP exists from a previous failed attempt, clean up and retry
+			// If veth/IP exists from a previous failed attempt, clean up and retry.
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "already have interface") || strings.Contains(errMsg, "already allocated to") {
 				log.Warnw("cleaning up orphaned veth", "veth", vethName, "reason", errMsg)
 				if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); releaseErr != nil {
-					log.Warnw("failed to release orphaned veth", "veth", vethName, "error", releaseErr)
+					// ReleaseInterface may fail if a container still holds the veth.
+					// Find and forcibly remove the container holding it.
+					log.Warnw("release failed, force-releasing veth", "veth", vethName, "error", releaseErr)
+					p.forceReleaseVeth(ctx, vethName)
 				}
 				ip, gw, dnsServer, err = p.deps.NetworkMgr.AllocateInterface(ctx, vethName, containerHostname, networkName, staticIP)
 			}
@@ -365,6 +378,56 @@ func (p *MicroKubeProvider) waitForStopped(ctx context.Context, name string, tim
 			return nil, fmt.Errorf("timed out waiting for container %s to reach stopped state", name)
 		case <-ticker.C:
 		}
+	}
+}
+
+// stopAndRemoveContainer stops a running container, waits for it to stop,
+// then removes it. Used for pre-creation cleanup of stale containers.
+func (p *MicroKubeProvider) stopAndRemoveContainer(ctx context.Context, name, id string) {
+	log := p.deps.Logger
+
+	if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil && ct.IsRunning() {
+		_ = p.deps.Runtime.StopContainer(ctx, id)
+		for j := 0; j < 15; j++ {
+			time.Sleep(time.Second)
+			if updated, err := p.deps.Runtime.GetContainer(ctx, name); err != nil || !updated.IsRunning() {
+				break
+			}
+		}
+	}
+
+	if err := p.deps.Runtime.RemoveContainer(ctx, id); err != nil {
+		log.Warnw("failed to remove stale container", "name", name, "id", id, "error", err)
+	} else {
+		log.Infow("removed stale container", "name", name, "id", id)
+	}
+}
+
+// forceReleaseVeth finds the RouterOS container holding a veth interface,
+// stops and removes it, then releases the veth. Used during CreatePod to
+// recover when an orphaned container blocks veth allocation.
+func (p *MicroKubeProvider) forceReleaseVeth(ctx context.Context, vethName string) {
+	log := p.deps.Logger
+
+	containers, err := p.deps.Runtime.ListContainers(ctx)
+	if err != nil {
+		log.Warnw("failed to list containers for veth force-release", "error", err)
+		return
+	}
+
+	for _, ct := range containers {
+		if ct.Interface == vethName {
+			log.Warnw("found container holding orphaned veth, removing",
+				"container", ct.Name, "veth", vethName, "id", ct.ID)
+			p.stopAndRemoveContainer(ctx, ct.Name, ct.ID)
+			_ = p.deps.Runtime.RemoveMountsByList(ctx, ct.Name)
+			break
+		}
+	}
+
+	// Retry veth release after container removal
+	if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); err != nil {
+		log.Warnw("veth release still failed after container removal", "veth", vethName, "error", err)
 	}
 }
 

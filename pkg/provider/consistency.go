@@ -554,7 +554,13 @@ func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
 
 		var cleaned int
 
-		n, err := p.cleanOrphanedVeths(ctx)
+		n, err := p.cleanOrphanedContainers(ctx)
+		if err != nil {
+			p.deps.Logger.Warnw("orphaned container check failed", "error", err)
+		}
+		cleaned += n
+
+		n, err = p.cleanOrphanedVeths(ctx)
 		if err != nil {
 			p.deps.Logger.Warnw("orphaned veth check failed", "error", err)
 		}
@@ -606,6 +612,45 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 		} else {
 			cleaned++
 		}
+	}
+
+	return cleaned, nil
+}
+
+// cleanOrphanedContainers finds RouterOS containers that follow the mkube
+// naming convention (namespace_pod_container) but are not tracked by any pod.
+// These are leftovers from failed CreatePod or manual interventions.
+func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, error) {
+	containers, err := p.deps.Runtime.ListContainers(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("listing containers: %w", err)
+	}
+
+	// Build set of container names that tracked pods own
+	expectedContainers := make(map[string]bool)
+	for _, pod := range p.pods {
+		for _, c := range pod.Spec.Containers {
+			expectedContainers[sanitizeName(pod, c.Name)] = true
+		}
+	}
+
+	cleaned := 0
+	for _, ct := range containers {
+		// Only consider containers following the mkube naming convention
+		// (contains underscore separators like "default_nginx_web").
+		// Containers without underscores are not managed by mkube (e.g. kube.gt.lo).
+		if !strings.Contains(ct.Name, "_") {
+			continue
+		}
+		if expectedContainers[ct.Name] {
+			continue
+		}
+
+		p.deps.Logger.Infow("removing orphaned container",
+			"name", ct.Name, "id", ct.ID, "status", ct.Status, "interface", ct.Interface)
+		p.stopAndRemoveContainer(ctx, ct.Name, ct.ID)
+		_ = p.deps.Runtime.RemoveMountsByList(ctx, ct.Name)
+		cleaned++
 	}
 
 	return cleaned, nil
