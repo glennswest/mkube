@@ -557,33 +557,42 @@ func (ins *Installer) waitForRegistryHealth(ctx context.Context) error {
 func (ins *Installer) seedAllImages(ctx context.Context) error {
 	registryAddr := ins.registryIP + ":5000"
 
-	// Use the installer's HTTP transport which trusts our CA
+	// Use the installer's HTTP transport (trusts our CA) for local registry checks
 	registryTransport := ins.http.Transport
 
 	for _, upstream := range ins.seedImages {
-		// Extract repo:tag from "ghcr.io/glennswest/mkube:edge" → "mkube:edge"
 		local := extractLocal(upstream)
 		localRef := registryAddr + "/" + local
 
+		// Check if image already exists in local registry first
+		_, headErr := crane.Head(localRef, crane.WithTransport(registryTransport))
+		if headErr == nil {
+			ins.log.Infow("already in registry, skipping", "image", local)
+			continue
+		}
+
 		ins.log.Infow("seeding", "from", upstream, "to", localRef)
 
-		err := crane.Copy(upstream, localRef,
+		// Pull from GHCR (default transport) then push to local registry (our CA transport).
+		// crane.Copy uses a single transport, so we pull first then push.
+		img, err := crane.Pull(upstream,
 			crane.WithContext(ctx),
 			crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: "arm64"}),
-			crane.WithTransport(registryTransport),
 			crane.WithAuthFromKeychain(
 				authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
 			),
 		)
 		if err != nil {
-			// Check if image already exists in the local registry
-			_, headErr := crane.Head(localRef, crane.WithTransport(registryTransport))
-			if headErr == nil {
-				ins.log.Warnw("GHCR pull failed but image exists in local registry", "image", local, "err", err)
-				continue
-			}
-			return fmt.Errorf("seeding %s: %w", upstream, err)
+			return fmt.Errorf("pulling %s: %w", upstream, err)
 		}
+
+		if err := crane.Push(img, localRef,
+			crane.WithContext(ctx),
+			crane.WithTransport(registryTransport),
+		); err != nil {
+			return fmt.Errorf("pushing %s to local registry: %w", local, err)
+		}
+
 		ins.log.Infow("seeded", "image", local)
 	}
 
