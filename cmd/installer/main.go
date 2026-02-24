@@ -63,6 +63,7 @@ func main() {
 	f.String("gateway", "192.168.200.1", "Gateway IP for container network")
 	f.String("dns", "192.168.200.199", "DNS server for containers")
 	f.String("mkube-ip", "192.168.200.2", "Static IP for the mkube container")
+	f.String("mkube-update-ip", "192.168.200.5", "Static IP for the mkube-update container")
 	f.StringSlice("seed", []string{
 		"ghcr.io/glennswest/mkube:edge",
 		"ghcr.io/glennswest/mkube-update:edge",
@@ -99,6 +100,7 @@ func run(cmd *cobra.Command, args []string) error {
 	gateway, _ := cmd.Flags().GetString("gateway")
 	dns, _ := cmd.Flags().GetString("dns")
 	mkubeIP, _ := cmd.Flags().GetString("mkube-ip")
+	mkubeUpdateIP, _ := cmd.Flags().GetString("mkube-update-ip")
 	seedImages, _ := cmd.Flags().GetStringSlice("seed")
 
 	log.Infow("mkube-installer", "version", version, "device", device)
@@ -118,6 +120,7 @@ func run(cmd *cobra.Command, args []string) error {
 		gateway:       gateway,
 		dns:           dns,
 		mkubeIP:       mkubeIP,
+		mkubeUpdateIP: mkubeUpdateIP,
 		seedImages:    seedImages,
 		log:           log,
 		http: &http.Client{
@@ -143,6 +146,7 @@ type Installer struct {
 	gateway       string
 	dns           string
 	mkubeIP       string
+	mkubeUpdateIP string
 	seedImages    []string
 	log           *zap.SugaredLogger
 	http          *http.Client
@@ -287,7 +291,7 @@ func (ins *Installer) setupInfra(ctx context.Context) error {
 	}{
 		{"veth-registry", ins.registryIP + "/24"},
 		{"veth-mkube", ins.mkubeIP + "/24"},
-		{"veth-mkube-update", ins.mkubeIP + "/24"}, // shares IP with mkube (only one runs at a time during bootstrap)
+		{"veth-mkube-update", ins.mkubeUpdateIP + "/24"},
 	}
 	for _, v := range veths {
 		ins.rosPost(ctx, "/interface/veth/add", map[string]string{

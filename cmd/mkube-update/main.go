@@ -18,18 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/crane"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
-
-	"github.com/glennswest/mkube/pkg/dockersave"
 )
 
 var version = "dev"
@@ -456,85 +450,29 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 		return nil
 	}
 
-	// Container doesn't exist — pull image and create it
-	// Prefer local registry (images were seeded by installer), fall back to
-	// GHCR only if the config explicitly points there.
+	// Container doesn't exist — create it via remote-image from local registry.
+	// The installer seeds all images into the local registry, so we pull from
+	// there. Scratch containers have no system root CAs so GHCR TLS would fail.
 	imageRef := bc.Image
-	pullOpts := []crane.Option{
-		crane.WithContext(ctx),
-		crane.WithPlatform(&v1.Platform{
-			OS:           "linux",
-			Architecture: "arm64",
-		}),
-	}
-
 	if strings.HasPrefix(imageRef, "ghcr.io") {
-		// Rewrite to local registry — the installer already seeded this image.
-		// Scratch containers have no system root CAs so GHCR TLS fails.
 		repo := imageRef[strings.LastIndex(imageRef, "/")+1:] // "mkube:edge"
 		imageRef = trimScheme(u.cfg.RegistryURL) + "/" + repo
 		log.Infow("rewrote GHCR ref to local registry", "original", bc.Image, "local", imageRef)
 	}
 
-	// Use registry transport (trusts our CA) for pulling from local registry
-	pullOpts = append(pullOpts, crane.WithTransport(u.http.Transport))
-
 	log.Infow("mkube container not found, bootstrapping", "image", imageRef)
-	log.Infow("pulling mkube image", "ref", imageRef)
-	img, err := crane.Pull(imageRef, pullOpts...)
-	if err != nil {
-		return fmt.Errorf("pulling image %s: %w", bc.Image, err)
-	}
 
-	// Flatten OCI layers into rootfs
-	log.Info("flattening OCI layers to rootfs")
-	rootfsReader := mutate.Extract(img)
-	defer rootfsReader.Close()
-
-	var rootfsBuf bytes.Buffer
-	if _, err := io.Copy(&rootfsBuf, rootfsReader); err != nil {
-		return fmt.Errorf("extracting rootfs: %w", err)
-	}
-
-	// Get image config
-	imgCfg, err := img.ConfigFile()
-	if err != nil {
-		return fmt.Errorf("reading image config: %w", err)
-	}
-
-	// Build docker-save tarball
-	var dockerSave bytes.Buffer
-	if err := dockersave.Write(&dockerSave, rootfsBuf.Bytes(), bc.Image, imgCfg); err != nil {
-		return fmt.Errorf("building docker-save tarball: %w", err)
-	}
-
-	// Write tarball to local disk
-	tarballPath := filepath.Join(bc.TarballDir, "mkube.tar")
-	log.Infow("writing tarball", "path", tarballPath, "size", dockerSave.Len())
-	if err := os.MkdirAll(filepath.Dir(tarballPath), 0o755); err != nil {
-		return fmt.Errorf("creating tarball dir: %w", err)
-	}
-	if err := os.WriteFile(tarballPath, dockerSave.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("writing tarball: %w", err)
-	}
-
-	// Translate path for RouterOS host visibility
-	hostTarball := tarballPath
-	if bc.SelfRootDir != "" {
-		hostTarball = bc.SelfRootDir + "/" + strings.TrimPrefix(tarballPath, "/")
-	}
-	log.Infow("translated tarball path", "container", tarballPath, "host", hostTarball)
-
-	// Create container via RouterOS REST API
+	// Create container via remote-image (RouterOS pulls from registry directly)
 	spec := map[string]string{
-		"name":          bc.Container.Name,
-		"file":          hostTarball,
-		"interface":     bc.Container.Interface,
-		"root-dir":      bc.Container.RootDir,
-		"hostname":      bc.Container.Hostname,
-		"dns":           bc.Container.DNS,
-		"logging":       bc.Container.Logging,
-		"start-on-boot": bc.Container.StartOnBoot,
+		"name":              bc.Container.Name,
+		"remote-image":      imageRef,
+		"check-certificate": "no",
+		"interface":         bc.Container.Interface,
+		"root-dir":          bc.Container.RootDir,
+		"hostname":          bc.Container.Hostname,
+		"dns":               bc.Container.DNS,
+		"logging":           bc.Container.Logging,
+		"start-on-boot":     bc.Container.StartOnBoot,
 	}
 	if bc.Container.MountLists != "" {
 		spec["mountlists"] = bc.Container.MountLists
@@ -545,7 +483,7 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 		return fmt.Errorf("creating container: %w", err)
 	}
 
-	// Wait for extraction (container appears as stopped after extraction)
+	// Wait for extraction (RouterOS downloads + extracts the image)
 	log.Info("waiting for container extraction")
 	if err := u.waitForExtraction(ctx, bc.Container.Name); err != nil {
 		return fmt.Errorf("waiting for extraction: %w", err)
