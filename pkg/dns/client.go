@@ -19,13 +19,16 @@ import (
 //
 // Use BeginBatch/EndBatch to cache record lists across multiple calls,
 // avoiding repeated HTTP GETs of the same zone in a single reconcile.
+// During batch mode, endpoints that return errors are blacklisted for
+// the remainder of the batch to avoid repeated 10s timeouts.
 type Client struct {
 	http *http.Client
 	log  *zap.SugaredLogger
 
-	mu         sync.Mutex
-	batchMode  bool
-	recordCache map[string][]Record // "endpoint:zoneID" -> records
+	mu             sync.Mutex
+	batchMode      bool
+	recordCache    map[string][]Record // "endpoint:zoneID" -> records
+	failedEndpoints map[string]bool    // endpoints that timed out this batch
 }
 
 // Zone represents a MicroDNS zone.
@@ -62,7 +65,7 @@ type createRecordRequest struct {
 // NewClient creates a new MicroDNS REST client.
 func NewClient(log *zap.SugaredLogger) *Client {
 	return &Client{
-		http: &http.Client{Timeout: 10 * time.Second},
+		http: &http.Client{Timeout: 3 * time.Second},
 		log:  log,
 	}
 }
@@ -76,6 +79,7 @@ func (c *Client) BeginBatch() {
 	defer c.mu.Unlock()
 	c.batchMode = true
 	c.recordCache = make(map[string][]Record)
+	c.failedEndpoints = make(map[string]bool)
 }
 
 // EndBatch disables record caching and clears the cache.
@@ -84,6 +88,7 @@ func (c *Client) EndBatch() {
 	defer c.mu.Unlock()
 	c.batchMode = false
 	c.recordCache = nil
+	c.failedEndpoints = nil
 }
 
 // invalidateCache removes the cached records for a zone.
@@ -95,9 +100,15 @@ func (c *Client) invalidateCache(endpoint, zoneID string) {
 }
 
 // listRecordsCached returns cached records if in batch mode, otherwise fetches fresh.
+// In batch mode, endpoints that previously failed are skipped immediately.
 func (c *Client) listRecordsCached(ctx context.Context, endpoint, zoneID string) ([]Record, error) {
 	c.mu.Lock()
 	if c.batchMode {
+		// Skip endpoints that already failed this batch
+		if c.failedEndpoints[endpoint] {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
+		}
 		key := endpoint + ":" + zoneID
 		if cached, ok := c.recordCache[key]; ok {
 			c.mu.Unlock()
@@ -107,6 +118,12 @@ func (c *Client) listRecordsCached(ctx context.Context, endpoint, zoneID string)
 		// Fetch and cache
 		records, err := c.ListRecords(ctx, endpoint, zoneID)
 		if err != nil {
+			// Blacklist endpoint for remainder of this batch
+			c.mu.Lock()
+			if c.failedEndpoints != nil {
+				c.failedEndpoints[endpoint] = true
+			}
+			c.mu.Unlock()
 			return nil, err
 		}
 		c.mu.Lock()

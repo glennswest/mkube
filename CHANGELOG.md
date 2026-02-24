@@ -20,7 +20,8 @@
 
 ### 2026-02-24
 - **fix:** DHCP reservation hostname — `FC:4C:EA:F9:4F:2F` was mapped to `server30` but the device identifies as `gb10`. Changed `server30`→`gb10` and `server30b`→`gb10b` in g10 DHCP reservations and DNS.
-- **perf:** DNS record cache (batch mode) — `BeginBatch`/`EndBatch` on DNS client caches `ListRecords` results per zone, avoiding O(pods × containers × 2) HTTP GETs during reconcile. Applied to `reregisterPodDNS`, `InitDNSZones`, and `cleanStaleDNSRecords`.
+- **perf:** DNS record cache (batch mode) — `BeginBatch`/`EndBatch` on DNS client caches `ListRecords` results per zone and blacklists failed endpoints for the remainder of the batch, avoiding O(pods × containers × 2) HTTP GETs and repeated 10s timeouts during reconcile. Applied to `reregisterPodDNS`, `InitDNSZones`, and `cleanStaleDNSRecords`.
+- **perf:** Reduce DNS HTTP timeout from 10s to 3s — DNS containers are local, 10s was far too generous and caused 60s reconcile cycles when namespace DNS endpoints were unreachable.
 - **feat:** Boot timing instrumentation — all startup phases (`BOOT:` prefix) and reconcile steps (`RECONCILE:` prefix) now log elapsed milliseconds. Identifies bottlenecks: discovery (8.4s), DZO bootstrap (6.2s), DNS init (3.2s) = ~18s boot total. First reconcile ~188s (pod creation + DNS registration).
 - **fix:** Stale DNS cleanup — when a pod gets a new IP, old A records for the same hostname are automatically removed before registering the new one. Prevents accumulation of stale DNS entries across pod recreations.
 
