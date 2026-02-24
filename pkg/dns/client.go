@@ -140,6 +140,14 @@ func (c *Client) listRecordsCached(ctx context.Context, endpoint, zoneID string)
 // EnsureZone finds an existing zone by name or creates it.
 // Returns the zone UUID.
 func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (string, error) {
+	// Skip endpoints known to be unreachable this batch
+	c.mu.Lock()
+	if c.batchMode && c.failedEndpoints[endpoint] {
+		c.mu.Unlock()
+		return "", fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
+	}
+	c.mu.Unlock()
+
 	// List existing zones
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/zones", nil)
 	if err != nil {
@@ -148,6 +156,11 @@ func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (str
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.mu.Lock()
+		if c.failedEndpoints != nil {
+			c.failedEndpoints[endpoint] = true
+		}
+		c.mu.Unlock()
 		return "", fmt.Errorf("listing zones from %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
@@ -212,6 +225,14 @@ func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (str
 // It is idempotent: if a matching A record (same hostname + IP) already
 // exists, the call is a no-op.
 func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, ip string, ttl int) error {
+	// Skip endpoints known to be unreachable this batch
+	c.mu.Lock()
+	if c.batchMode && c.failedEndpoints[endpoint] {
+		c.mu.Unlock()
+		return fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
+	}
+	c.mu.Unlock()
+
 	// Check for existing record to avoid creating duplicates.
 	records, err := c.listRecordsCached(ctx, endpoint, zoneID)
 	if err == nil {
@@ -237,6 +258,11 @@ func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, i
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.mu.Lock()
+		if c.failedEndpoints != nil {
+			c.failedEndpoints[endpoint] = true
+		}
+		c.mu.Unlock()
 		return fmt.Errorf("registering host %s in zone %s: %w", hostname, zoneID, err)
 	}
 	defer resp.Body.Close()
