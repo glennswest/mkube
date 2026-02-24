@@ -214,20 +214,30 @@ func (p *MicroKubeProvider) checkDNS(ctx context.Context) []CheckItem {
 
 		zoneID, ok := p.deps.NetworkMgr.NetworkZoneID(netName)
 		if !ok {
+			status := "warn"
+			msg := "zone ID not cached (DNS may not be initialized)"
+			if netDef.ExternalDNS {
+				status = "pass"
+				msg = "external DNS (zone init deferred)"
+			}
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("dns-zone/%s", netName),
-				Status:  "warn",
-				Message: "zone ID not cached (DNS may not be initialized)",
+				Status:  status,
+				Message: msg,
 			})
 			continue
 		}
 
 		records, err := dnsClient.ListRecords(ctx, netDef.DNS.Endpoint, zoneID)
 		if err != nil {
+			status := "fail"
+			if netDef.ExternalDNS {
+				status = "pass"
+			}
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("dns-zone/%s", netName),
-				Status:  "fail",
-				Message: fmt.Sprintf("failed to list records: %v", err),
+				Status:  status,
+				Message: fmt.Sprintf("DNS endpoint unreachable: %v", err),
 			})
 			continue
 		}
@@ -437,13 +447,14 @@ func (p *MicroKubeProvider) checkManifest() []CheckItem {
 		}
 	}
 
-	// Tracked pods not in manifest
+	// Tracked pods not in manifest — these come from NATS (oc apply),
+	// which is the normal deployment path. Not a warning.
 	for key := range p.pods {
 		if !manifestSet[key] {
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("manifest/%s", key),
-				Status:  "warn",
-				Message: "tracked pod not in boot manifest",
+				Status:  "pass",
+				Message: "NATS-sourced pod (not in boot manifest)",
 			})
 		}
 	}

@@ -1640,8 +1640,10 @@ func (p *MicroKubeProvider) registerPodAliases(ctx context.Context, pod *corev1.
 	}
 }
 
-// reregisterPodDNS re-registers DNS aliases for all tracked pods.
+// reregisterPodDNS re-registers DNS records for all tracked pods.
 // This ensures pod DNS records survive DNS container restarts that wipe the zone.
+// Registers both container-level records (container.pod → IP) and pod-level
+// aliases (podName → IP).
 func (p *MicroKubeProvider) reregisterPodDNS(ctx context.Context) {
 	for _, pod := range p.pods {
 		networkName := pod.Annotations[annotationNetwork]
@@ -1653,6 +1655,17 @@ func (p *MicroKubeProvider) reregisterPodDNS(ctx context.Context) {
 			veth := vethName(pod, i)
 			if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(veth); ok {
 				containerIPs[c.Name] = ip
+
+				// Register the container-level DNS record (container.pod → IP).
+				// This is normally done by AllocateInterface during CreatePod,
+				// but pods tracked via the "already exists" path never called it.
+				containerHostname := c.Name + "." + pod.Name
+				if err := p.deps.NetworkMgr.RegisterDNS(ctx, networkName, containerHostname, ip); err != nil {
+					p.deps.Logger.Warnw("failed to re-register container DNS",
+						"hostname", containerHostname, "ip", ip, "error", err)
+				}
+				// Clean stale IPs for this container hostname
+				_ = p.deps.NetworkMgr.CleanStaleDNS(ctx, networkName, containerHostname, ip)
 			}
 		}
 

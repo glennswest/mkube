@@ -170,6 +170,7 @@ networks:
     bridge: bridge-lan
     cidr: "192.168.1.0/24"
     gateway: "192.168.1.88"
+    externalDNS: true  # DNS server runs on pvex.gw.lo, not managed by mkube
     dns:
       endpoint: "http://192.168.1.199:8080"
       zone: "gw.lo"

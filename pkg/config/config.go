@@ -83,6 +83,7 @@ type NetworkDef struct {
 	DNS       DNSConfig `yaml:"dns"`
 	IPAMStart string    `yaml:"ipamStart,omitempty"` // first IP for container IPAM allocation
 	IPAMEnd   string    `yaml:"ipamEnd,omitempty"`   // last IP for container IPAM allocation
+	ExternalDNS bool   `yaml:"externalDNS,omitempty"` // DNS server is external (not managed by mkube)
 }
 
 // DNSConfig specifies the MicroDNS instance for a network.
