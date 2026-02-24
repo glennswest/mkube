@@ -1546,10 +1546,22 @@ func (p *MicroKubeProvider) replaceContainer(ctx context.Context, name, newTag, 
 		}
 	}
 
-	// Remove
+	// Extra settle time — RouterOS may report stopped before fully releasing resources
+	time.Sleep(2 * time.Second)
+
+	// Remove with retry — RouterOS sometimes needs a moment after stop
 	log.Infow("removing container", "name", name)
-	if err := p.deps.Runtime.RemoveContainer(ctx, ct.ID); err != nil {
-		return fmt.Errorf("removing container %s: %w", name, err)
+	var removeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		removeErr = p.deps.Runtime.RemoveContainer(ctx, ct.ID)
+		if removeErr == nil {
+			break
+		}
+		log.Warnw("remove failed, retrying", "name", name, "attempt", attempt+1, "error", removeErr)
+		time.Sleep(2 * time.Second)
+	}
+	if removeErr != nil {
+		return fmt.Errorf("removing container %s: %w", name, removeErr)
 	}
 
 	// Recreate with new image, preserving config.
