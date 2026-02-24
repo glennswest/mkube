@@ -60,6 +60,7 @@ networks:
         leaseTime: 600
         nextServer: "192.168.10.200"
         bootFile: "undionly.kpxe"
+        bootFileEfi: "ipxe.efi"
         reservations:
           - mac: "AC:1F:6B:8A:A7:9C"
             ip: "192.168.10.10"
@@ -146,6 +147,7 @@ networks:
         leaseTime: 600
         nextServer: "192.168.10.9"
         bootFile: "pxelinux.0"
+        bootFileEfi: "ipxe.efi"
         reservations:
           - mac: "0C:C4:7A:02:6B:90"
             ip: "192.168.11.10"

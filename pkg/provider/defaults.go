@@ -182,6 +182,9 @@ func buildDHCPSection(net config.NetworkDef) string {
 			fmt.Fprintf(&dhcp, "ipxe_boot_url = \"http://%s:8080/boot.ipxe\"\n", net.DNS.DHCP.NextServer)
 		}
 	}
+	if net.DNS.DHCP.BootFileEFI != "" {
+		fmt.Fprintf(&dhcp, "boot_file_efi = %q\n", net.DNS.DHCP.BootFileEFI)
+	}
 	for _, r := range net.DNS.DHCP.Reservations {
 		fmt.Fprintf(&dhcp, "\n[[dhcp.v4.reservations]]\n")
 		fmt.Fprintf(&dhcp, "mac = %q\n", r.MAC)

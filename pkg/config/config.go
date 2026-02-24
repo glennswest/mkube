@@ -102,7 +102,8 @@ type DHCPConfig struct {
 	RangeEnd      string            `yaml:"rangeEnd"`      // e.g. "192.168.11.200"
 	LeaseTime     int               `yaml:"leaseTime"`     // seconds, default 3600
 	NextServer    string            `yaml:"nextServer"`    // PXE server IP
-	BootFile      string            `yaml:"bootFile"`      // PXE boot file
+	BootFile      string            `yaml:"bootFile"`      // PXE boot file (BIOS)
+	BootFileEFI   string            `yaml:"bootFileEfi"`   // PXE boot file (UEFI)
 	ServerNetwork string            `yaml:"serverNetwork"` // serve DHCP from this network's DNS container (relay topology)
 	Reservations  []DHCPReservation `yaml:"reservations"`
 }
