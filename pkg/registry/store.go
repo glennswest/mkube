@@ -34,12 +34,15 @@ type uploadSession struct {
 	TempFile  *os.File
 	Size      int64
 	CreatedAt time.Time
+	mu        sync.Mutex // per-session lock for append operations
 }
 
 type BlobStore struct {
-	root    string
-	mu      sync.RWMutex
-	uploads map[string]*uploadSession // uuid -> session
+	root      string
+	uploadsMu sync.RWMutex                // protects the uploads map only
+	uploads   map[string]*uploadSession    // uuid -> session
+	blobLocks sync.Map                     // digest -> *sync.Mutex (per-blob write lock)
+	repoLocks sync.Map                     // repo -> *sync.RWMutex (per-repo manifest lock)
 }
 
 // NewBlobStore creates a new on-disk blob store at the given root directory.
@@ -59,20 +62,27 @@ func NewBlobStore(root string) (*BlobStore, error) {
 	}, nil
 }
 
-// GetBlob returns the raw data for a blob by its digest (e.g. "sha256:abc123").
-func (s *BlobStore) GetBlob(digest string) ([]byte, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// getBlobLock returns a per-digest mutex for blob writes.
+func (s *BlobStore) getBlobLock(digest string) *sync.Mutex {
+	mu, _ := s.blobLocks.LoadOrStore(digest, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
 
+// getRepoLock returns a per-repo RWMutex for manifest operations.
+func (s *BlobStore) getRepoLock(repo string) *sync.RWMutex {
+	mu, _ := s.repoLocks.LoadOrStore(repo, &sync.RWMutex{})
+	return mu.(*sync.RWMutex)
+}
+
+// GetBlob returns the raw data for a blob by its digest (e.g. "sha256:abc123").
+// Blob reads are lock-free — filesystem reads are safe for immutable content-addressed data.
+func (s *BlobStore) GetBlob(digest string) ([]byte, error) {
 	path := s.blobPath(digest)
 	return os.ReadFile(path)
 }
 
 // HasBlob checks whether a blob exists and returns its size.
 func (s *BlobStore) HasBlob(digest string) (exists bool, size int64) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	info, err := os.Stat(s.blobPath(digest))
 	if err != nil {
 		return false, 0
@@ -81,9 +91,11 @@ func (s *BlobStore) HasBlob(digest string) (exists bool, size int64) {
 }
 
 // PutBlob stores blob data from a reader, keyed by digest.
+// Uses per-digest locking so different blobs can be written concurrently.
 func (s *BlobStore) PutBlob(digest string, r io.Reader) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	mu := s.getBlobLock(digest)
+	mu.Lock()
+	defer mu.Unlock()
 
 	path := s.blobPath(digest)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -101,9 +113,11 @@ func (s *BlobStore) PutBlob(digest string, r io.Reader) error {
 }
 
 // GetManifest returns the manifest data and content type for a repo/reference.
+// Uses per-repo read lock so multiple reads can proceed concurrently.
 func (s *BlobStore) GetManifest(repo, ref string) (data []byte, contentType string, err error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	mu := s.getRepoLock(repo)
+	mu.RLock()
+	defer mu.RUnlock()
 
 	dataPath := s.manifestPath(repo, ref)
 	typePath := dataPath + ".type"
@@ -124,9 +138,11 @@ func (s *BlobStore) GetManifest(repo, ref string) (data []byte, contentType stri
 }
 
 // PutManifest stores a manifest for a repo/reference with its content type.
+// Uses per-repo write lock so different repos can be written concurrently.
 func (s *BlobStore) PutManifest(repo, ref, contentType string, r io.Reader) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	mu := s.getRepoLock(repo)
+	mu.Lock()
+	defer mu.Unlock()
 
 	dataPath := s.manifestPath(repo, ref)
 	if err := os.MkdirAll(filepath.Dir(dataPath), 0755); err != nil {
@@ -153,9 +169,6 @@ func (s *BlobStore) PutManifest(repo, ref, contentType string, r io.Reader) erro
 
 // ListRepositories returns all repository names that have stored manifests.
 func (s *BlobStore) ListRepositories() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	manifestsDir := filepath.Join(s.root, "manifests")
 	var repos []string
 
@@ -180,9 +193,6 @@ func (s *BlobStore) ListRepositories() []string {
 
 // InitiateUpload starts a new chunked blob upload session and returns its UUID.
 func (s *BlobStore) InitiateUpload(repo string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	id := uuid.New().String()
 	tmpPath := filepath.Join(s.root, "uploads", id)
 	f, err := os.Create(tmpPath)
@@ -190,25 +200,33 @@ func (s *BlobStore) InitiateUpload(repo string) (string, error) {
 		return "", fmt.Errorf("creating upload temp file: %w", err)
 	}
 
-	s.uploads[id] = &uploadSession{
+	session := &uploadSession{
 		UUID:      id,
 		Repo:      repo,
 		TempFile:  f,
 		CreatedAt: time.Now(),
 	}
+
+	s.uploadsMu.Lock()
+	s.uploads[id] = session
+	s.uploadsMu.Unlock()
+
 	return id, nil
 }
 
 // AppendUpload appends data to an in-progress upload session.
-// Returns the current total size (for Content-Range responses).
+// Uses per-session locking so different uploads proceed concurrently.
 func (s *BlobStore) AppendUpload(id string, r io.Reader) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.uploadsMu.RLock()
 	session, ok := s.uploads[id]
+	s.uploadsMu.RUnlock()
+
 	if !ok {
 		return 0, fmt.Errorf("upload %s not found", id)
 	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
 
 	n, err := io.Copy(session.TempFile, r)
 	if err != nil {
@@ -221,13 +239,19 @@ func (s *BlobStore) AppendUpload(id string, r io.Reader) (int64, error) {
 // FinalizeUpload completes an upload, verifies the digest, and moves the blob
 // into permanent storage. The temp file is cleaned up.
 func (s *BlobStore) FinalizeUpload(id, digest string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.uploadsMu.Lock()
 	session, ok := s.uploads[id]
+	if ok {
+		delete(s.uploads, id)
+	}
+	s.uploadsMu.Unlock()
+
 	if !ok {
 		return fmt.Errorf("upload %s not found", id)
 	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
 
 	// Close the temp file so we can read it
 	session.TempFile.Close()
@@ -237,7 +261,6 @@ func (s *BlobStore) FinalizeUpload(id, digest string) error {
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {
 		os.Remove(tmpPath)
-		delete(s.uploads, id)
 		return fmt.Errorf("reading upload data: %w", err)
 	}
 
@@ -245,7 +268,6 @@ func (s *BlobStore) FinalizeUpload(id, digest string) error {
 		computed := computeDigest(data)
 		if computed != digest {
 			os.Remove(tmpPath)
-			delete(s.uploads, id)
 			return fmt.Errorf("digest mismatch: expected %s, got %s", digest, computed)
 		}
 	}
@@ -254,7 +276,6 @@ func (s *BlobStore) FinalizeUpload(id, digest string) error {
 	blobPath := s.blobPath(digest)
 	if err := os.MkdirAll(filepath.Dir(blobPath), 0755); err != nil {
 		os.Remove(tmpPath)
-		delete(s.uploads, id)
 		return err
 	}
 
@@ -262,32 +283,35 @@ func (s *BlobStore) FinalizeUpload(id, digest string) error {
 		// Cross-device fallback: copy + remove
 		if err := os.WriteFile(blobPath, data, 0644); err != nil {
 			os.Remove(tmpPath)
-			delete(s.uploads, id)
 			return err
 		}
 		os.Remove(tmpPath)
 	}
 
-	delete(s.uploads, id)
 	return nil
 }
 
 // GetUploadSize returns the current size of an in-progress upload.
 func (s *BlobStore) GetUploadSize(id string) (int64, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+	s.uploadsMu.RLock()
 	session, ok := s.uploads[id]
+	s.uploadsMu.RUnlock()
+
 	if !ok {
 		return 0, false
 	}
-	return session.Size, true
+
+	session.mu.Lock()
+	size := session.Size
+	session.mu.Unlock()
+
+	return size, true
 }
 
-// CleanupStalUploads removes upload sessions older than maxAge.
+// CleanupStaleUploads removes upload sessions older than maxAge.
 func (s *BlobStore) CleanupStaleUploads(maxAge time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
 
 	now := time.Now()
 	for id, session := range s.uploads {
@@ -301,8 +325,9 @@ func (s *BlobStore) CleanupStaleUploads(maxAge time.Duration) {
 
 // PurgeRepo removes all manifests for a given repo from the store.
 func (s *BlobStore) PurgeRepo(repo string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	mu := s.getRepoLock(repo)
+	mu.Lock()
+	defer mu.Unlock()
 
 	dir := filepath.Join(s.root, "manifests", repo)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -315,9 +340,6 @@ func (s *BlobStore) PurgeRepo(repo string) error {
 // valid JSON (e.g., HTML pages cached by a broken pull-through). Returns the
 // number of corrupted entries removed.
 func (s *BlobStore) ValidateManifests() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	manifestsDir := filepath.Join(s.root, "manifests")
 	removed := 0
 
