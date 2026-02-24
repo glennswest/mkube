@@ -285,12 +285,20 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			startOnBoot = "true"
 		}
 
-		// 5. Create the container
+		// 5. Remove old root-dir to force tarball re-extraction.
+		// RouterOS skips tarball extraction when root-dir already has content,
+		// so without this, stale images persist across container recreation.
+		rootDir := fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name)
+		if err := p.deps.Runtime.RemoveFile(ctx, rootDir); err != nil {
+			log.Debugw("root-dir cleanup (may not exist yet)", "rootDir", rootDir, "error", err)
+		}
+
+		// 6. Create the container
 		spec := runtime.ContainerSpec{
 			Name:        name,
 			Image:       tarballPath,
 			Interface:   vethName,
-			RootDir:     fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name),
+			RootDir:     rootDir,
 			MountLists:  mountListName,
 			Cmd:         strings.Join(container.Command, " "),
 			Command:     container.Command,
@@ -311,7 +319,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			return fmt.Errorf("creating container %s: %w", name, err)
 		}
 
-		// 6. Wait for tarball extraction then start the container.
+		// 7. Wait for tarball extraction then start the container.
 		// After creation RouterOS extracts the tarball; the container is
 		// not yet "stopped" until extraction finishes.
 		ct, err := p.waitForStopped(ctx, name, 120*time.Second)
@@ -322,7 +330,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			return fmt.Errorf("starting container %s: %w", name, err)
 		}
 
-		// 7. Register with lifecycle manager for boot ordering / health probes
+		// 8. Register with lifecycle manager for boot ordering / health probes
 		if startOnBoot == "true" {
 			p.deps.LifecycleMgr.Register(name, lifecycle.ContainerUnit{
 				Name:          name,
@@ -341,10 +349,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		log.Infow("container created and started", "name", name, "id", ct.ID)
 	}
 
-	// 8. Register DNS aliases (pod-level default + custom aliases from annotation)
+	// 9. Register DNS aliases (pod-level default + custom aliases from annotation)
 	p.registerPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
 
-	// 9. Push pod→container mappings to micrologs
+	// 10. Push pod→container mappings to micrologs
 	p.pushLogMappings(ctx, pod, log)
 
 	// Track the pod
@@ -620,7 +628,15 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 				},
 			}
 			allRunning = false
-		} else {
+			} else {
+			cs.ContainerID = ct.ID
+			// Populate ImageID from storage manager's cached digest
+			if p.deps.StorageMgr != nil {
+				if cached := p.deps.StorageMgr.GetCachedDigest(container.Image); cached != "" {
+					cs.ImageID = cached
+				}
+			}
+
 			switch {
 			case ct.IsRunning():
 				cs.Ready = p.deps.LifecycleMgr.GetUnitReady(rosName)

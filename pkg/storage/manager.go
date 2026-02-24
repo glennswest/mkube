@@ -279,6 +279,17 @@ func (m *Manager) GetImageCache() []ImageCacheEntry {
 	return entries
 }
 
+// GetCachedDigest returns the cached registry digest for an image, or empty string.
+func (m *Manager) GetCachedDigest(imageRef string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if cached, ok := m.images[imageRef]; ok {
+		return cached.Digest
+	}
+	return ""
+}
+
 func truncDigest(d string) string {
 	if len(d) > 19 {
 		return d[:19] + "..."
