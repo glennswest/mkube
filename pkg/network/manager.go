@@ -95,8 +95,25 @@ func NewManager(networks []config.NetworkDef, driver NetworkDriver, dnsClient *d
 		mgr.networks[netDef.Name] = ns
 		mgr.netOrder = append(mgr.netOrder, netDef.Name)
 
-		// Register IPAM pool
-		alloc.AddPool(netDef.Name, subnet, gateway)
+		// Register IPAM pool with optional allocation range
+		var poolOpts []ipam.PoolOpts
+		if netDef.IPAMStart != "" || netDef.IPAMEnd != "" {
+			o := ipam.PoolOpts{}
+			if netDef.IPAMStart != "" {
+				o.AllocStart = net.ParseIP(netDef.IPAMStart)
+				if o.AllocStart == nil {
+					return nil, fmt.Errorf("invalid ipamStart %q for network %s", netDef.IPAMStart, netDef.Name)
+				}
+			}
+			if netDef.IPAMEnd != "" {
+				o.AllocEnd = net.ParseIP(netDef.IPAMEnd)
+				if o.AllocEnd == nil {
+					return nil, fmt.Errorf("invalid ipamEnd %q for network %s", netDef.IPAMEnd, netDef.Name)
+				}
+			}
+			poolOpts = append(poolOpts, o)
+		}
+		alloc.AddPool(netDef.Name, subnet, gateway, poolOpts...)
 
 		// Register logical switch in state
 		ss.setSwitch(&LogicalSwitch{

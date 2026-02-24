@@ -75,12 +75,14 @@ type NamespaceConfig struct {
 
 // NetworkDef defines a network that containers can be placed on.
 type NetworkDef struct {
-	Name    string    `yaml:"name"`
-	Bridge  string    `yaml:"bridge"`
-	CIDR    string    `yaml:"cidr"`
-	Gateway string    `yaml:"gateway"`
-	VLAN    int       `yaml:"vlan,omitempty"`
-	DNS     DNSConfig `yaml:"dns"`
+	Name      string    `yaml:"name"`
+	Bridge    string    `yaml:"bridge"`
+	CIDR      string    `yaml:"cidr"`
+	Gateway   string    `yaml:"gateway"`
+	VLAN      int       `yaml:"vlan,omitempty"`
+	DNS       DNSConfig `yaml:"dns"`
+	IPAMStart string    `yaml:"ipamStart,omitempty"` // first IP for container IPAM allocation
+	IPAMEnd   string    `yaml:"ipamEnd,omitempty"`   // last IP for container IPAM allocation
 }
 
 // DNSConfig specifies the MicroDNS instance for a network.

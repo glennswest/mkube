@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-23
+- **fix:** IPAM collision on g10/g11 — container IPAM started allocating at .2 in every subnet, colliding with static server IPs (e.g., ipmiserial getting 192.168.11.15 which is server6's IPMI). Added configurable `ipamStart`/`ipamEnd` per network in config. g10 and g11 now allocate container IPs from .200-.250, well above server reservations (.10-.30) and DHCP ranges.
 - **fix:** Standalone reconciler missing digest cache clear on push events — the standalone reconciler received registry push events but did NOT call `ClearImageDigestByRepo` before reconciling, so `RefreshImage` compared stale digest vs stale digest and never detected changes. Root cause of ipmiserial (and all auto-update pods) not updating on image push.
 - **feat:** `GET /api/v1/images` endpoint — exposes image cache state (refs, digests, tarball paths, pull times) for debugging auto-update issues.
 - **feat:** Container network health repair — automatically detects and recreates pods with broken networking (missing veth, no IP, static IP mismatch). Tracks consecutive failures with threshold of 3 before triggering recreate to avoid flapping.

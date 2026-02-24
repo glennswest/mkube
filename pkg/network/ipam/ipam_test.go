@@ -257,6 +257,116 @@ func TestAllocateStaticUnknownPool(t *testing.T) {
 	}
 }
 
+func TestAllocateWithRange(t *testing.T) {
+	a := NewAllocator()
+	_, subnet, _ := net.ParseCIDR("192.168.11.0/24")
+	gw := net.ParseIP("192.168.11.1")
+	a.AddPool("g11", subnet, gw, PoolOpts{
+		AllocStart: net.ParseIP("192.168.11.200"),
+		AllocEnd:   net.ParseIP("192.168.11.210"),
+	})
+
+	// First allocation should be .200
+	ip1, err := a.Allocate("g11", "veth-0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip1.String() != "192.168.11.200" {
+		t.Errorf("expected 192.168.11.200, got %s", ip1)
+	}
+
+	// Second should be .201
+	ip2, err := a.Allocate("g11", "veth-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip2.String() != "192.168.11.201" {
+		t.Errorf("expected 192.168.11.201, got %s", ip2)
+	}
+}
+
+func TestAllocateWithRangeExhaustion(t *testing.T) {
+	a := NewAllocator()
+	_, subnet, _ := net.ParseCIDR("192.168.11.0/24")
+	gw := net.ParseIP("192.168.11.1")
+	a.AddPool("g11", subnet, gw, PoolOpts{
+		AllocStart: net.ParseIP("192.168.11.200"),
+		AllocEnd:   net.ParseIP("192.168.11.201"),
+	})
+
+	// Allocate both IPs in the range
+	ip1, err := a.Allocate("g11", "veth-0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip1.String() != "192.168.11.200" {
+		t.Errorf("expected 192.168.11.200, got %s", ip1)
+	}
+
+	ip2, err := a.Allocate("g11", "veth-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip2.String() != "192.168.11.201" {
+		t.Errorf("expected 192.168.11.201, got %s", ip2)
+	}
+
+	// Third allocation should fail — range exhausted
+	_, err = a.Allocate("g11", "veth-2")
+	if err == nil {
+		t.Error("expected exhaustion error for constrained range")
+	}
+}
+
+func TestAllocateWithRangeWraparound(t *testing.T) {
+	a := NewAllocator()
+	_, subnet, _ := net.ParseCIDR("192.168.11.0/24")
+	gw := net.ParseIP("192.168.11.1")
+	a.AddPool("g11", subnet, gw, PoolOpts{
+		AllocStart: net.ParseIP("192.168.11.200"),
+		AllocEnd:   net.ParseIP("192.168.11.202"),
+	})
+
+	// Allocate all 3 IPs: .200, .201, .202
+	_, _ = a.Allocate("g11", "veth-0")
+	_, _ = a.Allocate("g11", "veth-1")
+	_, _ = a.Allocate("g11", "veth-2")
+
+	// Release .200
+	a.Release("g11", "veth-0")
+
+	// Next allocation should wrap around and get .200
+	ip, err := a.Allocate("g11", "veth-3")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip.String() != "192.168.11.200" {
+		t.Errorf("expected 192.168.11.200 after wraparound, got %s", ip)
+	}
+}
+
+func TestAllocateWithRangeSkipsServerIPs(t *testing.T) {
+	a := NewAllocator()
+	_, subnet, _ := net.ParseCIDR("192.168.11.0/24")
+	gw := net.ParseIP("192.168.11.1")
+	a.AddPool("g11", subnet, gw, PoolOpts{
+		AllocStart: net.ParseIP("192.168.11.200"),
+		AllocEnd:   net.ParseIP("192.168.11.210"),
+	})
+
+	// Pre-record a static allocation in the range (simulating sync from device)
+	a.Record("g11", "static-server", net.ParseIP("192.168.11.200"))
+
+	// Dynamic allocation should skip .200
+	ip, err := a.Allocate("g11", "veth-0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ip.String() != "192.168.11.201" {
+		t.Errorf("expected 192.168.11.201, got %s", ip)
+	}
+}
+
 func TestMaxUsableIP(t *testing.T) {
 	tests := []struct {
 		cidr string

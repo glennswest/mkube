@@ -9,10 +9,18 @@ import (
 
 // Pool tracks IP allocation state for a single subnet.
 type Pool struct {
-	Subnet    *net.IPNet
-	Gateway   net.IP
-	Allocated map[string]net.IP // key (e.g. veth name) -> allocated IP
-	NextIP    uint32            // offset from network base
+	Subnet     *net.IPNet
+	Gateway    net.IP
+	Allocated  map[string]net.IP // key (e.g. veth name) -> allocated IP
+	NextIP     uint32            // offset from network base
+	AllocStart uint32            // first allocatable offset (from network base)
+	AllocEnd   uint32            // last allocatable offset (from network base)
+}
+
+// PoolOpts are optional parameters for AddPool.
+type PoolOpts struct {
+	AllocStart net.IP // first allocatable IP (nil = .2)
+	AllocEnd   net.IP // last allocatable IP (nil = max usable host)
 }
 
 // Allocator manages IP allocation across multiple named pools.
@@ -28,17 +36,37 @@ func NewAllocator() *Allocator {
 	}
 }
 
-// AddPool registers a subnet for allocation. nextIP defaults to 2 (skips
-// network address .0 and typically the gateway at .1).
-func (a *Allocator) AddPool(name string, subnet *net.IPNet, gateway net.IP) {
+// AddPool registers a subnet for allocation. By default, allocation starts
+// at offset 2 (skipping .0 network and .1 gateway) and ends at the last
+// usable host address. Use PoolOpts to restrict the allocation range and
+// avoid collisions with static server IPs or DHCP reservations.
+func (a *Allocator) AddPool(name string, subnet *net.IPNet, gateway net.IP, opts ...PoolOpts) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	ones, bits := subnet.Mask.Size()
+	maxHosts := uint32(1<<(bits-ones)) - 2
+
+	start := uint32(2)
+	end := maxHosts
+	baseIP := IPToUint32(subnet.IP)
+
+	if len(opts) > 0 {
+		if opts[0].AllocStart != nil {
+			start = IPToUint32(opts[0].AllocStart) - baseIP
+		}
+		if opts[0].AllocEnd != nil {
+			end = IPToUint32(opts[0].AllocEnd) - baseIP
+		}
+	}
+
 	a.pools[name] = &Pool{
-		Subnet:    subnet,
-		Gateway:   gateway,
-		Allocated: make(map[string]net.IP),
-		NextIP:    2,
+		Subnet:     subnet,
+		Gateway:    gateway,
+		Allocated:  make(map[string]net.IP),
+		NextIP:     start,
+		AllocStart: start,
+		AllocEnd:   end,
 	}
 }
 
@@ -158,13 +186,13 @@ func (a *Allocator) PoolForIP(ip net.IP) string {
 	return ""
 }
 
-// allocateFromPool picks the next free IP from a single pool.
+// allocateFromPool picks the next free IP from a single pool, constrained
+// to the [AllocStart, AllocEnd] range.
 func allocateFromPool(pool *Pool, key string) (net.IP, error) {
-	ones, bits := pool.Subnet.Mask.Size()
-	maxHosts := uint32(1<<(bits-ones)) - 2
+	rangeSize := pool.AllocEnd - pool.AllocStart + 1
 	baseIP := IPToUint32(pool.Subnet.IP)
 
-	for attempts := uint32(0); attempts < maxHosts; attempts++ {
+	for attempts := uint32(0); attempts < rangeSize; attempts++ {
 		candidate := baseIP + pool.NextIP
 		candidateIP := Uint32ToIP(candidate)
 
@@ -177,8 +205,8 @@ func allocateFromPool(pool *Pool, key string) (net.IP, error) {
 		}
 
 		pool.NextIP++
-		if pool.NextIP > maxHosts {
-			pool.NextIP = 2
+		if pool.NextIP > pool.AllocEnd {
+			pool.NextIP = pool.AllocStart
 		}
 
 		if !taken && !candidateIP.Equal(pool.Gateway) {
@@ -187,7 +215,11 @@ func allocateFromPool(pool *Pool, key string) (net.IP, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("IPAM: no available IPs in %s (all %d addresses allocated)", pool.Subnet.String(), maxHosts)
+	return nil, fmt.Errorf("IPAM: no available IPs in %s range %s-%s (all %d addresses allocated)",
+		pool.Subnet.String(),
+		Uint32ToIP(baseIP+pool.AllocStart).String(),
+		Uint32ToIP(baseIP+pool.AllocEnd).String(),
+		rangeSize)
 }
 
 // MaxUsableIP returns the highest usable host IP in a subnet (broadcast - 1).

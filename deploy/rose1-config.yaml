@@ -40,6 +40,8 @@ networks:
     bridge: bridge
     cidr: "192.168.10.0/24"
     gateway: "192.168.10.1"
+    ipamStart: "192.168.10.200"
+    ipamEnd: "192.168.10.250"
     dns:
       endpoint: "http://192.168.10.252:8080"
       zone: "g10.lo"
@@ -122,6 +124,8 @@ networks:
     bridge: bridge-boot
     cidr: "192.168.11.0/24"
     gateway: "192.168.11.1"
+    ipamStart: "192.168.11.200"
+    ipamEnd: "192.168.11.250"
     dns:
       endpoint: "http://192.168.11.252:8080"
       zone: "g11.lo"
