@@ -3,8 +3,11 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,9 +36,10 @@ type Manager struct {
 	ros         *routeros.Client
 	log         *zap.SugaredLogger
 
-	mu      sync.Mutex
-	images  map[string]*CachedImage // image ref -> cache entry
-	volumes map[string]*ProvisionedVolume
+	mu                sync.Mutex
+	images            map[string]*CachedImage // image ref -> cache entry
+	volumes           map[string]*ProvisionedVolume
+	registryTransport http.RoundTripper // TLS transport for local registry
 }
 
 // CachedImage tracks a cached OCI image tarball on the RouterOS filesystem.
@@ -74,14 +78,52 @@ func (m *Manager) HostVisiblePath(containerPath string) string {
 
 // NewManager initializes the storage manager.
 func NewManager(cfg config.StorageConfig, registryCfg config.RegistryConfig, ros *routeros.Client, log *zap.SugaredLogger) (*Manager, error) {
-	return &Manager{
+	m := &Manager{
 		cfg:         cfg,
 		registryCfg: registryCfg,
 		ros:         ros,
 		log:         log,
 		images:      make(map[string]*CachedImage),
 		volumes:     make(map[string]*ProvisionedVolume),
-	}, nil
+	}
+
+	// Load registry CA cert for TLS verification if configured
+	m.registryTransport = loadRegistryTransport(m.registryCfg.TLSCACertFile, "/etc/mkube/registry-ca.crt", log)
+
+	return m, nil
+}
+
+// loadRegistryTransport returns an http.RoundTripper configured to trust
+// the registry's CA certificate. Falls back to skip-verify if no CA cert
+// is found (backward compatibility).
+func loadRegistryTransport(caFile, defaultPath string, log *zap.SugaredLogger) http.RoundTripper {
+	if caFile == "" {
+		caFile = defaultPath
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		if log != nil {
+			log.Warnw("registry CA cert not found, using insecure TLS", "path", caFile)
+		}
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		if log != nil {
+			log.Warnw("failed to parse registry CA cert, using insecure TLS", "path", caFile)
+		}
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	if log != nil {
+		log.Infow("loaded registry CA cert", "path", caFile)
+	}
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool},
+	}
 }
 
 // EnsureImage makes sure the given OCI image reference is available as a
@@ -233,7 +275,7 @@ func (m *Manager) getRegistryDigest(ctx context.Context, imageRef string) (strin
 	}))
 
 	if m.isLocalRegistry(imageRef) {
-		opts = append(opts, crane.Insecure)
+		opts = append(opts, crane.WithTransport(m.registryTransport))
 	} else {
 		opts = append(opts, crane.WithAuthFromKeychain(
 			authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
@@ -313,7 +355,7 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 	}))
 
 	if m.isLocalRegistry(imageRef) {
-		opts = append(opts, crane.Insecure)
+		opts = append(opts, crane.WithTransport(m.registryTransport))
 	} else {
 		// DefaultKeychain reads ~/.docker/config.json if present;
 		// Anonymous fallback lets the transport handle OAuth2 bearer

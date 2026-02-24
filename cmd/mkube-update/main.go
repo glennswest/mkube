@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -136,10 +137,8 @@ func main() {
 		log:     log,
 		digests: make(map[string]string),
 		http: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-			Timeout: 30 * time.Second,
+			Transport: loadRegistryTransport(log),
+			Timeout:   30 * time.Second,
 		},
 	}
 
@@ -729,6 +728,30 @@ func (u *Updater) waitForRunning(ctx context.Context, name string) error {
 		}
 	}
 	return fmt.Errorf("container %s did not start within 30s", name)
+}
+
+/// loadRegistryTransport returns an HTTP transport that trusts the registry CA.
+// Falls back to skip-verify if the CA cert is not found.
+func loadRegistryTransport(log *zap.SugaredLogger) http.RoundTripper {
+	caFile := "/etc/mkube-update/registry-ca.crt"
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		log.Warnw("registry CA cert not found, using insecure TLS", "path", caFile)
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		log.Warnw("failed to parse registry CA cert, using insecure TLS", "path", caFile)
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	log.Infow("loaded registry CA cert", "path", caFile)
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool},
+	}
 }
 
 // trimScheme removes http:// or https:// from a URL to get a registry host.

@@ -1,7 +1,7 @@
 # mkube-update configuration for rose1.gw.lo
 # Mounted at /etc/mkube-update/config.yaml inside the container.
 
-registryURL: "http://192.168.200.3:5000"
+registryURL: "https://192.168.200.3:5000"
 routerosURL: "http://192.168.200.1/rest"
 routerosUser: "mkube"
 routerosPassword: "mkube-rest"

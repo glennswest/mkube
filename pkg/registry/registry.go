@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -70,12 +71,40 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 		Handler: mux,
 	}
 
-	go func() {
-		log.Infow("registry listening", "addr", cfg.ListenAddr)
-		if err := r.server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Errorw("registry server error", "error", err)
+	// Try loading TLS cert from disk (installed by mkube-installer).
+	// If certs exist, serve HTTPS. Otherwise fall back to HTTP.
+	certFile := cfg.TLSCertFile
+	keyFile := cfg.TLSKeyFile
+	if certFile == "" {
+		certFile = "/etc/registry/tls.crt"
+	}
+	if keyFile == "" {
+		keyFile = "/etc/registry/tls.key"
+	}
+
+	if _, err := os.Stat(certFile); err == nil {
+		tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading TLS cert: %w", err)
 		}
-	}()
+		r.server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{tlsCert},
+		}
+		go func() {
+			log.Infow("registry listening (HTTPS)", "addr", cfg.ListenAddr)
+			if err := r.server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
+				log.Errorw("registry server error", "error", err)
+			}
+		}()
+	} else {
+		log.Warn("TLS cert not found, falling back to HTTP (insecure)")
+		go func() {
+			log.Infow("registry listening (HTTP)", "addr", cfg.ListenAddr)
+			if err := r.server.ListenAndServe(); err != http.ErrServerClosed {
+				log.Errorw("registry server error", "error", err)
+			}
+		}()
+	}
 
 	// Periodic cleanup of stale upload sessions
 	go func() {
