@@ -588,18 +588,43 @@ func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
 }
 
 // cleanOrphanedVeths finds veths on the device that have no corresponding
-// tracked pod or container and removes them.
+// desired pod and removes them. Only runs when NATS is connected so we
+// have the full desired state.
 func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error) {
+	// Don't remove veths until we have the full desired state from NATS.
+	if p.deps.Store == nil || !p.deps.Store.Connected() {
+		return 0, nil
+	}
+
 	actualPorts, err := p.deps.NetworkMgr.ListActualPorts(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("listing actual ports: %w", err)
 	}
 
-	// Build set of veths that tracked pods expect to exist
+	// Build set of veths from ALL desired sources (tracked + NATS + boot-order)
 	expectedVeths := make(map[string]bool)
+
 	for _, pod := range p.pods {
 		for i := range pod.Spec.Containers {
 			expectedVeths[vethName(pod, i)] = true
+		}
+	}
+
+	storePods, _ := p.loadFromStore(ctx)
+	for _, pod := range storePods {
+		for i := range pod.Spec.Containers {
+			expectedVeths[vethName(pod, i)] = true
+		}
+	}
+
+	if p.deps.Config.Lifecycle.BootManifestPath != "" {
+		bootPods, _, err := loadManifests(p.deps.Config.Lifecycle.BootManifestPath)
+		if err == nil {
+			for _, pod := range bootPods {
+				for i := range pod.Spec.Containers {
+					expectedVeths[vethName(pod, i)] = true
+				}
+			}
 		}
 	}
 
@@ -612,7 +637,7 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 			continue
 		}
 
-		// This veth has no tracked pod — it's orphaned
+		// This veth has no desired pod — it's orphaned
 		p.deps.Logger.Infow("removing orphaned veth", "name", port.Name, "address", port.Address)
 		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, port.Name); err != nil {
 			p.deps.Logger.Warnw("failed to release orphaned veth", "name", port.Name, "error", err)
@@ -625,19 +650,53 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 }
 
 // cleanOrphanedContainers finds RouterOS containers that follow the mkube
-// naming convention (namespace_pod_container) but are not tracked by any pod.
-// These are leftovers from failed CreatePod or manual interventions.
+// naming convention (namespace_pod_container) but are not owned by any
+// desired pod (tracked, in NATS store, or in boot-order manifest).
+// Only runs when we have the full desired state (NATS connected) to avoid
+// incorrectly killing containers whose pods haven't loaded yet.
 func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, error) {
+	// Don't remove containers until we have the full desired state from NATS.
+	// Without NATS, we only know about boot-order pods — NATS-sourced pods
+	// would be incorrectly flagged as orphaned and killed.
+	if p.deps.Store == nil || !p.deps.Store.Connected() {
+		return 0, nil
+	}
+
 	containers, err := p.deps.Runtime.ListContainers(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("listing containers: %w", err)
 	}
 
-	// Build set of container names that tracked pods own
+	// Build the full set of expected container names from ALL sources:
+	// 1. Currently tracked pods
+	// 2. NATS store (pods that may not be tracked yet)
+	// 3. Boot-order manifest
 	expectedContainers := make(map[string]bool)
+
+	// Source 1: tracked pods
 	for _, pod := range p.pods {
 		for _, c := range pod.Spec.Containers {
 			expectedContainers[sanitizeName(pod, c.Name)] = true
+		}
+	}
+
+	// Source 2: NATS store
+	storePods, _ := p.loadFromStore(ctx)
+	for _, pod := range storePods {
+		for _, c := range pod.Spec.Containers {
+			expectedContainers[sanitizeName(pod, c.Name)] = true
+		}
+	}
+
+	// Source 3: boot-order manifest
+	if p.deps.Config.Lifecycle.BootManifestPath != "" {
+		bootPods, _, err := loadManifests(p.deps.Config.Lifecycle.BootManifestPath)
+		if err == nil {
+			for _, pod := range bootPods {
+				for _, c := range pod.Spec.Containers {
+					expectedContainers[sanitizeName(pod, c.Name)] = true
+				}
+			}
 		}
 	}
 
