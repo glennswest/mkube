@@ -268,6 +268,25 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 
 	pod, err := p.GetPod(r.Context(), ns, name)
 	if err != nil {
+		// Pod not tracked — check NATS store for orphaned entries
+		if p.deps.Store != nil {
+			storeKey := ns + "." + name
+			var storePod corev1.Pod
+			if _, getErr := p.deps.Store.Pods.GetJSON(r.Context(), storeKey, &storePod); getErr == nil {
+				// Found in NATS but not tracked — delete from store only
+				if delErr := p.deps.Store.Pods.Delete(r.Context(), storeKey); delErr != nil {
+					p.deps.Logger.Warnw("failed to delete orphaned pod from store", "key", storeKey, "error", delErr)
+				} else {
+					p.deps.Logger.Infow("deleted orphaned pod from store", "key", storeKey)
+				}
+				podWriteJSON(w, http.StatusOK, metav1.Status{
+					TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+					Status:   "Success",
+					Message:  fmt.Sprintf("orphaned pod %q deleted from store", name),
+				})
+				return
+			}
+		}
 		http.Error(w, fmt.Sprintf("pod %s/%s not found", ns, name), http.StatusNotFound)
 		return
 	}

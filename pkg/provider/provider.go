@@ -598,6 +598,14 @@ func (p *MicroKubeProvider) GetPod(ctx context.Context, namespace, name string) 
 	if pod, ok := p.pods[key]; ok {
 		return pod, nil
 	}
+	// Fall back to NATS store for pods that exist but aren't tracked
+	if p.deps.Store != nil && p.deps.Store.Connected() {
+		storeKey := namespace + "." + name
+		var pod corev1.Pod
+		if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &pod); err == nil {
+			return &pod, nil
+		}
+	}
 	return nil, fmt.Errorf("pod %s not found", key)
 }
 
