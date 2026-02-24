@@ -18,6 +18,7 @@
 - **fix:** mkube-update bootstrap uses `remote-image` instead of tarball — RouterOS pulls directly from local registry. Removes crane/dockersave/mutate dependencies.
 - **fix:** mkube-update `replaceContainer` uses `remote-image` instead of `tag` (which is read-only metadata). Adds `check-certificate=no` for RouterOS pulls.
 - **fix:** IP collision between veth-mkube-update (.3) and veth-registry (.3) — mkube-update got unique IP .5. Was causing "connection refused" (container connecting to itself).
+- **fix:** mkube storage manager doesn't trust standalone registry — pod specs reference old `192.168.200.2:5000` address but registry moved to `192.168.200.3:5000`. Extended `rewriteLocalhost` to detect and rewrite any non-primary local address alias (from `localAddresses` config) to the primary address. Added `192.168.200.2:5000` as legacy alias.
 
 ### 2026-02-23
 - **fix:** Remove gw/dns pod from boot-order — gw microdns runs on pvex.gw.lo, not rose1. The conflicting rose1 container caused IP conflict on bridge-lan and "no route to host" errors.
