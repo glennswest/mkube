@@ -384,20 +384,31 @@ func (p *MicroKubeProvider) reconcileOneDeployment(ctx context.Context, deploy *
 }
 
 // rollingUpdateDeployment performs a rolling update of deployment pods one at a time.
+// Each pod is verified alive before proceeding to the next.
 func (p *MicroKubeProvider) rollingUpdateDeployment(ctx context.Context, deploy *Deployment) {
 	log := p.deps.Logger
 	deployKey := deploy.Namespace + "/" + deploy.Name
 
 	ownedPods := p.deploymentPods(deploy)
-	for _, pod := range ownedPods {
+	for i, pod := range ownedPods {
 		podKey := pod.Namespace + "/" + pod.Name
-		log.Infow("rolling update pod", "deployment", deployKey, "pod", podKey)
+		log.Infow("rolling update pod",
+			"deployment", deployKey, "pod", podKey,
+			"index", i+1, "total", len(ownedPods))
 
 		// Rebuild pod from current template to pick up new image
 		newPod := p.podFromDeployment(deploy, pod.Name)
 		if err := p.UpdatePod(ctx, newPod); err != nil {
 			log.Errorw("rolling update failed for pod", "pod", podKey, "error", err)
 			return // stop rolling on first failure
+		}
+		// Wait for liveness before proceeding to next replica
+		if i < len(ownedPods)-1 {
+			if !p.waitForPodLiveness(ctx, newPod, 60*time.Second) {
+				log.Errorw("pod failed liveness during rolling update, halting",
+					"deployment", deployKey, "pod", podKey)
+				return
+			}
 		}
 	}
 }

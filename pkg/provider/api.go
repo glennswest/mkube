@@ -648,13 +648,30 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 	}
 
 	go func() {
-		for _, pod := range targets {
+		bgCtx := context.Background()
+		for i, pod := range targets {
 			key := pod.Namespace + "/" + pod.Name
-			log.Infow("redeploying pod", "pod", key, "image", req.Image)
-			if err := p.UpdatePod(context.Background(), pod); err != nil {
+			log.Infow("redeploying pod (staggered)",
+				"pod", key, "image", req.Image,
+				"index", i+1, "total", len(targets))
+			if err := p.UpdatePod(bgCtx, pod); err != nil {
 				log.Errorw("redeploy failed", "pod", key, "error", err)
-			} else {
-				log.Infow("redeploy complete", "pod", key, "image", req.Image)
+				delete(p.redeploying, key)
+				continue
+			}
+			log.Infow("redeploy complete, waiting for liveness", "pod", key)
+			// Wait for liveness before restarting next pod with same image
+			if i < len(targets)-1 {
+				if !p.waitForPodLiveness(bgCtx, pod, 60*time.Second) {
+					log.Errorw("pod failed liveness after redeploy, halting rollout",
+						"pod", key, "image", req.Image)
+					delete(p.redeploying, key)
+					// Unmark remaining pods
+					for _, rem := range targets[i+1:] {
+						delete(p.redeploying, rem.Namespace+"/"+rem.Name)
+					}
+					break
+				}
 			}
 			delete(p.redeploying, key)
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -925,7 +926,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	}
 	log.Infow("RECONCILE: step 2 list containers", "count", len(actual), "ms", time.Since(stepStart).Milliseconds())
 
-	// 3. Create missing containers
+	// 3. Create missing containers and collect stale-image pods
+	type staleEntry struct {
+		key string
+		pod *corev1.Pod
+	}
+	bootStale := make(map[string][]staleEntry)
+
 	stepStart = time.Now()
 	for _, pod := range desiredPods {
 		key := podKey(pod)
@@ -960,21 +967,37 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			p.recordEvent(pod, "Reconciled", fmt.Sprintf("Existing pod %s/%s tracked on node %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
 
 			// For pods with image-policy=auto, check if the registry has a
-			// newer image than what's currently running. This handles the case
-			// where a container starts from a stale root-dir on boot before
-			// mkube has a chance to update the tarball.
+			// newer image than what's currently running. Deferred to after
+			// all pods are tracked — restarted one-at-a-time per image group.
 			if pod.Annotations[annotationImagePolicy] == "auto" && pod.Annotations[annotationFile] == "" {
 				for _, c := range pod.Spec.Containers {
 					_, changed, err := p.deps.StorageMgr.RefreshImage(ctx, c.Image)
 					if err != nil {
 						log.Warnw("failed to check image freshness", "pod", key, "image", c.Image, "error", err)
 					} else if changed {
-						log.Infow("stale image detected, recreating pod", "pod", key, "image", c.Image)
-						if err := p.UpdatePod(ctx, pod.DeepCopy()); err != nil {
-							log.Errorw("failed to update pod for stale image", "pod", key, "error", err)
-						}
+						bootStale[c.Image] = append(bootStale[c.Image], staleEntry{key: key, pod: pod.DeepCopy()})
 						break
 					}
+				}
+			}
+		}
+	}
+
+	// 3a-stale. Process boot-time stale images one-at-a-time per image group.
+	for image, entries := range bootStale {
+		for i, entry := range entries {
+			log.Infow("boot stale image update: restarting pod",
+				"pod", entry.key, "image", image,
+				"index", i+1, "total", len(entries))
+			if err := p.UpdatePod(ctx, entry.pod); err != nil {
+				log.Errorw("failed to update pod for stale image", "pod", entry.key, "error", err)
+				continue
+			}
+			if i < len(entries)-1 {
+				if !p.waitForPodLiveness(ctx, entry.pod, 60*time.Second) {
+					log.Errorw("pod failed liveness after boot update, halting image rollout",
+						"pod", entry.key, "image", image)
+					break
 				}
 			}
 		}
@@ -1007,6 +1030,10 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// emits a PushEvent that triggers this reconcile. We must check
 	// every running pod with image-policy=auto against the current
 	// registry digest to detect updates from podman push.
+	// IMPORTANT: Pods sharing the same image are restarted one at a time
+	// with liveness verification between each, to prevent simultaneous
+	// outages (e.g., all DNS pods going down at once).
+	imageToStale := make(map[string][]staleEntry)
 	for key, pod := range p.pods {
 		if p.redeploying[key] {
 			continue
@@ -1019,11 +1046,27 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			if err != nil {
 				log.Debugw("image freshness check failed", "pod", key, "image", c.Image, "error", err)
 			} else if changed {
-				log.Infow("new image detected, recreating pod", "pod", key, "image", c.Image)
-				if err := p.UpdatePod(ctx, pod.DeepCopy()); err != nil {
-					log.Errorw("failed to update pod for new image", "pod", key, "error", err)
-				}
+				imageToStale[c.Image] = append(imageToStale[c.Image], staleEntry{key: key, pod: pod.DeepCopy()})
 				break
+			}
+		}
+	}
+	for image, entries := range imageToStale {
+		for i, entry := range entries {
+			log.Infow("staggered image update: restarting pod",
+				"pod", entry.key, "image", image,
+				"index", i+1, "total", len(entries))
+			if err := p.UpdatePod(ctx, entry.pod); err != nil {
+				log.Errorw("failed to update pod for new image", "pod", entry.key, "error", err)
+				continue
+			}
+			// Wait for liveness before restarting the next pod with same image
+			if i < len(entries)-1 {
+				if !p.waitForPodLiveness(ctx, entry.pod, 60*time.Second) {
+					log.Errorw("pod failed liveness after update, halting image rollout",
+						"pod", entry.key, "image", image)
+					break
+				}
 			}
 		}
 	}
@@ -1660,6 +1703,76 @@ func (p *MicroKubeProvider) replaceContainer(ctx context.Context, name, newTag, 
 	}
 
 	return nil
+}
+
+// waitForPodLiveness waits for a pod's containers to be running and healthy.
+// For DNS pods (pod.Name == "dns"), also probes port 53 to verify the recursor.
+// Returns true if the pod is confirmed alive within the timeout.
+func (p *MicroKubeProvider) waitForPodLiveness(ctx context.Context, pod *corev1.Pod, timeout time.Duration) bool {
+	log := p.deps.Logger
+	key := podKey(pod)
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		// Check that all containers are running on RouterOS
+		allRunning := true
+		for _, c := range pod.Spec.Containers {
+			name := sanitizeName(pod, c.Name)
+			ct, err := p.deps.Runtime.GetContainer(ctx, name)
+			if err != nil || ct.Status != "running" {
+				allRunning = false
+				break
+			}
+		}
+
+		if !allRunning {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// For DNS pods, also probe port 53
+		if pod.Name == "dns" {
+			networkName := pod.Annotations[annotationNetwork]
+			if netDef, ok := p.deps.NetworkMgr.NetworkDef(networkName); ok && netDef.DNS.Server != "" {
+				if probeDNSPort(netDef.DNS.Server, netDef.DNS.Zone, 3*time.Second) {
+					log.Infow("pod liveness confirmed (DNS port 53 alive)", "pod", key)
+					return true
+				}
+				time.Sleep(2 * time.Second)
+				continue
+			}
+		}
+
+		// For non-DNS pods, check basic connectivity via veth IP
+		for i := range pod.Spec.Containers {
+			vn := vethName(pod, i)
+			if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vn); ok && ip != "" {
+				conn, err := net.DialTimeout("tcp", ip+":1", 1*time.Second)
+				if conn != nil {
+					conn.Close()
+				}
+				// Even if connection is refused, the IP is reachable — container is up
+				if err == nil || !isTimeout(err) {
+					log.Infow("pod liveness confirmed (IP reachable)", "pod", key, "ip", ip)
+					return true
+				}
+			}
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	log.Warnw("pod liveness check timed out", "pod", key)
+	return false
+}
+
+// isTimeout returns true if the error is a network timeout.
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	netErr, ok := err.(net.Error)
+	return ok && netErr.Timeout()
 }
 
 // ─── DNS Aliases ─────────────────────────────────────────────────────────────

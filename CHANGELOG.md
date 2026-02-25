@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-02-25
+- **fix:** Staggered container restarts — containers sharing the same image are now restarted one at a time with liveness verification between each. Prevents simultaneous outages (e.g., all three DNS pods going down at once during an image update). Applied to: reconciler image update (step 3c), boot-time stale image check, `POST /images/redeploy`, deployment rolling updates, and DNS liveness repair. Each pod is verified alive (container running + DNS port 53 probe for DNS pods) before the next is restarted. Rollout halts on liveness failure.
+
 ### 2026-02-24
 - **fix:** DNS port 53 liveness probe — consistency check now sends an actual DNS query to port 53 on each managed DNS server. Detects the case where the microdns container is running (REST API up on 8080) but the recursor on port 53 has crashed or failed to start. Auto-restarts the DNS pod when port 53 is dead. Root cause: all three microdns instances (gt, g10, g11) restarted simultaneously with recursor silently failing to bind port 53 — REST API and auth DNS (15353) survived but the actual resolver was dead for hours undetected.
 - **fix:** Add retry with backoff to container start — MikroTik REST API returns EOF when previous container hasn't fully torn down. Both `CreatePod` and `replaceContainer` (rolling update) now retry up to 7 times with 2-5s backoff, re-fetching container ID between attempts.

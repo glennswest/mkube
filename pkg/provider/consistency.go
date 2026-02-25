@@ -1088,9 +1088,19 @@ func (p *MicroKubeProvider) checkNetworkHealth(ctx context.Context) []CheckItem 
 // repairDNSLiveness checks that DNS port 53 is responding on each managed
 // network's DNS server. If the port is dead (recursor crashed while container
 // is still running), the DNS pod is restarted via delete+create.
+// DNS pods are restarted one at a time with liveness verification between
+// each to prevent simultaneous DNS outages across all networks.
 func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 	log := p.deps.Logger
-	repaired := 0
+
+	// Collect all dead DNS pods first
+	type deadDNS struct {
+		netName string
+		server  string
+		zone    string
+		pod     *corev1.Pod
+	}
+	var deadList []deadDNS
 
 	for _, netName := range p.deps.NetworkMgr.Networks() {
 		netDef, ok := p.deps.NetworkMgr.NetworkDef(netName)
@@ -1102,10 +1112,6 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 			continue
 		}
 
-		log.Errorw("DNS port 53 dead, restarting DNS pod",
-			"network", netName, "server", netDef.DNS.Server)
-
-		// Find the DNS pod for this network
 		podKey := netName + "/dns"
 		pod, exists := p.pods[podKey]
 		if !exists {
@@ -1113,26 +1119,71 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 			continue
 		}
 
+		deadList = append(deadList, deadDNS{
+			netName: netName,
+			server:  netDef.DNS.Server,
+			zone:    netDef.DNS.Zone,
+			pod:     pod,
+		})
+	}
+
+	if len(deadList) == 0 {
+		return 0
+	}
+
+	log.Errorw("DNS port 53 dead, restarting DNS pods one at a time",
+		"count", len(deadList))
+
+	repaired := 0
+	for i, dead := range deadList {
+		podKey := dead.netName + "/dns"
+		log.Infow("restarting dead DNS pod",
+			"pod", podKey, "server", dead.server,
+			"index", i+1, "total", len(deadList))
+
 		// Restart: delete and recreate
-		if err := p.DeletePod(ctx, pod); err != nil {
+		if err := p.DeletePod(ctx, dead.pod); err != nil {
 			log.Errorw("failed to delete dead DNS pod", "pod", podKey, "error", err)
 			continue
 		}
 
 		// Re-read from NATS store to get clean spec
-		if p.deps.Store != nil {
-			storeKey := netName + ".dns"
-			var storePod corev1.Pod
-			if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err == nil {
-				if err := p.CreatePod(ctx, &storePod); err != nil {
-					log.Errorw("failed to recreate DNS pod", "pod", podKey, "error", err)
-				} else {
-					log.Infow("DNS pod restarted successfully", "pod", podKey)
-					repaired++
-				}
-			} else {
-				log.Errorw("DNS pod not in store, cannot recreate", "pod", podKey, "error", err)
+		if p.deps.Store == nil {
+			log.Errorw("no store, cannot recreate DNS pod", "pod", podKey)
+			continue
+		}
+
+		storeKey := dead.netName + ".dns"
+		var storePod corev1.Pod
+		if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err != nil {
+			log.Errorw("DNS pod not in store, cannot recreate", "pod", podKey, "error", err)
+			continue
+		}
+
+		if err := p.CreatePod(ctx, &storePod); err != nil {
+			log.Errorw("failed to recreate DNS pod", "pod", podKey, "error", err)
+			continue
+		}
+
+		// Wait for port 53 to come alive before restarting the next DNS pod
+		alive := false
+		for attempt := 0; attempt < 15; attempt++ {
+			time.Sleep(3 * time.Second)
+			if probeDNSPort(dead.server, dead.zone, 3*time.Second) {
+				alive = true
+				break
 			}
+			log.Infow("waiting for DNS port 53 to come alive",
+				"pod", podKey, "attempt", attempt+1)
+		}
+
+		if alive {
+			log.Infow("DNS pod restarted and port 53 alive", "pod", podKey)
+			repaired++
+		} else {
+			log.Errorw("DNS pod restarted but port 53 still dead, halting DNS repair",
+				"pod", podKey)
+			break // Don't restart more DNS pods if this one failed
 		}
 	}
 
