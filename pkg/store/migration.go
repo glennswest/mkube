@@ -98,10 +98,40 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		buf.WriteString("\n")
 	}
 
+	// Export Deployments
+	if s.Deployments != nil {
+		deployKeys, err := s.Deployments.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing deployments: %w", err)
+		}
+		for _, key := range deployKeys {
+			raw, _, err := s.Deployments.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			// Re-marshal with TypeMeta set
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "apps/v1"
+			doc["kind"] = "Deployment"
+			// Clear runtime status for export
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	return buf.Bytes(), nil
 }
 
-// ImportYAML imports pods and configmaps from a multi-document YAML body.
+// ImportYAML imports pods, configmaps, and deployments from a multi-document YAML body.
 func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 	pods, cms, err := parseManifests(data)
 	if err != nil {
@@ -124,6 +154,19 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 			continue
 		}
 		cmCount++
+	}
+
+	// Import Deployments
+	if s.Deployments != nil {
+		deploys, err := parseDeployments(data)
+		if err == nil {
+			for _, deploy := range deploys {
+				key := deploy.Namespace + "." + deploy.Name
+				if _, err := s.Deployments.PutJSON(ctx, key, &deploy); err != nil {
+					continue
+				}
+			}
+		}
 	}
 
 	return podCount, cmCount, nil
@@ -157,7 +200,16 @@ func (s *Store) MigrateIfEmpty(ctx context.Context, manifestPath string, log *za
 	return true, nil
 }
 
-// parseManifests parses multi-document YAML into pods and configmaps.
+// deploymentDoc is a lightweight Deployment representation for import/export.
+// Kept in the store package to avoid circular imports with provider.
+type deploymentDoc struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              json.RawMessage `json:"spec"`
+	Status            json.RawMessage `json:"status,omitempty"`
+}
+
+// parseManifests parses multi-document YAML into pods, configmaps, and raw deployment docs.
 func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 	var pods []*corev1.Pod
 	var configMaps []*corev1.ConfigMap
@@ -195,6 +247,9 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 				cm.Namespace = "default"
 			}
 			configMaps = append(configMaps, &cm)
+		case "Deployment":
+			// Deployments are handled separately via parseDeployments
+			continue
 		default:
 			var pod corev1.Pod
 			if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&pod); err != nil {
@@ -214,4 +269,48 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 	}
 
 	return pods, configMaps, nil
+}
+
+// parseDeployments extracts Deployment documents from a multi-document YAML.
+func parseDeployments(data []byte) ([]deploymentDoc, error) {
+	var deployments []deploymentDoc
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "Deployment" {
+			continue
+		}
+
+		var deploy deploymentDoc
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&deploy); err != nil {
+			return nil, fmt.Errorf("decoding deployment: %w", err)
+		}
+		if deploy.Name == "" {
+			continue
+		}
+		if deploy.Namespace == "" {
+			deploy.Namespace = "default"
+		}
+		deployments = append(deployments, deploy)
+	}
+
+	return deployments, nil
 }

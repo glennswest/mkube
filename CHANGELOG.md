@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-24
+- **feat:** Deployment controller — new lightweight Deployment resource that manages pod replicas with auto-recreation on delete, scale up/down, rolling image updates, and DNS round-robin load balancing. Deployment-owned pods survive deletion (recreated within 10s by reconciler). CRUD API at `/api/v1/namespaces/{ns}/deployments`. Persisted in NATS JetStream. Consistency checks verify replica counts. Export/import support included.
 - **feat:** Tarball-based container updates — mkube-update now pre-pulls images as docker-save tarballs from registry while old container is still running, then swaps using `file=` parameter instead of `remote-image`. Eliminates the chicken-and-egg problem where registry can't pull its own update. Works for all containers: registry, mkube, microdns, etc. New config fields `tarballDir` and `tarballROSPath`.
 - **fix:** Registry concurrency — replaced global RWMutex in BlobStore with per-resource locking. Blob reads are lock-free (immutable content-addressed). Blob writes use per-digest mutex. Manifest operations use per-repo RWMutex. Upload sessions use per-session mutex. Different repos/blobs can now be pushed/pulled concurrently.
 - **fix:** Registry operation timeouts — added 15s timeout to `getRegistryDigest` and 2min timeout to `pullAndUpload` in storage manager. Prevents reconcile loop from blocking indefinitely when registry is unresponsive.

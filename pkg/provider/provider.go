@@ -82,6 +82,7 @@ type MicroKubeProvider struct {
 	pods            map[string]*corev1.Pod       // namespace/name -> pod
 	configMaps      map[string]*corev1.ConfigMap // namespace/name -> configmap
 	bareMetalHosts  map[string]*BareMetalHost   // namespace/name -> BMH
+	deployments     map[string]*Deployment      // namespace/name -> deployment
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
@@ -96,6 +97,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.deps.Store = s
 	p.deps.Logger.Infow("NATS store attached to provider")
 	p.LoadBMHFromStore(context.Background())
+	p.LoadDeploymentsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
 }
 
@@ -108,6 +110,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		pods:            make(map[string]*corev1.Pod),
 		configMaps:      make(map[string]*corev1.ConfigMap),
 		bareMetalHosts:  make(map[string]*BareMetalHost),
+		deployments:     make(map[string]*Deployment),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
 		pushNotify:      make(chan registry.PushEvent, 16),
 		redeploying:     make(map[string]bool),
@@ -827,6 +830,9 @@ func (p *MicroKubeProvider) pushEventsChan() <-chan registry.PushEvent {
 func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	log := p.deps.Logger
 	reconcileStart := time.Now()
+
+	// 0. Reconcile deployments — ensure each deployment has the correct replica pods
+	p.reconcileDeployments(ctx)
 
 	// 1. Load desired pods and configmaps — from NATS store if available, else from YAML manifest
 	var desiredPods []*corev1.Pod

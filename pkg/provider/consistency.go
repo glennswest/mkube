@@ -28,11 +28,12 @@ type CheckSummary struct {
 
 // ConsistencyChecks groups the check categories.
 type ConsistencyChecks struct {
-	Containers []CheckItem `json:"containers"`
-	DNS        []CheckItem `json:"dns"`
-	Manifest   []CheckItem `json:"manifest"`
-	IPAM       []CheckItem `json:"ipam"`
-	Network    []CheckItem `json:"network,omitempty"`
+	Containers  []CheckItem `json:"containers"`
+	DNS         []CheckItem `json:"dns"`
+	Manifest    []CheckItem `json:"manifest"`
+	IPAM        []CheckItem `json:"ipam"`
+	Network     []CheckItem `json:"network,omitempty"`
+	Deployments []CheckItem `json:"deployments,omitempty"`
 }
 
 // CheckItem is a single check result.
@@ -91,6 +92,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.Manifest = p.checkManifest()
 	report.Checks.IPAM = p.checkIPAM(ctx)
 	report.Checks.Network = p.checkNetworkHealth(ctx)
+	report.Checks.Deployments = p.checkDeployments()
 
 	for _, items := range [][]CheckItem{
 		report.Checks.Containers,
@@ -98,6 +100,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.Manifest,
 		report.Checks.IPAM,
 		report.Checks.Network,
+		report.Checks.Deployments,
 	} {
 		for _, item := range items {
 			switch item.Status {
@@ -567,6 +570,35 @@ func (p *MicroKubeProvider) checkIPAM(ctx context.Context) []CheckItem {
 	return items
 }
 
+// checkDeployments verifies each deployment has the correct number of running pods.
+func (p *MicroKubeProvider) checkDeployments() []CheckItem {
+	var items []CheckItem
+	for key, deploy := range p.deployments {
+		replicas := deploy.Spec.Replicas
+		if replicas <= 0 {
+			replicas = 1
+		}
+		ownedPods := p.deploymentPods(deploy)
+		actual := int32(len(ownedPods))
+
+		if actual == replicas {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("deploy/%s", key),
+				Status:  "pass",
+				Message: fmt.Sprintf("deployment has %d/%d pods", actual, replicas),
+			})
+		} else {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("deploy/%s", key),
+				Status:  "fail",
+				Message: fmt.Sprintf("deployment has %d/%d pods", actual, replicas),
+				Details: fmt.Sprintf("expected=%d actual=%d", replicas, actual),
+			})
+		}
+	}
+	return items
+}
+
 // CheckConsistencyAsync runs a consistency check in the background after
 // container operations. It detects and cleans up orphaned veths and IPAM entries.
 // The delay gives the system time to settle after the triggering operation.
@@ -744,6 +776,11 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 				}
 			}
 		}
+	}
+
+	// Source 4: deployment-expected containers
+	for name := range p.deploymentExpectedContainers() {
+		expectedContainers[name] = true
 	}
 
 	cleaned := 0

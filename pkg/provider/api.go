@@ -42,6 +42,14 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/configmaps/{name}", p.handlePatchConfigMap)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/configmaps/{name}", p.handleDeleteConfigMap)
 
+	// Deployments
+	mux.HandleFunc("GET /api/v1/deployments", p.handleListAllDeployments)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/deployments", p.handleListNamespacedDeployments)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/deployments/{name}", p.handleGetDeployment)
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/deployments", p.handleCreateDeployment)
+	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/deployments/{name}", p.handleUpdateDeployment)
+	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/deployments/{name}", p.handleDeleteDeployment)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -296,8 +304,12 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Remove from NATS store after successful deletion
-	if p.deps.Store != nil {
+	// For deployment-owned pods, keep NATS Pods entry so the deployment
+	// reconciler can recreate the pod. Only remove for standalone pods.
+	if isOwnedByDeployment(pod) {
+		p.deps.Logger.Infow("pod owned by deployment, will be recreated by reconciler",
+			"pod", ns+"/"+name, "deployment", pod.Annotations[annotationOwnerDeployment])
+	} else if p.deps.Store != nil {
 		storeKey := ns + "." + name
 		if err := p.deps.Store.Pods.Delete(r.Context(), storeKey); err != nil {
 			p.deps.Logger.Warnw("failed to delete pod from store", "key", storeKey, "error", err)
@@ -521,6 +533,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Kind:       "BareMetalHost",
 				ShortNames: []string{"bmh"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
+				Name:       "deployments",
+				Namespaced: true,
+				Kind:       "Deployment",
+				ShortNames: []string{"deploy"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "delete"},
 			},
 		},
 	})
@@ -847,6 +866,9 @@ func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.
 	}
 	for _, bmh := range p.bareMetalHosts {
 		nsSet[bmh.Namespace] = true
+	}
+	for _, deploy := range p.deployments {
+		nsSet[deploy.Namespace] = true
 	}
 	// Always include "default"
 	nsSet["default"] = true

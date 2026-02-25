@@ -26,6 +26,7 @@ type Store struct {
 	Namespaces     *Bucket
 	NodeStatus     *Bucket
 	BareMetalHosts *Bucket
+	Deployments    *Bucket
 }
 
 // Bucket wraps a NATS JetStream KeyValue store with typed operations.
@@ -123,6 +124,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.BareMetalHosts, err = s.initBucket(ctx, "BAREMETALHOSTS", s.replicas, 0)
+	if err != nil {
+		return err
+	}
+	s.Deployments, err = s.initBucket(ctx, "DEPLOYMENTS", s.replicas, 0)
 	if err != nil {
 		return err
 	}
