@@ -1903,7 +1903,7 @@ func vethName(pod *corev1.Pod, index int) string {
 	if ns == "" {
 		ns = "default"
 	}
-	return fmt.Sprintf("veth_%s_%s_%d", truncate(ns, 8), truncate(pod.Name, 8), index)
+	return fmt.Sprintf("veth_%s_%s_%d", truncate(ns, 15), truncate(pod.Name, 15), index)
 }
 
 func truncate(s string, max int) string {
