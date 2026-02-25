@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -213,6 +214,25 @@ func (p *MicroKubeProvider) checkDNS(ctx context.Context) []CheckItem {
 		netDef, ok := p.deps.NetworkMgr.NetworkDef(netName)
 		if !ok || netDef.DNS.Endpoint == "" || netDef.DNS.Zone == "" {
 			continue
+		}
+
+		// DNS port 53 liveness check — verify the resolver is actually
+		// answering queries, not just that the container is running.
+		if netDef.DNS.Server != "" && !netDef.ExternalDNS {
+			if probeDNSPort(netDef.DNS.Server, netDef.DNS.Zone, 3*time.Second) {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("dns-liveness/%s", netName),
+					Status:  "pass",
+					Message: fmt.Sprintf("DNS port 53 responding on %s", netDef.DNS.Server),
+				})
+			} else {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("dns-liveness/%s", netName),
+					Status:  "fail",
+					Message: fmt.Sprintf("DNS port 53 NOT responding on %s", netDef.DNS.Server),
+					Details: "recursor may have crashed — container restart needed",
+				})
+			}
 		}
 
 		zoneID, ok := p.deps.NetworkMgr.NetworkZoneID(netName)
@@ -570,6 +590,61 @@ func (p *MicroKubeProvider) checkIPAM(ctx context.Context) []CheckItem {
 	return items
 }
 
+// probeDNSPort sends a minimal DNS query (SOA for the zone) to the server's
+// port 53 over UDP and checks for any response. This catches the case where
+// the microdns container is running (REST API up) but the recursor/auth
+// listener on port 53 has crashed or failed to start.
+func probeDNSPort(serverIP, zone string, timeout time.Duration) bool {
+	// Build a minimal DNS query for SOA of the zone.
+	// DNS wire format: header (12 bytes) + question section.
+	// This is simpler and avoids pulling in a DNS library.
+	conn, err := net.DialTimeout("udp", serverIP+":53", timeout)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	// Encode a minimal DNS query packet
+	query := buildDNSQuery(zone)
+	if _, err := conn.Write(query); err != nil {
+		return false
+	}
+
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	// Any response at all (even NXDOMAIN/SERVFAIL) means port 53 is alive
+	return err == nil && n > 0
+}
+
+// buildDNSQuery constructs a minimal DNS query packet for the SOA record of a zone.
+func buildDNSQuery(zone string) []byte {
+	// DNS Header: ID=0x1234, QR=0, OPCODE=0, RD=1, QDCOUNT=1
+	header := []byte{
+		0x12, 0x34, // ID
+		0x01, 0x00, // Flags: RD=1
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x00, // ANCOUNT=0
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT=0
+	}
+
+	// Question: encode zone name as DNS labels
+	var question []byte
+	for _, label := range strings.Split(strings.TrimSuffix(zone, "."), ".") {
+		if len(label) == 0 {
+			continue
+		}
+		question = append(question, byte(len(label)))
+		question = append(question, []byte(label)...)
+	}
+	question = append(question, 0x00)       // root label
+	question = append(question, 0x00, 0x06) // QTYPE=SOA
+	question = append(question, 0x00, 0x01) // QCLASS=IN
+
+	return append(header, question...)
+}
+
 // checkDeployments verifies each deployment has the correct number of running pods.
 func (p *MicroKubeProvider) checkDeployments() []CheckItem {
 	var items []CheckItem
@@ -655,6 +730,9 @@ func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
 		if err != nil {
 			p.deps.Logger.Warnw("stale DNS cleanup failed", "error", err)
 		}
+		cleaned += n
+
+		n = p.repairDNSLiveness(ctx)
 		cleaned += n
 
 		if cleaned > 0 {
@@ -1005,6 +1083,60 @@ func (p *MicroKubeProvider) checkNetworkHealth(ctx context.Context) []CheckItem 
 	}
 
 	return items
+}
+
+// repairDNSLiveness checks that DNS port 53 is responding on each managed
+// network's DNS server. If the port is dead (recursor crashed while container
+// is still running), the DNS pod is restarted via delete+create.
+func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
+	log := p.deps.Logger
+	repaired := 0
+
+	for _, netName := range p.deps.NetworkMgr.Networks() {
+		netDef, ok := p.deps.NetworkMgr.NetworkDef(netName)
+		if !ok || netDef.DNS.Server == "" || netDef.DNS.Zone == "" || netDef.ExternalDNS {
+			continue
+		}
+
+		if probeDNSPort(netDef.DNS.Server, netDef.DNS.Zone, 3*time.Second) {
+			continue
+		}
+
+		log.Errorw("DNS port 53 dead, restarting DNS pod",
+			"network", netName, "server", netDef.DNS.Server)
+
+		// Find the DNS pod for this network
+		podKey := netName + "/dns"
+		pod, exists := p.pods[podKey]
+		if !exists {
+			log.Warnw("DNS pod not tracked, cannot restart", "pod", podKey)
+			continue
+		}
+
+		// Restart: delete and recreate
+		if err := p.DeletePod(ctx, pod); err != nil {
+			log.Errorw("failed to delete dead DNS pod", "pod", podKey, "error", err)
+			continue
+		}
+
+		// Re-read from NATS store to get clean spec
+		if p.deps.Store != nil {
+			storeKey := netName + ".dns"
+			var storePod corev1.Pod
+			if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err == nil {
+				if err := p.CreatePod(ctx, &storePod); err != nil {
+					log.Errorw("failed to recreate DNS pod", "pod", podKey, "error", err)
+				} else {
+					log.Infow("DNS pod restarted successfully", "pod", podKey)
+					repaired++
+				}
+			} else {
+				log.Errorw("DNS pod not in store, cannot recreate", "pod", podKey, "error", err)
+			}
+		}
+	}
+
+	return repaired
 }
 
 // repairNetworkHealth checks all desired pods for broken networking and

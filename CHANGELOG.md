@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-24
+- **fix:** DNS port 53 liveness probe — consistency check now sends an actual DNS query to port 53 on each managed DNS server. Detects the case where the microdns container is running (REST API up on 8080) but the recursor on port 53 has crashed or failed to start. Auto-restarts the DNS pod when port 53 is dead. Root cause: all three microdns instances (gt, g10, g11) restarted simultaneously with recursor silently failing to bind port 53 — REST API and auth DNS (15353) survived but the actual resolver was dead for hours undetected.
 - **fix:** Add retry with backoff to container start — MikroTik REST API returns EOF when previous container hasn't fully torn down. Both `CreatePod` and `replaceContainer` (rolling update) now retry up to 7 times with 2-5s backoff, re-fetching container ID between attempts.
 - **fix:** Increase veth name truncation from 8 to 15 characters — prevents collisions for pods with shared name prefixes in the same namespace (e.g. `fastregistry` and `fastregistry-replica`).
 - **feat:** Deployment controller — new lightweight Deployment resource that manages pod replicas with auto-recreation on delete, scale up/down, rolling image updates, and DNS round-robin load balancing. Deployment-owned pods survive deletion (recreated within 10s by reconciler). CRUD API at `/api/v1/namespaces/{ns}/deployments`. Persisted in NATS JetStream. Consistency checks verify replica counts. Export/import support included.
