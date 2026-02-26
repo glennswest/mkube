@@ -58,6 +58,15 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleUpdatePVC)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleDeletePVC)
 
+	// Networks (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/networks", p.handleListNetworks)
+	mux.HandleFunc("GET /api/v1/networks/{name}", p.handleGetNetwork)
+	mux.HandleFunc("POST /api/v1/networks", p.handleCreateNetwork)
+	mux.HandleFunc("PUT /api/v1/networks/{name}", p.handleUpdateNetwork)
+	mux.HandleFunc("PATCH /api/v1/networks/{name}", p.handlePatchNetwork)
+	mux.HandleFunc("DELETE /api/v1/networks/{name}", p.handleDeleteNetwork)
+	mux.HandleFunc("GET /api/v1/networks/{name}/config", p.handleGetNetworkConfig)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -555,6 +564,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Kind:       "Deployment",
 				ShortNames: []string{"deploy"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "delete"},
+			},
+			{
+				Name:       "networks",
+				Namespaced: false,
+				Kind:       "Network",
+				ShortNames: []string{"net"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 		},
 	})

@@ -28,6 +28,7 @@ type Store struct {
 	BareMetalHosts        *Bucket
 	Deployments           *Bucket
 	PersistentVolumeClaims *Bucket
+	Networks               *Bucket
 }
 
 // Bucket wraps a NATS JetStream KeyValue store with typed operations.
@@ -133,6 +134,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.PersistentVolumeClaims, err = s.initBucket(ctx, "PVCS", s.replicas, 0)
+	if err != nil {
+		return err
+	}
+	s.Networks, err = s.initBucket(ctx, "NETWORKS", s.replicas, 0)
 	if err != nil {
 		return err
 	}

@@ -128,6 +128,34 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export Networks
+	if s.Networks != nil {
+		netKeys, err := s.Networks.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing networks: %w", err)
+		}
+		for _, key := range netKeys {
+			raw, _, err := s.Networks.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "v1"
+			doc["kind"] = "Network"
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export PVCs
 	if s.PersistentVolumeClaims != nil {
 		pvcKeys, err := s.PersistentVolumeClaims.Keys(ctx, "")
@@ -200,6 +228,18 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 			for _, pvc := range pvcs {
 				key := pvc.Namespace + "." + pvc.Name
 				if _, err := s.PersistentVolumeClaims.PutJSON(ctx, key, &pvc); err != nil {
+					continue
+				}
+			}
+		}
+	}
+
+	// Import Networks
+	if s.Networks != nil {
+		nets, err := parseNetworks(data)
+		if err == nil {
+			for _, net := range nets {
+				if _, err := s.Networks.PutJSON(ctx, net.Name, &net); err != nil {
 					continue
 				}
 			}
@@ -286,6 +326,9 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 			configMaps = append(configMaps, &cm)
 		case "Deployment":
 			// Deployments are handled separately via parseDeployments
+			continue
+		case "Network":
+			// Networks are handled separately via parseNetworks
 			continue
 		default:
 			var pod corev1.Pod
@@ -394,4 +437,53 @@ func parsePVCs(data []byte) ([]corev1.PersistentVolumeClaim, error) {
 	}
 
 	return pvcs, nil
+}
+
+// networkDoc is a lightweight Network representation for import/export.
+type networkDoc struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              json.RawMessage `json:"spec"`
+	Status            json.RawMessage `json:"status,omitempty"`
+}
+
+// parseNetworks extracts Network documents from a multi-document YAML.
+func parseNetworks(data []byte) ([]networkDoc, error) {
+	var networks []networkDoc
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "Network" {
+			continue
+		}
+
+		var net networkDoc
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&net); err != nil {
+			return nil, fmt.Errorf("decoding network: %w", err)
+		}
+		if net.Name == "" {
+			continue
+		}
+		networks = append(networks, net)
+	}
+
+	return networks, nil
 }

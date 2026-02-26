@@ -85,6 +85,7 @@ type MicroKubeProvider struct {
 	bareMetalHosts  map[string]*BareMetalHost               // namespace/name -> BMH
 	deployments     map[string]*Deployment                  // namespace/name -> deployment
 	pvcs            map[string]*corev1.PersistentVolumeClaim // namespace/name -> PVC
+	networks        map[string]*Network                     // name -> Network (cluster-scoped)
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
@@ -101,6 +102,8 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadBMHFromStore(context.Background())
 	p.LoadDeploymentsFromStore(context.Background())
 	p.LoadPVCsFromStore(context.Background())
+	p.LoadNetworksFromStore(context.Background())
+	p.MigrateNetworkConfig(context.Background())
 	p.startDHCPSubscription(context.Background())
 }
 
@@ -115,6 +118,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		bareMetalHosts:  make(map[string]*BareMetalHost),
 		deployments:     make(map[string]*Deployment),
 		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
+		networks:        make(map[string]*Network),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
 		pushNotify:      make(chan registry.PushEvent, 16),
 		redeploying:     make(map[string]bool),
