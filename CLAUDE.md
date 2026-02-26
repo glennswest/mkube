@@ -103,12 +103,18 @@ go test ./...
 - PVC support (persistent volumes surviving container recreation/redeploy)
 - Network CRD (cluster-scoped dynamic network definitions in NATS, TOML config generation, migration from config.yaml)
 - BMH → Network CRD sync (DHCP reservations auto-synced from BMH to Network CRD on create/update/delete, both data and IPMI networks, per-reservation PXE fields in TOML)
+- Cross-namespace BMH dedup (DHCP watcher checks boot MAC, BMC MAC, hostname across all namespaces before creating discovered entries)
+- Per-server BMH consistency checks (data/IPMI network validation, reservation presence, duplicate detection, NATS sync)
+- Network PATCH handler merge fix (DeepCopy + json.Unmarshal instead of replace)
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
    - BMH objects in NATS are the source of truth for host registrations, image assignments, MAC discovery, IPMI config
+   - BMH is per physical server (one BMH per server, not per NIC/MAC)
    - BMH has explicit fields for data network (network, ip, hostname, PXE) and IPMI network (bmc.network, bmc.mac, bmc.hostname) ✅
    - BMH → Network CRD DHCP reservation sync (create/update/delete) ✅
+   - Cross-namespace dedup prevents duplicate discovery ✅
+   - Per-server consistency checks (network refs, reservations, duplicates) ✅
    - State transitions are BMH events (Registering → Provisioning → Ready, etc.)
    - IPMI power control + IPMI serial proxy
    - Watch API for real-time updates (pxemanager UI, CLI, other consumers subscribe)
