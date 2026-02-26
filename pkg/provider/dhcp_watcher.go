@@ -248,6 +248,18 @@ func (p *MicroKubeProvider) processDHCPLease(ctx context.Context, ip, mac, event
 		}
 	}
 
+	// Skip if this MAC already has a DHCP reservation in any Network CRD
+	// (known NIC on an existing server — not a new host)
+	if mac != "" {
+		for _, net := range p.networks {
+			for _, res := range net.Spec.DHCP.Reservations {
+				if strings.EqualFold(res.MAC, mac) {
+					return
+				}
+			}
+		}
+	}
+
 	log.Infow("auto-discovered host from DHCP",
 		"name", hostname,
 		"network", network,
