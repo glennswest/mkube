@@ -265,15 +265,24 @@ func (u *Updater) poll(ctx context.Context) {
 			if delay == 0 {
 				delay = 5 * time.Second
 			}
+			anyFailed := false
 			for i, tgt := range targets {
 				if err := u.replaceContainer(ctx, tgt, imageRef); err != nil {
+					// Skip containers that don't exist (e.g. external DNS)
+					if strings.Contains(err.Error(), "not found") {
+						u.log.Warnw("container not found, skipping", "name", tgt)
+						continue
+					}
 					u.log.Errorw("rolling update failed", "name", tgt, "error", err)
-					u.digests[key] = prev
+					anyFailed = true
 					break
 				}
 				if i < len(targets)-1 {
 					time.Sleep(delay)
 				}
+			}
+			if anyFailed {
+				u.digests[key] = prev
 			}
 		} else {
 			for _, tgt := range targets {

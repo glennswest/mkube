@@ -37,7 +37,6 @@ watches:
   - repo: microdns
     tags: [edge, latest]
     containers:
-      - gw_dns_microdns
       - g10_dns_microdns
       - g11_dns_microdns
       - gt_dns_microdns
