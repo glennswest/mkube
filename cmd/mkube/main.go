@@ -360,6 +360,8 @@ func runSharedServices(
 	// ── Load resources from store ────────────────────────────────────
 	if kvStore != nil {
 		p.LoadBMHFromStore(ctx)
+		p.LoadDeploymentsFromStore(ctx)
+		p.LoadPVCsFromStore(ctx)
 		p.LoadNetworksFromStore(ctx)
 		p.MigrateNetworkConfig(ctx)
 	}
