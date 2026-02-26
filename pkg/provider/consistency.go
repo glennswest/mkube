@@ -38,6 +38,7 @@ type ConsistencyChecks struct {
 	PVCs        []CheckItem `json:"pvcs,omitempty"`
 	Networks    []CheckItem `json:"networks,omitempty"`
 	BMHs        []CheckItem `json:"bmhs,omitempty"`
+	Registries  []CheckItem `json:"registries,omitempty"`
 }
 
 // CheckItem is a single check result.
@@ -100,6 +101,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.PVCs = p.checkPVCs(ctx)
 	report.Checks.Networks = p.checkNetworkCRDs(ctx)
 	report.Checks.BMHs = p.checkBMHs()
+	report.Checks.Registries = p.checkRegistryCRDs(ctx)
 
 	for _, items := range [][]CheckItem{
 		report.Checks.Containers,
@@ -111,6 +113,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.PVCs,
 		report.Checks.Networks,
 		report.Checks.BMHs,
+		report.Checks.Registries,
 	} {
 		for _, item := range items {
 			switch item.Status {

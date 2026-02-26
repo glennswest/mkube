@@ -67,6 +67,15 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/networks/{name}", p.handleDeleteNetwork)
 	mux.HandleFunc("GET /api/v1/networks/{name}/config", p.handleGetNetworkConfig)
 
+	// Registries (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/registries", p.handleListRegistries)
+	mux.HandleFunc("GET /api/v1/registries/{name}", p.handleGetRegistry)
+	mux.HandleFunc("POST /api/v1/registries", p.handleCreateRegistry)
+	mux.HandleFunc("PUT /api/v1/registries/{name}", p.handleUpdateRegistry)
+	mux.HandleFunc("PATCH /api/v1/registries/{name}", p.handlePatchRegistry)
+	mux.HandleFunc("DELETE /api/v1/registries/{name}", p.handleDeleteRegistry)
+	mux.HandleFunc("GET /api/v1/registries/{name}/config", p.handleGetRegistryConfig)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -570,6 +579,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Namespaced: false,
 				Kind:       "Network",
 				ShortNames: []string{"net"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
+				Name:       "registries",
+				Namespaced: false,
+				Kind:       "Registry",
+				ShortNames: []string{"reg"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 		},

@@ -156,6 +156,34 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export Registries
+	if s.Registries != nil {
+		regKeys, err := s.Registries.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing registries: %w", err)
+		}
+		for _, key := range regKeys {
+			raw, _, err := s.Registries.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "v1"
+			doc["kind"] = "Registry"
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export PVCs
 	if s.PersistentVolumeClaims != nil {
 		pvcKeys, err := s.PersistentVolumeClaims.Keys(ctx, "")
@@ -228,6 +256,18 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 			for _, pvc := range pvcs {
 				key := pvc.Namespace + "." + pvc.Name
 				if _, err := s.PersistentVolumeClaims.PutJSON(ctx, key, &pvc); err != nil {
+					continue
+				}
+			}
+		}
+	}
+
+	// Import Registries
+	if s.Registries != nil {
+		regs, err := parseRegistries(data)
+		if err == nil {
+			for _, reg := range regs {
+				if _, err := s.Registries.PutJSON(ctx, reg.Name, &reg); err != nil {
 					continue
 				}
 			}
@@ -329,6 +369,9 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 			continue
 		case "Network":
 			// Networks are handled separately via parseNetworks
+			continue
+		case "Registry":
+			// Registries are handled separately via parseRegistries
 			continue
 		default:
 			var pod corev1.Pod
@@ -486,4 +529,53 @@ func parseNetworks(data []byte) ([]networkDoc, error) {
 	}
 
 	return networks, nil
+}
+
+// registryDoc is a lightweight Registry representation for import/export.
+type registryDoc struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              json.RawMessage `json:"spec"`
+	Status            json.RawMessage `json:"status,omitempty"`
+}
+
+// parseRegistries extracts Registry documents from a multi-document YAML.
+func parseRegistries(data []byte) ([]registryDoc, error) {
+	var registries []registryDoc
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "Registry" {
+			continue
+		}
+
+		var reg registryDoc
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&reg); err != nil {
+			return nil, fmt.Errorf("decoding registry: %w", err)
+		}
+		if reg.Name == "" {
+			continue
+		}
+		registries = append(registries, reg)
+	}
+
+	return registries, nil
 }

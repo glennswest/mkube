@@ -108,6 +108,7 @@ go test ./...
 - Per-server BMH consistency checks (data/IPMI network validation, reservation presence, duplicate detection, NATS sync)
 - Network PATCH handler merge fix (DeepCopy + json.Unmarshal instead of replace)
 - Auto-deploy microdns on managed Network CRD create (ConfigMap + pod auto-created, auto-teardown on delete, managed transitions on update/patch, backend-agnostic via ContainerRuntime)
+- Registry CRD (cluster-scoped, NATS-backed, CRUD API, watch, table format, config generation, managed auto-deploy/teardown, migration from config.yaml, consistency checks, export/import)
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
