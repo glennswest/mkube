@@ -35,6 +35,7 @@ type ConsistencyChecks struct {
 	IPAM        []CheckItem `json:"ipam"`
 	Network     []CheckItem `json:"network,omitempty"`
 	Deployments []CheckItem `json:"deployments,omitempty"`
+	PVCs        []CheckItem `json:"pvcs,omitempty"`
 }
 
 // CheckItem is a single check result.
@@ -94,6 +95,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.IPAM = p.checkIPAM(ctx)
 	report.Checks.Network = p.checkNetworkHealth(ctx)
 	report.Checks.Deployments = p.checkDeployments()
+	report.Checks.PVCs = p.checkPVCs(ctx)
 
 	for _, items := range [][]CheckItem{
 		report.Checks.Containers,
@@ -102,6 +104,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.IPAM,
 		report.Checks.Network,
 		report.Checks.Deployments,
+		report.Checks.PVCs,
 	} {
 		for _, item := range items {
 			switch item.Status {
@@ -643,6 +646,58 @@ func buildDNSQuery(zone string) []byte {
 	question = append(question, 0x00, 0x01) // QCLASS=IN
 
 	return append(header, question...)
+}
+
+// checkPVCs verifies PVC consistency between memory and NATS, and checks pod references.
+func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
+	var items []CheckItem
+
+	// Check each PVC in memory has a matching NATS entry
+	if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
+		for key, pvc := range p.pvcs {
+			storeKey := pvc.Namespace + "." + pvc.Name
+			_, _, err := p.deps.Store.PersistentVolumeClaims.Get(ctx, storeKey)
+			if err != nil {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("pvc/%s", key),
+					Status:  "fail",
+					Message: "PVC in memory but not in NATS store",
+				})
+			} else {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("pvc/%s", key),
+					Status:  "pass",
+					Message: "PVC synced with NATS store",
+				})
+			}
+		}
+	}
+
+	// Check pods referencing PVCs have valid PVC objects
+	for _, pod := range p.pods {
+		for _, v := range pod.Spec.Volumes {
+			if v.PersistentVolumeClaim == nil {
+				continue
+			}
+			pvcKey := pod.Namespace + "/" + v.PersistentVolumeClaim.ClaimName
+			checkName := fmt.Sprintf("pvc-ref/%s/%s", podKey(pod), v.Name)
+			if _, ok := p.pvcs[pvcKey]; ok {
+				items = append(items, CheckItem{
+					Name:    checkName,
+					Status:  "pass",
+					Message: fmt.Sprintf("PVC %s exists", v.PersistentVolumeClaim.ClaimName),
+				})
+			} else {
+				items = append(items, CheckItem{
+					Name:    checkName,
+					Status:  "fail",
+					Message: fmt.Sprintf("pod references PVC %s which does not exist", v.PersistentVolumeClaim.ClaimName),
+				})
+			}
+		}
+	}
+
+	return items
 }
 
 // checkDeployments verifies each deployment has the correct number of running pods.

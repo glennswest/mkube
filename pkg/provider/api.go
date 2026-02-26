@@ -50,6 +50,14 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/deployments/{name}", p.handleUpdateDeployment)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/deployments/{name}", p.handleDeleteDeployment)
 
+	// PersistentVolumeClaims
+	mux.HandleFunc("GET /api/v1/persistentvolumeclaims", p.handleListAllPVCs)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/persistentvolumeclaims", p.handleListPVCs)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleGetPVC)
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/persistentvolumeclaims", p.handleCreatePVC)
+	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleUpdatePVC)
+	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleDeletePVC)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -535,6 +543,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 			{
+				Name:       "persistentvolumeclaims",
+				Namespaced: true,
+				Kind:       "PersistentVolumeClaim",
+				ShortNames: []string{"pvc"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "delete"},
+			},
+			{
 				Name:       "deployments",
 				Namespaced: true,
 				Kind:       "Deployment",
@@ -886,6 +901,9 @@ func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.
 	}
 	for _, deploy := range p.deployments {
 		nsSet[deploy.Namespace] = true
+	}
+	for _, pvc := range p.pvcs {
+		nsSet[pvc.Namespace] = true
 	}
 	// Always include "default"
 	nsSet["default"] = true

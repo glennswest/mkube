@@ -128,6 +128,30 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export PVCs
+	if s.PersistentVolumeClaims != nil {
+		pvcKeys, err := s.PersistentVolumeClaims.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing PVCs: %w", err)
+		}
+		for _, key := range pvcKeys {
+			var pvc corev1.PersistentVolumeClaim
+			if _, err := s.PersistentVolumeClaims.GetJSON(ctx, key, &pvc); err != nil {
+				continue
+			}
+			pvc.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
+			// Clear runtime status for export
+			pvc.Status = corev1.PersistentVolumeClaimStatus{}
+			data, err := json.MarshalIndent(&pvc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	return buf.Bytes(), nil
 }
 
@@ -163,6 +187,19 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 			for _, deploy := range deploys {
 				key := deploy.Namespace + "." + deploy.Name
 				if _, err := s.Deployments.PutJSON(ctx, key, &deploy); err != nil {
+					continue
+				}
+			}
+		}
+	}
+
+	// Import PVCs
+	if s.PersistentVolumeClaims != nil {
+		pvcs, err := parsePVCs(data)
+		if err == nil {
+			for _, pvc := range pvcs {
+				key := pvc.Namespace + "." + pvc.Name
+				if _, err := s.PersistentVolumeClaims.PutJSON(ctx, key, &pvc); err != nil {
 					continue
 				}
 			}
@@ -313,4 +350,48 @@ func parseDeployments(data []byte) ([]deploymentDoc, error) {
 	}
 
 	return deployments, nil
+}
+
+// parsePVCs extracts PersistentVolumeClaim documents from a multi-document YAML.
+func parsePVCs(data []byte) ([]corev1.PersistentVolumeClaim, error) {
+	var pvcs []corev1.PersistentVolumeClaim
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "PersistentVolumeClaim" {
+			continue
+		}
+
+		var pvc corev1.PersistentVolumeClaim
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&pvc); err != nil {
+			return nil, fmt.Errorf("decoding PVC: %w", err)
+		}
+		if pvc.Name == "" {
+			continue
+		}
+		if pvc.Namespace == "" {
+			pvc.Namespace = "default"
+		}
+		pvcs = append(pvcs, pvc)
+	}
+
+	return pvcs, nil
 }

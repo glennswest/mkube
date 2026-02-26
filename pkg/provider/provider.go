@@ -82,8 +82,9 @@ type MicroKubeProvider struct {
 	startTime       time.Time
 	pods            map[string]*corev1.Pod       // namespace/name -> pod
 	configMaps      map[string]*corev1.ConfigMap // namespace/name -> configmap
-	bareMetalHosts  map[string]*BareMetalHost   // namespace/name -> BMH
-	deployments     map[string]*Deployment      // namespace/name -> deployment
+	bareMetalHosts  map[string]*BareMetalHost               // namespace/name -> BMH
+	deployments     map[string]*Deployment                  // namespace/name -> deployment
+	pvcs            map[string]*corev1.PersistentVolumeClaim // namespace/name -> PVC
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
@@ -99,6 +100,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.deps.Logger.Infow("NATS store attached to provider")
 	p.LoadBMHFromStore(context.Background())
 	p.LoadDeploymentsFromStore(context.Background())
+	p.LoadPVCsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
 }
 
@@ -112,6 +114,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		configMaps:      make(map[string]*corev1.ConfigMap),
 		bareMetalHosts:  make(map[string]*BareMetalHost),
 		deployments:     make(map[string]*Deployment),
+		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
 		pushNotify:      make(chan registry.PushEvent, 16),
 		redeploying:     make(map[string]bool),
@@ -255,15 +258,22 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 		mountListName := ""
 		for _, vm := range container.VolumeMounts {
-			hostPath, err := p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
-			if err != nil {
-				return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
-			}
+			var hostPath string
 
-			// Write ConfigMap data files if this volume references a ConfigMap.
-			// Files are written locally and the path is translated via HostVisiblePath
-			// so RouterOS can see them (uses persistent mount mapping if configured).
-			if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
+			// Three-way volume resolution:
+			// 1. PVC-backed volume — persistent, bypasses ProvisionVolume/GC
+			// 2. ConfigMap-backed volume — write data files
+			// 3. Ephemeral (default) — ProvisionVolume, subject to GC
+			if pvcPath, ok := p.resolvePVCVolume(pod, vm.Name); ok {
+				hostPath = pvcPath
+				log.Infow("using PVC volume", "volume", vm.Name, "path", hostPath)
+			} else if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
+				// ConfigMap volume: provision ephemeral host dir, then write data files
+				var err error
+				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
+				if err != nil {
+					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
+				}
 				localDir := fmt.Sprintf("/data/configmaps/%s/%s", name, vm.Name)
 				if mkErr := os.MkdirAll(localDir, 0o755); mkErr != nil {
 					log.Warnw("failed to create configmap dir", "path", localDir, "error", mkErr)
@@ -273,8 +283,14 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 							log.Warnw("failed to write configmap file", "path", localDir+"/"+filename, "error", wErr)
 						}
 					}
-					// Translate local path to RouterOS-visible path
 					hostPath = p.deps.StorageMgr.HostVisiblePath(localDir)
+				}
+			} else {
+				// Ephemeral volume (default)
+				var err error
+				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
+				if err != nil {
+					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
 				}
 			}
 
