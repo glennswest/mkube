@@ -2,7 +2,7 @@ BINARY    := mkube
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 ARCH      ?= arm64
-DEVICE    ?= rose1.gw.lo
+DEVICE    ?= rose1.g10.lo
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
 
 .PHONY: build build-local tarball deploy test lint clean mocks \
