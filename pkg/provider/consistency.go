@@ -37,6 +37,7 @@ type ConsistencyChecks struct {
 	Deployments []CheckItem `json:"deployments,omitempty"`
 	PVCs        []CheckItem `json:"pvcs,omitempty"`
 	Networks    []CheckItem `json:"networks,omitempty"`
+	BMHs        []CheckItem `json:"bmhs,omitempty"`
 }
 
 // CheckItem is a single check result.
@@ -98,6 +99,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.Deployments = p.checkDeployments()
 	report.Checks.PVCs = p.checkPVCs(ctx)
 	report.Checks.Networks = p.checkNetworkCRDs(ctx)
+	report.Checks.BMHs = p.checkBMHs()
 
 	for _, items := range [][]CheckItem{
 		report.Checks.Containers,
@@ -108,6 +110,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.Deployments,
 		report.Checks.PVCs,
 		report.Checks.Networks,
+		report.Checks.BMHs,
 	} {
 		for _, item := range items {
 			switch item.Status {
@@ -1377,3 +1380,70 @@ func (p *MicroKubeProvider) allDesiredPods(ctx context.Context) []*corev1.Pod {
 	return result
 }
 
+// checkBMHs verifies BareMetalHost objects for duplicates and NATS sync.
+func (p *MicroKubeProvider) checkBMHs() []CheckItem {
+	var items []CheckItem
+
+	// Check for duplicate MACs across all BMH objects
+	bootMACs := make(map[string][]string) // MAC -> list of "ns/name"
+	bmcMACs := make(map[string][]string)
+	for key, bmh := range p.bareMetalHosts {
+		if mac := strings.ToUpper(bmh.Spec.BootMACAddress); mac != "" {
+			bootMACs[mac] = append(bootMACs[mac], key)
+		}
+		if mac := strings.ToUpper(bmh.Spec.BMC.MAC); mac != "" {
+			bmcMACs[mac] = append(bmcMACs[mac], key)
+		}
+	}
+
+	for mac, owners := range bootMACs {
+		if len(owners) > 1 {
+			items = append(items, CheckItem{
+				Name:    "bmh-dup-boot-mac/" + mac,
+				Status:  "fail",
+				Message: "duplicate boot MAC address",
+				Details: fmt.Sprintf("shared by: %s", strings.Join(owners, ", ")),
+			})
+		}
+	}
+	for mac, owners := range bmcMACs {
+		if len(owners) > 1 {
+			items = append(items, CheckItem{
+				Name:    "bmh-dup-bmc-mac/" + mac,
+				Status:  "fail",
+				Message: "duplicate BMC MAC address",
+				Details: fmt.Sprintf("shared by: %s", strings.Join(owners, ", ")),
+			})
+		}
+	}
+
+	// Verify memory ↔ NATS sync
+	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+		natsKeys, _ := p.deps.Store.BareMetalHosts.Keys(context.Background(), "")
+		natsSet := make(map[string]bool, len(natsKeys))
+		for _, k := range natsKeys {
+			natsSet[k] = true
+		}
+		for key := range p.bareMetalHosts {
+			storeKey := strings.Replace(key, "/", ".", 1)
+			if !natsSet[storeKey] {
+				items = append(items, CheckItem{
+					Name:    "bmh-nats-missing/" + key,
+					Status:  "warn",
+					Message: "BMH in memory but not in NATS",
+				})
+			}
+		}
+	}
+
+	// If no issues found, emit a single pass
+	if len(items) == 0 {
+		items = append(items, CheckItem{
+			Name:    "bmh-integrity",
+			Status:  "pass",
+			Message: fmt.Sprintf("%d BMH objects, no duplicates", len(p.bareMetalHosts)),
+		})
+	}
+
+	return items
+}
