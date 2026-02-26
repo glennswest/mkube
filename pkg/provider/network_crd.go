@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/glennswest/mkube/pkg/config"
 	"github.com/glennswest/mkube/pkg/store"
@@ -339,16 +341,26 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 	}
 
 	p.networks[net.Name] = &net
+
+	// Auto-deploy managed DNS pod if network is managed with DNS config
+	if net.Spec.Managed && net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != "" {
+		if err := p.deployManagedDNS(r.Context(), &net); err != nil {
+			p.deps.Logger.Warnw("auto-deploy DNS failed", "network", net.Name, "error", err)
+		}
+	}
+
 	podWriteJSON(w, http.StatusCreated, &net)
 }
 
 func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	if _, ok := p.networks[name]; !ok {
+	old, ok := p.networks[name]
+	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
+	wasManaged := old.Spec.Managed
 
 	var net Network
 	if err := json.NewDecoder(r.Body).Decode(&net); err != nil {
@@ -360,7 +372,7 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 
 	// Preserve creation timestamp from existing
 	if net.CreationTimestamp.IsZero() {
-		net.CreationTimestamp = p.networks[name].CreationTimestamp
+		net.CreationTimestamp = old.CreationTimestamp
 	}
 
 	if p.deps.Store != nil && p.deps.Store.Networks != nil {
@@ -371,6 +383,10 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 	}
 
 	p.networks[name] = &net
+
+	// Handle managed DNS transitions
+	p.handleManagedDNSTransition(r.Context(), wasManaged, &net)
+
 	podWriteJSON(w, http.StatusOK, &net)
 }
 
@@ -382,6 +398,7 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
+	wasManaged := existing.Spec.Managed
 
 	// Start from existing, overlay the patch
 	merged := existing.DeepCopy()
@@ -407,18 +424,30 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 	}
 
 	p.networks[name] = merged
+
+	// Handle managed DNS transitions
+	p.handleManagedDNSTransition(r.Context(), wasManaged, merged)
+
 	podWriteJSON(w, http.StatusOK, merged)
 }
 
 func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	if _, ok := p.networks[name]; !ok {
+	net, ok := p.networks[name]
+	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
 
-	// Check if any pod references this network
+	// Teardown auto-deployed DNS pod before the pod-reference check
+	if net.Spec.Managed {
+		if err := p.teardownManagedDNS(r.Context(), name); err != nil {
+			p.deps.Logger.Warnw("teardown managed DNS failed", "network", name, "error", err)
+		}
+	}
+
+	// Check if any (non-managed) pod still references this network
 	for _, pod := range p.pods {
 		if pod.Annotations[annotationNetwork] == name {
 			http.Error(w, fmt.Sprintf("cannot delete network %q: pod %s/%s references it",
@@ -754,6 +783,207 @@ func networkListToTable(networks []Network) *metav1.Table {
 	}
 
 	return table
+}
+
+// ─── Managed DNS Auto-Deploy ─────────────────────────────────────────────────
+
+// deployManagedDNS creates a ConfigMap and DNS pod for a managed network.
+// This makes Network CRD creation a one-stop operation: create the network
+// and DNS "just works" without manual boot-order or oc apply.
+func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) error {
+	log := p.deps.Logger.With("network", net.Name)
+
+	if net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
+		return fmt.Errorf("DNS zone and server are required for managed DNS")
+	}
+
+	// 1. Generate and persist ConfigMap
+	toml := p.generateNetworkTOML(net)
+	cm := corev1.ConfigMap{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{Name: "dns-config", Namespace: net.Name},
+		Data:       map[string]string{"microdns.toml": toml},
+	}
+
+	cmKey := net.Name + "/dns-config"
+	p.configMaps[cmKey] = &cm
+
+	if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
+		storeKey := net.Name + ".dns-config"
+		if _, err := p.deps.Store.ConfigMaps.PutJSON(ctx, storeKey, &cm); err != nil {
+			return fmt.Errorf("persisting dns-config configmap: %w", err)
+		}
+	}
+
+	p.syncConfigMapsToDisk(ctx)
+	log.Infow("created dns-config ConfigMap", "zone", net.Spec.DNS.Zone)
+
+	// 2. Build DNS pod matching boot-order template
+	pod := corev1.Pod{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dns",
+			Namespace: net.Name,
+			Annotations: map[string]string{
+				annotationNetwork:     net.Name,
+				"vkube.io/boot-priority": "10",
+				annotationStaticIP:    net.Spec.DNS.Server,
+				annotationImagePolicy: "auto",
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyAlways,
+			Volumes: []corev1.Volume{
+				{
+					Name: "config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "dns-config"},
+						},
+					},
+				},
+			},
+			Containers: []corev1.Container{
+				{
+					Name:  "microdns",
+					Image: "192.168.200.3:5000/microdns:edge",
+					StartupProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/api/v1/zones",
+								Port: intstr.FromInt32(8080),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       3,
+						FailureThreshold:    10,
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/api/v1/zones",
+								Port: intstr.FromInt32(8080),
+							},
+						},
+						PeriodSeconds:    30,
+						FailureThreshold: 3,
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{
+								Port: intstr.FromInt32(53),
+							},
+						},
+						PeriodSeconds: 10,
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "config", MountPath: "/etc/microdns"},
+						{Name: "data", MountPath: "/data"},
+					},
+				},
+			},
+		},
+	}
+
+	// 3. Persist pod to NATS
+	if p.deps.Store != nil && p.deps.Store.Pods != nil {
+		storeKey := net.Name + ".dns"
+		if _, err := p.deps.Store.Pods.PutJSON(ctx, storeKey, &pod); err != nil {
+			return fmt.Errorf("persisting dns pod: %w", err)
+		}
+	}
+
+	// 4. Create the pod (goes through ContainerRuntime interface)
+	if err := p.CreatePod(ctx, &pod); err != nil {
+		return fmt.Errorf("creating dns pod: %w", err)
+	}
+
+	// 5. Set DNS endpoint on network so REST API calls work
+	net.Spec.DNS.Endpoint = "http://" + net.Spec.DNS.Server + ":8080"
+	if p.deps.Store != nil && p.deps.Store.Networks != nil {
+		if _, err := p.deps.Store.Networks.PutJSON(ctx, net.Name, net); err != nil {
+			log.Warnw("failed to persist DNS endpoint update", "error", err)
+		}
+	}
+
+	log.Infow("deployed managed DNS pod",
+		"zone", net.Spec.DNS.Zone,
+		"server", net.Spec.DNS.Server,
+		"pod", net.Name+"/dns")
+	return nil
+}
+
+// teardownManagedDNS removes the auto-deployed DNS pod and ConfigMap for a network.
+func (p *MicroKubeProvider) teardownManagedDNS(ctx context.Context, netName string) error {
+	log := p.deps.Logger.With("network", netName)
+
+	// Remove DNS pod
+	podMapKey := netName + "/dns"
+	if pod, ok := p.pods[podMapKey]; ok {
+		if err := p.DeletePod(ctx, pod); err != nil {
+			log.Warnw("failed to delete managed DNS pod", "error", err)
+		} else {
+			log.Infow("deleted managed DNS pod")
+		}
+		// Remove from NATS pod store
+		if p.deps.Store != nil && p.deps.Store.Pods != nil {
+			storeKey := netName + ".dns"
+			if err := p.deps.Store.Pods.Delete(ctx, storeKey); err != nil {
+				log.Warnw("failed to delete dns pod from store", "error", err)
+			}
+		}
+	}
+
+	// Remove DNS ConfigMap
+	cmKey := netName + "/dns-config"
+	if _, ok := p.configMaps[cmKey]; ok {
+		delete(p.configMaps, cmKey)
+		if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
+			storeKey := netName + ".dns-config"
+			if err := p.deps.Store.ConfigMaps.Delete(ctx, storeKey); err != nil {
+				log.Warnw("failed to delete dns-config from store", "error", err)
+			}
+		}
+		log.Infow("deleted managed DNS ConfigMap")
+	}
+
+	return nil
+}
+
+// handleManagedDNSTransition handles managed flag changes on update/patch.
+func (p *MicroKubeProvider) handleManagedDNSTransition(ctx context.Context, wasManaged bool, net *Network) {
+	nowManaged := net.Spec.Managed
+	hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
+
+	switch {
+	case !wasManaged && nowManaged && hasDNS:
+		// false→true: deploy DNS
+		if err := p.deployManagedDNS(ctx, net); err != nil {
+			p.deps.Logger.Warnw("auto-deploy DNS on managed transition failed",
+				"network", net.Name, "error", err)
+		}
+	case wasManaged && !nowManaged:
+		// true→false: teardown DNS
+		if err := p.teardownManagedDNS(ctx, net.Name); err != nil {
+			p.deps.Logger.Warnw("teardown DNS on unmanaged transition failed",
+				"network", net.Name, "error", err)
+		}
+	case wasManaged && nowManaged && hasDNS:
+		// stays managed: update ConfigMap if DNS config changed
+		toml := p.generateNetworkTOML(net)
+		cmKey := net.Name + "/dns-config"
+		if cm, ok := p.configMaps[cmKey]; ok {
+			if cm.Data["microdns.toml"] != toml {
+				cm.Data["microdns.toml"] = toml
+				if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
+					storeKey := net.Name + ".dns-config"
+					_, _ = p.deps.Store.ConfigMaps.PutJSON(ctx, storeKey, cm)
+				}
+				p.syncConfigMapsToDisk(ctx)
+				p.deps.Logger.Infow("updated managed DNS ConfigMap", "network", net.Name)
+			}
+		}
+	}
 }
 
 // ─── Consistency Checks ─────────────────────────────────────────────────────
