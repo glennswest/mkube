@@ -101,6 +101,7 @@ go test ./...
 - DHCP end-to-end (relay + microdns)
 - PXE/UEFI boot support
 - PVC support (persistent volumes surviving container recreation/redeploy)
+- Network CRD (cluster-scoped dynamic network definitions in NATS, TOML config generation, migration from config.yaml)
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:

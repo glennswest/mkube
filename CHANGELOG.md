@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-26
+- **feat:** Network CRD — cluster-scoped dynamic network definitions stored in NATS JetStream. Full CRUD API at `/api/v1/networks/{name}` with watch support, table format for `oc get networks`, delete protection (409 if pods reference the network). Generates microdns TOML config via `/api/v1/networks/{name}/config` endpoint. One-time migration from `config.yaml` NetworkDef entries on first boot. Consistency checks verify memory↔NATS sync and DNS liveness per managed network. Export/import support in YAML multi-doc.
 - **feat:** PersistentVolumeClaim (PVC) support — persistent volumes that survive container recreation, image updates, and pod deletes. PVC-backed volumes live under `/raid1/volumes/pvc/{namespace}_{claimName}` and bypass the ephemeral ProvisionVolume/GC path. Full CRUD API at `/api/v1/namespaces/{ns}/persistentvolumeclaims`. Watch support, table format for `oc get pvc`, consistency checks (memory↔NATS sync, pod→PVC reference validation), export/import in YAML multi-doc. Delete protection: 409 Conflict if PVC is referenced by a pod. Optional `?purge=true` to remove on-disk directory.
 
 ### 2026-02-25
