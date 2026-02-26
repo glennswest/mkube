@@ -203,7 +203,7 @@ func (p *MicroKubeProvider) handleListNamespacedBMH(w http.ResponseWriter, r *ht
 
 	items := make([]BareMetalHost, 0)
 	for _, bmh := range p.bareMetalHosts {
-		if bmh.Namespace != ns {
+		if !bmhReferencesNetwork(bmh, ns) {
 			continue
 		}
 		enriched := bmh.DeepCopy()
@@ -871,4 +871,22 @@ func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Reques
 			flusher.Flush()
 		}
 	}
+}
+
+// bmhReferencesNetwork returns true if the BMH has any association with the
+// given network name — data network, IPMI/BMC network, or metadata namespace.
+// This is used to implement "join"-style queries: querying g10 returns every
+// physical server that has at least one NIC on g10, regardless of where
+// it was originally discovered.
+func bmhReferencesNetwork(bmh *BareMetalHost, network string) bool {
+	if bmh.Namespace == network {
+		return true
+	}
+	if bmh.Spec.Network != "" && bmh.Spec.Network == network {
+		return true
+	}
+	if bmh.Spec.BMC.Network != "" && bmh.Spec.BMC.Network == network {
+		return true
+	}
+	return false
 }
