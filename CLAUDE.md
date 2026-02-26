@@ -102,13 +102,22 @@ go test ./...
 - PXE/UEFI boot support
 
 ### TODO (priority order)
-1. **DNS 2-replica deployment**: Run 2 DNS replicas per zone using Deployment controller. Requires anti-affinity support (future multi-node).
-2. **UI Dashboard**: Show containers, logs, memory, events, DNS. API already exposes most data.
-3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
-4. **Track external microdns instances**: gw DNS on pvex needs proper sync.
-5. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume` in `pkg/storage/manager_test.go`.
-6. **PXEManager tftpboot PV**: Move tftpboot to persistent volume.
-7. **BareMetalHost Operator (BMO)**: New project — IPMI message switch, virtual Redfish, BMH ownership.
+1. **PVC support**: Persistent vs ephemeral volume claims in pod specs. Persistent PVCs survive container recreation (root-dir wipe). Ephemeral PVCs get wiped on redeploy. Fixes the class of bugs where stateful services lose data on image update.
+2. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
+   - BMH objects in NATS are the source of truth for host registrations, image assignments, MAC discovery, IPMI config
+   - State transitions are BMH events (Registering → Provisioning → Ready, etc.)
+   - IPMI power control + IPMI serial proxy
+   - Watch API for real-time updates (pxemanager UI, CLI, other consumers subscribe)
+   - Network automation hooks (future)
+   - Virtual Redfish interface for hardware control
+   - BMH ownership model — users can "build" clusters by requesting hardware
+   - New project repo with subprojects, small scratch containers
+3. **DNS 2-replica deployment**: Run 2 DNS replicas per zone using Deployment controller. Requires anti-affinity support (future multi-node).
+4. **UI Dashboard**: Show containers, logs, memory, events, DNS. API already exposes most data.
+5. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
+6. **Track external microdns instances**: gw DNS on pvex needs proper sync.
+7. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume` in `pkg/storage/manager_test.go`.
+8. **PXEManager tftpboot PV**: Move tftpboot to persistent volume (use PVC once #1 lands).
 
 ### In Progress
 <!-- - [ ] (started YYYY-MM-DD) Task description -->
