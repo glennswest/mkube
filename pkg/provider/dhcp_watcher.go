@@ -229,6 +229,12 @@ func (p *MicroKubeProvider) processDHCPLease(ctx context.Context, ip, mac, event
 		}
 	}
 
+	// Only auto-create BMH from IPMI networks — a MAC on a data network
+	// means it's already booted, not a bare metal host awaiting provisioning.
+	if net, ok := p.networks[network]; ok && net.Spec.Type != "ipmi" {
+		return
+	}
+
 	key := network + "/" + hostname
 
 	if _, exists := p.bareMetalHosts[key]; exists {
