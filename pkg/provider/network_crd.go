@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -382,27 +383,31 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var patch Network
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+	// Start from existing, overlay the patch
+	merged := existing.DeepCopy()
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reading body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(body, merged); err != nil {
 		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
 		return
 	}
-	patch.Name = name
-	patch.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
-
-	if patch.CreationTimestamp.IsZero() {
-		patch.CreationTimestamp = existing.CreationTimestamp
-	}
+	merged.Name = name
+	merged.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
+	merged.CreationTimestamp = existing.CreationTimestamp
 
 	if p.deps.Store != nil && p.deps.Store.Networks != nil {
-		if _, err := p.deps.Store.Networks.PutJSON(r.Context(), name, &patch); err != nil {
+		if _, err := p.deps.Store.Networks.PutJSON(r.Context(), name, merged); err != nil {
 			http.Error(w, fmt.Sprintf("persisting network patch: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	p.networks[name] = &patch
-	podWriteJSON(w, http.StatusOK, &patch)
+	p.networks[name] = merged
+	podWriteJSON(w, http.StatusOK, merged)
 }
 
 func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
