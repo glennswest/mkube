@@ -1384,24 +1384,99 @@ func (p *MicroKubeProvider) allDesiredPods(ctx context.Context) []*corev1.Pod {
 func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 	var items []CheckItem
 
-	// Check for duplicate MACs across all BMH objects
+	// Per-BMH checks: each BMH is a physical server
 	bootMACs := make(map[string][]string) // MAC -> list of "ns/name"
 	bmcMACs := make(map[string][]string)
+	hostnames := make(map[string][]string) // hostname -> list of "ns/name"
+
 	for key, bmh := range p.bareMetalHosts {
-		if mac := strings.ToUpper(bmh.Spec.BootMACAddress); mac != "" {
+		if mac := strings.ToUpper(bmh.Spec.BootMACAddress); mac != "" && mac != "00:00:00:00:00:00" {
 			bootMACs[mac] = append(bootMACs[mac], key)
 		}
 		if mac := strings.ToUpper(bmh.Spec.BMC.MAC); mac != "" {
 			bmcMACs[mac] = append(bmcMACs[mac], key)
 		}
+		hostnames[bmh.Name] = append(hostnames[bmh.Name], key)
+
+		// Validate data network reference
+		if net := bmh.Spec.Network; net != "" {
+			if _, ok := p.networks[net]; !ok {
+				items = append(items, CheckItem{
+					Name:    "bmh/" + bmh.Name + "/network",
+					Status:  "fail",
+					Message: fmt.Sprintf("data network %q not found", net),
+				})
+			} else {
+				// Check DHCP reservation exists in the network
+				found := false
+				if n, ok := p.networks[net]; ok && bmh.Spec.BootMACAddress != "" {
+					for _, r := range n.Spec.DHCP.Reservations {
+						if strings.EqualFold(r.MAC, bmh.Spec.BootMACAddress) {
+							found = true
+							break
+						}
+					}
+				}
+				if found {
+					items = append(items, CheckItem{
+						Name:    "bmh/" + bmh.Name + "/data-reservation",
+						Status:  "pass",
+						Message: fmt.Sprintf("DHCP reservation in %s", net),
+						Details: fmt.Sprintf("mac=%s ip=%s", bmh.Spec.BootMACAddress, bmh.Spec.IP),
+					})
+				} else if bmh.Spec.BootMACAddress != "" && bmh.Spec.BootMACAddress != "00:00:00:00:00:00" {
+					items = append(items, CheckItem{
+						Name:    "bmh/" + bmh.Name + "/data-reservation",
+						Status:  "warn",
+						Message: fmt.Sprintf("no DHCP reservation in %s for boot MAC %s", net, bmh.Spec.BootMACAddress),
+					})
+				}
+			}
+		}
+
+		// Validate IPMI network reference
+		if net := bmh.Spec.BMC.Network; net != "" {
+			if _, ok := p.networks[net]; !ok {
+				items = append(items, CheckItem{
+					Name:    "bmh/" + bmh.Name + "/bmc-network",
+					Status:  "fail",
+					Message: fmt.Sprintf("BMC network %q not found", net),
+				})
+			} else {
+				found := false
+				if n, ok := p.networks[net]; ok && bmh.Spec.BMC.MAC != "" {
+					for _, r := range n.Spec.DHCP.Reservations {
+						if strings.EqualFold(r.MAC, bmh.Spec.BMC.MAC) {
+							found = true
+							break
+						}
+					}
+				}
+				if found {
+					items = append(items, CheckItem{
+						Name:    "bmh/" + bmh.Name + "/bmc-reservation",
+						Status:  "pass",
+						Message: fmt.Sprintf("IPMI reservation in %s", net),
+						Details: fmt.Sprintf("mac=%s ip=%s", bmh.Spec.BMC.MAC, bmh.Spec.BMC.Address),
+					})
+				} else if bmh.Spec.BMC.MAC != "" {
+					items = append(items, CheckItem{
+						Name:    "bmh/" + bmh.Name + "/bmc-reservation",
+						Status:  "warn",
+						Message: fmt.Sprintf("no DHCP reservation in %s for BMC MAC %s", net, bmh.Spec.BMC.MAC),
+					})
+				}
+			}
+		}
 	}
 
+	// Duplicate detection: same physical server should not have multiple BMH objects
 	for mac, owners := range bootMACs {
 		if len(owners) > 1 {
 			items = append(items, CheckItem{
 				Name:    "bmh-dup-boot-mac/" + mac,
 				Status:  "fail",
-				Message: "duplicate boot MAC address",
+				Message: "duplicate boot MAC — same server registered twice",
 				Details: fmt.Sprintf("shared by: %s", strings.Join(owners, ", ")),
 			})
 		}
@@ -1411,8 +1486,18 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 			items = append(items, CheckItem{
 				Name:    "bmh-dup-bmc-mac/" + mac,
 				Status:  "fail",
-				Message: "duplicate BMC MAC address",
+				Message: "duplicate BMC MAC — same server registered twice",
 				Details: fmt.Sprintf("shared by: %s", strings.Join(owners, ", ")),
+			})
+		}
+	}
+	for name, owners := range hostnames {
+		if len(owners) > 1 {
+			items = append(items, CheckItem{
+				Name:    "bmh-dup-name/" + name,
+				Status:  "fail",
+				Message: "duplicate hostname — same server in multiple namespaces",
+				Details: fmt.Sprintf("found in: %s", strings.Join(owners, ", ")),
 			})
 		}
 	}
@@ -1428,21 +1513,12 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 			storeKey := strings.Replace(key, "/", ".", 1)
 			if !natsSet[storeKey] {
 				items = append(items, CheckItem{
-					Name:    "bmh-nats-missing/" + key,
+					Name:    "bmh-nats/" + key,
 					Status:  "warn",
 					Message: "BMH in memory but not in NATS",
 				})
 			}
 		}
-	}
-
-	// If no issues found, emit a single pass
-	if len(items) == 0 {
-		items = append(items, CheckItem{
-			Name:    "bmh-integrity",
-			Status:  "pass",
-			Message: fmt.Sprintf("%d BMH objects, no duplicates", len(p.bareMetalHosts)),
-		})
 	}
 
 	return items
