@@ -81,9 +81,12 @@ type NetworkDHCPSpec struct {
 
 // NetworkDHCPReservation is a static DHCP lease for a known MAC address.
 type NetworkDHCPReservation struct {
-	MAC      string `json:"mac"`
-	IP       string `json:"ip"`
-	Hostname string `json:"hostname,omitempty"`
+	MAC         string `json:"mac"`
+	IP          string `json:"ip"`
+	Hostname    string `json:"hostname,omitempty"`
+	NextServer  string `json:"nextServer,omitempty"`  // per-host PXE next-server
+	BootFile    string `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
+	BootFileEFI string `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
 }
 
 // NetworkIPAMSpec defines IPAM allocation range for a network.
@@ -555,6 +558,15 @@ func buildNetworkDHCPSection(net *Network) string {
 		fmt.Fprintf(&dhcp, "ip = %q\n", r.IP)
 		if r.Hostname != "" {
 			fmt.Fprintf(&dhcp, "hostname = %q\n", r.Hostname)
+		}
+		if r.NextServer != "" {
+			fmt.Fprintf(&dhcp, "next_server = %q\n", r.NextServer)
+		}
+		if r.BootFile != "" {
+			fmt.Fprintf(&dhcp, "boot_file = %q\n", r.BootFile)
+		}
+		if r.BootFileEFI != "" {
+			fmt.Fprintf(&dhcp, "boot_file_efi = %q\n", r.BootFileEFI)
 		}
 	}
 

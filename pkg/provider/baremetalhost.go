@@ -32,6 +32,12 @@ type BMHSpec struct {
 	BootMACAddress string     `json:"bootMACAddress"`
 	Online         *bool      `json:"online,omitempty"`
 	Image          string     `json:"image,omitempty"`
+	Network        string     `json:"network,omitempty"`        // network CRD name (e.g. "g10")
+	IP             string     `json:"ip,omitempty"`             // static IP for DHCP reservation
+	Hostname       string     `json:"hostname,omitempty"`       // hostname for DHCP reservation
+	NextServer     string     `json:"nextServer,omitempty"`     // PXE next-server (TFTP)
+	BootFile       string     `json:"bootFile,omitempty"`       // PXE boot file (BIOS)
+	BootFileEFI    string     `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
 }
 
 type BMCDetails struct {
@@ -128,6 +134,9 @@ func (p *MicroKubeProvider) handleCreateBMH(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// Sync DHCP reservation to Network CRD
+	p.syncBMHToNetwork(r.Context(), &bmh, "")
+
 	podWriteJSON(w, http.StatusCreated, &bmh)
 }
 
@@ -222,6 +231,8 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	oldNetwork := existing.Spec.Network
+
 	var bmh BareMetalHost
 	if err := json.NewDecoder(r.Body).Decode(&bmh); err != nil {
 		http.Error(w, fmt.Sprintf("invalid BareMetalHost JSON: %v", err), http.StatusBadRequest)
@@ -245,6 +256,10 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 	}
 
 	p.bareMetalHosts[key] = &bmh
+
+	// Sync DHCP reservation to Network CRD
+	p.syncBMHToNetwork(r.Context(), &bmh, oldNetwork)
+
 	podWriteJSON(w, http.StatusOK, &bmh)
 }
 
@@ -260,6 +275,7 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Start from existing, overlay the patch
+	oldNetwork := existing.Spec.Network
 	merged := existing.DeepCopy()
 
 	body, err := io.ReadAll(r.Body)
@@ -286,6 +302,10 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	}
 
 	p.bareMetalHosts[key] = merged
+
+	// Sync DHCP reservation to Network CRD
+	p.syncBMHToNetwork(r.Context(), merged, oldNetwork)
+
 	podWriteJSON(w, http.StatusOK, merged)
 }
 
@@ -294,10 +314,14 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.bareMetalHosts[key]; !ok {
+	bmh, ok := p.bareMetalHosts[key]
+	if !ok {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
 		return
 	}
+
+	// Remove DHCP reservation from referenced Network CRD
+	p.removeBMHFromNetwork(r.Context(), bmh.Spec.BootMACAddress, bmh.Spec.Network)
 
 	delete(p.bareMetalHosts, key)
 
@@ -362,6 +386,111 @@ func (p *MicroKubeProvider) reconcileBMHChanges(ctx context.Context, old, new *B
 	}
 }
 
+// ─── BMH → Network CRD Sync ─────────────────────────────────────────────────
+
+// syncBMHToNetwork upserts a DHCP reservation on the BMH's referenced Network CRD.
+// If the BMH's network changed from oldNetwork, it removes the reservation from the old network first.
+func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetalHost, oldNetwork string) {
+	log := p.deps.Logger
+
+	// Remove from old network if network ref changed
+	if oldNetwork != "" && oldNetwork != bmh.Spec.Network {
+		p.removeBMHFromNetwork(ctx, bmh.Spec.BootMACAddress, oldNetwork)
+	}
+
+	// Nothing to sync if no network or no MAC
+	if bmh.Spec.Network == "" || bmh.Spec.BootMACAddress == "" {
+		return
+	}
+
+	net, ok := p.networks[bmh.Spec.Network]
+	if !ok {
+		log.Warnw("BMH references unknown network", "bmh", bmh.Name, "network", bmh.Spec.Network)
+		return
+	}
+
+	// Build the reservation from BMH fields
+	res := NetworkDHCPReservation{
+		MAC:         bmh.Spec.BootMACAddress,
+		IP:          bmh.Spec.IP,
+		Hostname:    bmh.Spec.Hostname,
+		NextServer:  bmh.Spec.NextServer,
+		BootFile:    bmh.Spec.BootFile,
+		BootFileEFI: bmh.Spec.BootFileEFI,
+	}
+
+	// Use BMH name as hostname fallback
+	if res.Hostname == "" {
+		res.Hostname = bmh.Name
+	}
+
+	// Upsert: find existing reservation by MAC and update, or append
+	normalizedMAC := strings.ToLower(res.MAC)
+	found := false
+	for i, existing := range net.Spec.DHCP.Reservations {
+		if strings.ToLower(existing.MAC) == normalizedMAC {
+			net.Spec.DHCP.Reservations[i] = res
+			found = true
+			break
+		}
+	}
+	if !found {
+		net.Spec.DHCP.Reservations = append(net.Spec.DHCP.Reservations, res)
+	}
+
+	// Persist updated network to NATS
+	if p.deps.Store != nil && p.deps.Store.Networks != nil {
+		if _, err := p.deps.Store.Networks.PutJSON(ctx, net.Name, net); err != nil {
+			log.Warnw("failed to persist network after BMH sync", "network", net.Name, "error", err)
+			return
+		}
+	}
+
+	log.Infow("synced BMH to network DHCP reservation",
+		"bmh", bmh.Name, "network", net.Name, "mac", res.MAC, "ip", res.IP, "upsert", !found)
+}
+
+// removeBMHFromNetwork removes a DHCP reservation by MAC from a Network CRD.
+func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, networkName string) {
+	log := p.deps.Logger
+
+	if mac == "" || networkName == "" {
+		return
+	}
+
+	net, ok := p.networks[networkName]
+	if !ok {
+		return
+	}
+
+	normalizedMAC := strings.ToLower(mac)
+	newReservations := make([]NetworkDHCPReservation, 0, len(net.Spec.DHCP.Reservations))
+	removed := false
+	for _, r := range net.Spec.DHCP.Reservations {
+		if strings.ToLower(r.MAC) == normalizedMAC {
+			removed = true
+			continue
+		}
+		newReservations = append(newReservations, r)
+	}
+
+	if !removed {
+		return
+	}
+
+	net.Spec.DHCP.Reservations = newReservations
+
+	// Persist updated network to NATS
+	if p.deps.Store != nil && p.deps.Store.Networks != nil {
+		if _, err := p.deps.Store.Networks.PutJSON(ctx, net.Name, net); err != nil {
+			log.Warnw("failed to persist network after BMH removal", "network", net.Name, "error", err)
+			return
+		}
+	}
+
+	log.Infow("removed BMH DHCP reservation from network", "network", net.Name, "mac", mac)
+}
+
 // enrichBMHListConcurrent enriches all BMH items concurrently with a 3s overall timeout.
 func (p *MicroKubeProvider) enrichBMHListConcurrent(ctx context.Context, items []BareMetalHost) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -417,6 +546,7 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 			{Name: "Name", Type: "string", Format: "name"},
 			{Name: "Status", Type: "string"},
 			{Name: "Power", Type: "string"},
+			{Name: "Network", Type: "string"},
 			{Name: "Image", Type: "string"},
 			{Name: "IP", Type: "string"},
 			{Name: "MAC", Type: "string"},
@@ -451,11 +581,17 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 				"creationTimestamp": h.CreationTimestamp.Format(time.RFC3339),
 			},
 		})
+		network := h.Spec.Network
+		if network == "" {
+			network = "-"
+		}
+
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
 				h.Name,
 				h.Status.Phase,
 				power,
+				network,
 				image,
 				h.Status.IP,
 				h.Spec.BootMACAddress,
