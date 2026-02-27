@@ -87,6 +87,15 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/subscribe", p.handleSubscribeISCSICdrom)
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/unsubscribe", p.handleUnsubscribeISCSICdrom)
 
+	// BootConfigs (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/bootconfigs", p.handleListBootConfigs)
+	mux.HandleFunc("GET /api/v1/bootconfigs/{name}", p.handleGetBootConfig)
+	mux.HandleFunc("POST /api/v1/bootconfigs", p.handleCreateBootConfig)
+	mux.HandleFunc("PUT /api/v1/bootconfigs/{name}", p.handleUpdateBootConfig)
+	mux.HandleFunc("PATCH /api/v1/bootconfigs/{name}", p.handlePatchBootConfig)
+	mux.HandleFunc("DELETE /api/v1/bootconfigs/{name}", p.handleDeleteBootConfig)
+	mux.HandleFunc("GET /api/v1/bootconfig", p.handleBootConfigLookup)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -604,6 +613,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Namespaced: false,
 				Kind:       "ISCSICdrom",
 				ShortNames: []string{"icd"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
+				Name:       "bootconfigs",
+				Namespaced: false,
+				Kind:       "BootConfig",
+				ShortNames: []string{"bc"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 		},

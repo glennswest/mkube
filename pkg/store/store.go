@@ -31,6 +31,7 @@ type Store struct {
 	Networks               *Bucket
 	Registries             *Bucket
 	ISCSICdroms            *Bucket
+	BootConfigs            *Bucket
 }
 
 // Bucket wraps a NATS JetStream KeyValue store with typed operations.
@@ -148,6 +149,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.ISCSICdroms, err = s.initBucket(ctx, "ISCSICDROMS", s.replicas, 0)
+	if err != nil {
+		return err
+	}
+	s.BootConfigs, err = s.initBucket(ctx, "BOOTCONFIGS", s.replicas, 0)
 	if err != nil {
 		return err
 	}

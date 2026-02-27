@@ -38,6 +38,7 @@ type BMHSpec struct {
 	NextServer     string     `json:"nextServer,omitempty"`     // PXE next-server (TFTP)
 	BootFile       string     `json:"bootFile,omitempty"`       // PXE boot file (BIOS)
 	BootFileEFI    string     `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
+	BootConfigRef  string     `json:"bootConfigRef,omitempty"`  // reference to a BootConfig CRD name
 }
 
 type BMCDetails struct {
@@ -149,6 +150,9 @@ func (p *MicroKubeProvider) handleCreateBMH(w http.ResponseWriter, r *http.Reque
 	// Sync DHCP reservations to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), &bmh, "", "")
 
+	// Sync BootConfig assignedTo
+	p.syncBootConfigRef(r.Context(), bmh.Name, "", bmh.Spec.BootConfigRef)
+
 	podWriteJSON(w, http.StatusCreated, &bmh)
 }
 
@@ -245,6 +249,7 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 
 	oldDataNetwork := existing.Spec.Network
 	oldIPMINetwork := existing.Spec.BMC.Network
+	oldBootConfigRef := existing.Spec.BootConfigRef
 
 	var bmh BareMetalHost
 	if err := json.NewDecoder(r.Body).Decode(&bmh); err != nil {
@@ -280,6 +285,9 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 	// Sync DHCP reservations to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), &bmh, oldDataNetwork, oldIPMINetwork)
 
+	// Sync BootConfig assignedTo
+	p.syncBootConfigRef(r.Context(), bmh.Name, oldBootConfigRef, bmh.Spec.BootConfigRef)
+
 	podWriteJSON(w, http.StatusOK, &bmh)
 }
 
@@ -297,6 +305,7 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	// Start from existing, overlay the patch
 	oldDataNetwork := existing.Spec.Network
 	oldIPMINetwork := existing.Spec.BMC.Network
+	oldBootConfigRef := existing.Spec.BootConfigRef
 	merged := existing.DeepCopy()
 
 	body, err := io.ReadAll(r.Body)
@@ -327,6 +336,9 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	// Sync DHCP reservations to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), merged, oldDataNetwork, oldIPMINetwork)
 
+	// Sync BootConfig assignedTo
+	p.syncBootConfigRef(r.Context(), merged.Name, oldBootConfigRef, merged.Spec.BootConfigRef)
+
 	podWriteJSON(w, http.StatusOK, merged)
 }
 
@@ -344,6 +356,9 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 	// Remove DHCP reservations from referenced Network CRDs (data + IPMI)
 	p.removeBMHFromNetwork(r.Context(), bmh.Spec.BootMACAddress, bmh.Spec.Network)
 	p.removeBMHFromNetwork(r.Context(), bmh.Spec.BMC.MAC, bmh.Spec.BMC.Network)
+
+	// Remove from BootConfig assignedTo
+	p.removeBootConfigRef(r.Context(), bmh.Name, bmh.Spec.BootConfigRef)
 
 	delete(p.bareMetalHosts, key)
 

@@ -115,6 +115,7 @@ go test ./...
 - mkube-update GHCR fallback (tries local registry first, falls back to ghcr.io/glennswest/ if local pull fails)
 - Registry TLS cert mismatch (installer regenerated CA+server certs but registry wasn't restarted — stale cert served)
 - gw DNS address fix (192.168.1.199 → 192.168.1.52, CT 117 on pvex)
+- BootConfig CRD (cluster-scoped, NATS-backed, CRUD API, watch, table format, source IP lookup, BMH bootConfigRef linkage with assignedTo sync, delete protection, consistency checks). Serves ignition/cloud-init/kickstart configs to booting servers via source IP → BMH → BootConfig lookup.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
