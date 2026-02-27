@@ -350,6 +350,50 @@ func (p *MicroKubeProvider) handleBootConfigLookup(w http.ResponseWriter, r *htt
 	_, _ = io.WriteString(w, content)
 }
 
+// handleBootComplete is called by a booting server after install completes.
+// Resolves source IP → BMH, sets spec.image to "localboot" so next reboot goes to disk.
+// Usage: curl -X POST http://192.168.200.2:8082/api/v1/boot-complete
+func (p *MicroKubeProvider) handleBootComplete(w http.ResponseWriter, r *http.Request) {
+	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		sourceIP = r.RemoteAddr
+	}
+
+	// Find BMH by source IP
+	var matchedBMH *BareMetalHost
+	var matchedKey string
+	for key, bmh := range p.bareMetalHosts {
+		if bmh.Spec.IP == sourceIP {
+			matchedBMH = bmh
+			matchedKey = key
+			break
+		}
+	}
+
+	if matchedBMH == nil {
+		http.Error(w, fmt.Sprintf("no BareMetalHost found with IP %s", sourceIP), http.StatusNotFound)
+		return
+	}
+
+	// Set image to localboot
+	merged := matchedBMH.DeepCopy()
+	merged.Spec.Image = "localboot"
+
+	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+		storeKey := matchedBMH.Namespace + "." + matchedBMH.Name
+		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, merged); err != nil {
+			http.Error(w, fmt.Sprintf("persisting BMH update: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	p.bareMetalHosts[matchedKey] = merged
+	p.deps.Logger.Infow("boot-complete: switched to localboot", "bmh", matchedBMH.Name, "ip", sourceIP)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","host":%q,"image":"localboot"}`, matchedBMH.Name)
+}
+
 // ─── Watch ──────────────────────────────────────────────────────────────────
 
 func (p *MicroKubeProvider) handleWatchBootConfigs(w http.ResponseWriter, r *http.Request) {
