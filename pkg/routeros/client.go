@@ -425,6 +425,96 @@ func (c *Client) GetLogs(ctx context.Context) ([]LogEntry, error) {
 	return logs, err
 }
 
+// ─── iSCSI Operations ────────────────────────────────────────────────────────
+
+// ISCSITarget represents a RouterOS iSCSI target.
+type ISCSITarget struct {
+	ID   string `json:".id"`
+	Name string `json:"name"`
+	IQN  string `json:"iqn,omitempty"`
+}
+
+// ISCSILun represents a RouterOS iSCSI LUN.
+type ISCSILun struct {
+	ID       string `json:".id"`
+	Target   string `json:"target"`
+	FilePath string `json:"file-path"`
+	ReadOnly string `json:"read-only,omitempty"`
+}
+
+// CreateISCSITarget creates an iSCSI target on RouterOS.
+// Returns the .id of the created target.
+func (c *Client) CreateISCSITarget(ctx context.Context, name, iqn string) (string, error) {
+	var result map[string]interface{}
+	err := c.restPOST(ctx, "/iscsi/target/add", map[string]string{
+		"name": name,
+		"iqn":  iqn,
+	}, &result)
+	if err != nil {
+		return "", err
+	}
+	if id, ok := result["ret"].(string); ok {
+		return id, nil
+	}
+	// If no ret field, try to find by name
+	targets, err := c.ListISCSITargets(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range targets {
+		if t.Name == name {
+			return t.ID, nil
+		}
+	}
+	return "", fmt.Errorf("created iSCSI target %q but could not find its ID", name)
+}
+
+// RemoveISCSITarget removes an iSCSI target by .id.
+func (c *Client) RemoveISCSITarget(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/iscsi/target/remove", map[string]string{".id": id}, nil)
+}
+
+// ListISCSITargets lists all iSCSI targets.
+func (c *Client) ListISCSITargets(ctx context.Context) ([]ISCSITarget, error) {
+	var targets []ISCSITarget
+	err := c.restGET(ctx, "/iscsi/target", &targets)
+	return targets, err
+}
+
+// CreateISCSILun creates an iSCSI LUN on a target, pointing to a file.
+// Returns the .id of the created LUN.
+func (c *Client) CreateISCSILun(ctx context.Context, targetID, filePath string, readOnly bool) (string, error) {
+	roStr := "false"
+	if readOnly {
+		roStr = "true"
+	}
+	var result map[string]interface{}
+	err := c.restPOST(ctx, "/iscsi/lun/add", map[string]string{
+		"target":    targetID,
+		"file-path": filePath,
+		"read-only": roStr,
+	}, &result)
+	if err != nil {
+		return "", err
+	}
+	if id, ok := result["ret"].(string); ok {
+		return id, nil
+	}
+	return "", nil
+}
+
+// RemoveISCSILun removes an iSCSI LUN by .id.
+func (c *Client) RemoveISCSILun(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/iscsi/lun/remove", map[string]string{".id": id}, nil)
+}
+
+// ListISCSILuns lists all iSCSI LUNs.
+func (c *Client) ListISCSILuns(ctx context.Context) ([]ISCSILun, error) {
+	var luns []ISCSILun
+	err := c.restGET(ctx, "/iscsi/lun", &luns)
+	return luns, err
+}
+
 // ─── REST Helpers ───────────────────────────────────────────────────────────
 
 func (c *Client) restGET(ctx context.Context, path string, result interface{}) error {

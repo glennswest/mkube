@@ -76,6 +76,17 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/registries/{name}", p.handleDeleteRegistry)
 	mux.HandleFunc("GET /api/v1/registries/{name}/config", p.handleGetRegistryConfig)
 
+	// iSCSI CDROMs (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/iscsi-cdroms", p.handleListISCSICdroms)
+	mux.HandleFunc("GET /api/v1/iscsi-cdroms/{name}", p.handleGetISCSICdrom)
+	mux.HandleFunc("POST /api/v1/iscsi-cdroms", p.handleCreateISCSICdrom)
+	mux.HandleFunc("PUT /api/v1/iscsi-cdroms/{name}", p.handleUpdateISCSICdrom)
+	mux.HandleFunc("PATCH /api/v1/iscsi-cdroms/{name}", p.handlePatchISCSICdrom)
+	mux.HandleFunc("DELETE /api/v1/iscsi-cdroms/{name}", p.handleDeleteISCSICdrom)
+	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/upload", p.handleUploadISCSICdrom)
+	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/subscribe", p.handleSubscribeISCSICdrom)
+	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/unsubscribe", p.handleUnsubscribeISCSICdrom)
+
 	// BareMetalHosts
 	mux.HandleFunc("GET /api/v1/baremetalhosts", p.handleListAllBMH)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/baremetalhosts", p.handleListNamespacedBMH)
@@ -586,6 +597,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Namespaced: false,
 				Kind:       "Registry",
 				ShortNames: []string{"reg"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
+				Name:       "iscsi-cdroms",
+				Namespaced: false,
+				Kind:       "ISCSICdrom",
+				ShortNames: []string{"icd"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 		},

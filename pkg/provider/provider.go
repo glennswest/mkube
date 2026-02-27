@@ -87,6 +87,7 @@ type MicroKubeProvider struct {
 	pvcs            map[string]*corev1.PersistentVolumeClaim // namespace/name -> PVC
 	networks        map[string]*Network                     // name -> Network (cluster-scoped)
 	registries      map[string]*Registry                    // name -> Registry (cluster-scoped)
+	iscsiCdroms     map[string]*ISCSICdrom                  // name -> ISCSICdrom (cluster-scoped)
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)
 	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
@@ -107,6 +108,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.MigrateNetworkConfig(context.Background())
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
+	p.LoadISCSICdromsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
 }
 
@@ -123,6 +125,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
 		networks:        make(map[string]*Network),
 		registries:      make(map[string]*Registry),
+		iscsiCdroms:     make(map[string]*ISCSICdrom),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
 		pushNotify:      make(chan registry.PushEvent, 16),
 		redeploying:     make(map[string]bool),

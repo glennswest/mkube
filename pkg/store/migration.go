@@ -184,6 +184,34 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export iSCSI CDROMs
+	if s.ISCSICdroms != nil {
+		icdKeys, err := s.ISCSICdroms.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing iSCSI CDROMs: %w", err)
+		}
+		for _, key := range icdKeys {
+			raw, _, err := s.ISCSICdroms.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "v1"
+			doc["kind"] = "ISCSICdrom"
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export PVCs
 	if s.PersistentVolumeClaims != nil {
 		pvcKeys, err := s.PersistentVolumeClaims.Keys(ctx, "")
@@ -268,6 +296,18 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 		if err == nil {
 			for _, reg := range regs {
 				if _, err := s.Registries.PutJSON(ctx, reg.Name, &reg); err != nil {
+					continue
+				}
+			}
+		}
+	}
+
+	// Import iSCSI CDROMs
+	if s.ISCSICdroms != nil {
+		icds, err := parseISCSICdroms(data)
+		if err == nil {
+			for _, icd := range icds {
+				if _, err := s.ISCSICdroms.PutJSON(ctx, icd.Name, &icd); err != nil {
 					continue
 				}
 			}
@@ -372,6 +412,9 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 			continue
 		case "Registry":
 			// Registries are handled separately via parseRegistries
+			continue
+		case "ISCSICdrom":
+			// iSCSI CDROMs are handled separately via parseISCSICdroms
 			continue
 		default:
 			var pod corev1.Pod
@@ -578,4 +621,53 @@ func parseRegistries(data []byte) ([]registryDoc, error) {
 	}
 
 	return registries, nil
+}
+
+// iscsiCdromDoc is a lightweight ISCSICdrom representation for import/export.
+type iscsiCdromDoc struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              json.RawMessage `json:"spec"`
+	Status            json.RawMessage `json:"status,omitempty"`
+}
+
+// parseISCSICdroms extracts ISCSICdrom documents from a multi-document YAML.
+func parseISCSICdroms(data []byte) ([]iscsiCdromDoc, error) {
+	var cdroms []iscsiCdromDoc
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "ISCSICdrom" {
+			continue
+		}
+
+		var icd iscsiCdromDoc
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&icd); err != nil {
+			return nil, fmt.Errorf("decoding iSCSI CDROM: %w", err)
+		}
+		if icd.Name == "" {
+			continue
+		}
+		cdroms = append(cdroms, icd)
+	}
+
+	return cdroms, nil
 }
