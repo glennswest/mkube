@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/glennswest/mkube/pkg/config"
@@ -444,14 +445,17 @@ type FileDisk struct {
 // CreateISCSITarget creates a file-backed disk and enables iSCSI export.
 // Returns the .id of the created disk.
 func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {
+	// RouterOS stores file-path with leading /
+	rosPath := "/" + strings.TrimPrefix(filePath, "/")
+
 	// Step 1: Create file-backed disk
 	var result map[string]interface{}
 	err := c.restPOST(ctx, "/disk/add", map[string]string{
 		"type":      "file",
-		"file-path": filePath,
+		"file-path": rosPath,
 	}, &result)
 	if err != nil {
-		return "", fmt.Errorf("creating file disk for %s: %w", filePath, err)
+		return "", fmt.Errorf("creating file disk for %s: %w", rosPath, err)
 	}
 
 	// Find the disk by file-path to get its .id
@@ -461,13 +465,14 @@ func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath string) (
 	}
 	var diskID string
 	for _, d := range disks {
-		if d.FilePath == filePath {
+		// Normalize both paths for comparison (strip leading /)
+		if strings.TrimPrefix(d.FilePath, "/") == strings.TrimPrefix(rosPath, "/") {
 			diskID = d.ID
 			break
 		}
 	}
 	if diskID == "" {
-		return "", fmt.Errorf("created file disk for %s but could not find it", filePath)
+		return "", fmt.Errorf("created file disk for %s but could not find it", rosPath)
 	}
 
 	// Step 2: Enable iSCSI export
@@ -510,9 +515,18 @@ func (c *Client) GetISCSIDisk(ctx context.Context, id string) (*FileDisk, error)
 
 // listFileDisks returns all file-type disks.
 func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
-	var disks []FileDisk
-	err := c.restGET(ctx, "/disk?type=file", &disks)
-	return disks, err
+	var allDisks []FileDisk
+	err := c.restGET(ctx, "/disk", &allDisks)
+	if err != nil {
+		return nil, err
+	}
+	var fileDisks []FileDisk
+	for _, d := range allDisks {
+		if d.Type == "file" {
+			fileDisks = append(fileDisks, d)
+		}
+	}
+	return fileDisks, nil
 }
 
 // ─── REST Helpers ───────────────────────────────────────────────────────────
