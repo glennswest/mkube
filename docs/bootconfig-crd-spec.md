@@ -1,16 +1,16 @@
-# IgnitionConfig CRD Specification
+# BootConfig CRD Specification
 
 ## Overview
 
-Store ignition/kickstart config files in mkube and serve them over HTTP by name. Booting servers fetch their config via `GET /api/v1/ignitionconfigs/{name}/config`.
+Store boot config files (ignition, kickstart, etc.) in mkube and serve them over HTTP by name. Booting servers fetch their config via `GET /api/v1/bootconfigs/{name}/config`.
 
 ## CRD
 
 ```yaml
 apiVersion: v1
-kind: IgnitionConfig
+kind: BootConfig
 metadata:
-  name: coreos-builder       # fetch via /api/v1/ignitionconfigs/coreos-builder/config
+  name: coreos-builder       # fetch via /api/v1/bootconfigs/coreos-builder/config
 spec:
   config: |                   # the raw file content (ignition JSON, butane YAML, kickstart, etc.)
     {
@@ -25,26 +25,26 @@ status:
 ## Types
 
 ```go
-type IgnitionConfig struct {
+type BootConfig struct {
     metav1.TypeMeta   `json:",inline"`
     metav1.ObjectMeta `json:"metadata"`
-    Spec              IgnitionConfigSpec   `json:"spec"`
-    Status            IgnitionConfigStatus `json:"status,omitempty"`
+    Spec              BootConfigSpec   `json:"spec"`
+    Status            BootConfigStatus `json:"status,omitempty"`
 }
 
-type IgnitionConfigSpec struct {
+type BootConfigSpec struct {
     Config string `json:"config"` // raw config file content
 }
 
-type IgnitionConfigStatus struct {
+type BootConfigStatus struct {
     Phase string `json:"phase"`          // Ready, Error
     Size  int64  `json:"size,omitempty"` // bytes
 }
 
-type IgnitionConfigList struct {
+type BootConfigList struct {
     metav1.TypeMeta `json:",inline"`
     metav1.ListMeta `json:"metadata"`
-    Items           []IgnitionConfig `json:"items"`
+    Items           []BootConfig `json:"items"`
 }
 ```
 
@@ -52,20 +52,20 @@ type IgnitionConfigList struct {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/ignitionconfigs` | List all configs |
-| GET | `/api/v1/ignitionconfigs/{name}` | Get config object (JSON with metadata) |
-| GET | `/api/v1/ignitionconfigs/{name}/config` | Serve raw config file content |
-| POST | `/api/v1/ignitionconfigs` | Create a config |
-| PUT | `/api/v1/ignitionconfigs/{name}` | Update a config |
-| DELETE | `/api/v1/ignitionconfigs/{name}` | Delete a config |
+| GET | `/api/v1/bootconfigs` | List all configs |
+| GET | `/api/v1/bootconfigs/{name}` | Get config object (JSON with metadata) |
+| GET | `/api/v1/bootconfigs/{name}/config` | Serve raw config file content |
+| POST | `/api/v1/bootconfigs` | Create a config |
+| PUT | `/api/v1/bootconfigs/{name}` | Update a config |
+| DELETE | `/api/v1/bootconfigs/{name}` | Delete a config |
 
 The `/config` sub-resource returns the raw file content with `Content-Type: text/plain`. No JSON wrapping, no metadata — just the file. This is what booting servers fetch.
 
 ## Storage
 
-- **Bucket:** `IGNITIONCONFIGS` in NATS KV store
+- **Bucket:** `BOOTCONFIGS` in NATS KV store
 - **Key:** `{name}`
-- **Value:** JSON-serialized `IgnitionConfig`
+- **Value:** JSON-serialized `BootConfig`
 
 Cluster-scoped (no namespace). Configs are global — same config can be referenced by any server on any network.
 
@@ -74,7 +74,7 @@ Cluster-scoped (no namespace). Configs are global — same config can be referen
 ### Create a config
 
 ```bash
-curl -X POST http://192.168.200.2:8082/api/v1/ignitionconfigs \
+curl -X POST http://192.168.200.2:8082/api/v1/bootconfigs \
   -H 'Content-Type: application/json' \
   -d '{
     "metadata": { "name": "coreos-builder" },
@@ -85,19 +85,19 @@ curl -X POST http://192.168.200.2:8082/api/v1/ignitionconfigs \
 ### Fetch raw config (what booting servers do)
 
 ```bash
-curl http://192.168.200.2:8082/api/v1/ignitionconfigs/coreos-builder/config
+curl http://192.168.200.2:8082/api/v1/bootconfigs/coreos-builder/config
 ```
 
 ### ISO kernel args
 
 CoreOS live ISO GRUB config:
 ```
-ignition.config.url=http://192.168.200.2:8082/api/v1/ignitionconfigs/coreos-builder/config
+ignition.config.url=http://192.168.200.2:8082/api/v1/bootconfigs/coreos-builder/config
 ```
 
 Fedora netinstall ISO GRUB config:
 ```
-inst.ks=http://192.168.200.2:8082/api/v1/ignitionconfigs/fedora-server/config
+inst.ks=http://192.168.200.2:8082/api/v1/bootconfigs/fedora-server/config
 ```
 
 ### iPXE sanboot
@@ -121,7 +121,7 @@ The ISO boots, fetches its config by name from the URL baked into its GRUB confi
     "units": [{
       "name": "coreos-installer.service",
       "enabled": true,
-      "contents": "[Unit]\nDescription=Install CoreOS to disk\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/coreos-installer install /dev/sda --ignition-url http://192.168.200.2:8082/api/v1/ignitionconfigs/builder-target/config --insecure-ignition --append-karg console=tty0 --append-karg console=ttyS0,115200n8 --append-karg console=ttyS1,115200n8\nExecStartPost=/usr/bin/systemctl reboot\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n"
+      "contents": "[Unit]\nDescription=Install CoreOS to disk\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/coreos-installer install /dev/sda --ignition-url http://192.168.200.2:8082/api/v1/bootconfigs/builder-target/config --insecure-ignition --append-karg console=tty0 --append-karg console=ttyS0,115200n8 --append-karg console=ttyS1,115200n8\nExecStartPost=/usr/bin/systemctl reboot\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n"
     }]
   }
 }
