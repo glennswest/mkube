@@ -2,7 +2,16 @@
 
 ## Overview
 
-Store boot config files (ignition, kickstart, etc.) in mkube and serve them over HTTP by name. Booting servers fetch their config via `GET /api/v1/bootconfigs/{name}/config`.
+Store boot config files (ignition, kickstart, etc.) in mkube, assigned to BareMetalHost objects. Booting servers fetch their config via `GET /api/v1/bootconfig` — mkube identifies the server by source IP and returns the config assigned to that host. Same pattern as cloud instance metadata services.
+
+## How It Works
+
+1. Admin creates a `BootConfig` object with a config file (ignition JSON, kickstart, etc.)
+2. Admin assigns the boot config to a BMH: `bmh.spec.bootConfig = "coreos-builder"`
+3. Server sanboots a CoreOS/Fedora ISO via iSCSI
+4. ISO's kernel args include `ignition.config.url=http://192.168.200.2:8082/api/v1/bootconfig`
+5. mkube receives the request, looks up the source IP → finds the BMH → returns that BMH's assigned boot config
+6. No config name in the URL — the server just asks "give me my config" and mkube figures it out
 
 ## CRD
 
@@ -10,16 +19,16 @@ Store boot config files (ignition, kickstart, etc.) in mkube and serve them over
 apiVersion: v1
 kind: BootConfig
 metadata:
-  name: coreos-builder       # fetch via /api/v1/bootconfigs/coreos-builder/config
+  name: coreos-builder
 spec:
-  config: |                   # the raw file content (ignition JSON, butane YAML, kickstart, etc.)
+  config: |
     {
       "ignition": { "version": "3.4.0" },
       ...
     }
 status:
-  phase: Ready                # Ready or Error
-  size: 4096                  # bytes
+  phase: Ready
+  size: 4096
 ```
 
 ## Types
@@ -48,18 +57,56 @@ type BootConfigList struct {
 }
 ```
 
+## BMH Change
+
+Add `bootConfig` field to BMHSpec:
+
+```go
+type BMHSpec struct {
+    // ... existing fields ...
+    BootConfig string `json:"bootConfig,omitempty"` // name of BootConfig to serve for this host
+}
+```
+
+```yaml
+apiVersion: v1
+kind: BareMetalHost
+metadata:
+  name: server1
+  namespace: g10
+spec:
+  bootMACAddress: "AC:1F:6B:8A:A7:9C"
+  ip: "192.168.10.10"
+  bootConfig: "coreos-builder"    # ← references BootConfig by name
+```
+
 ## API Endpoints
+
+### CRUD (management)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/bootconfigs` | List all configs |
 | GET | `/api/v1/bootconfigs/{name}` | Get config object (JSON with metadata) |
-| GET | `/api/v1/bootconfigs/{name}/config` | Serve raw config file content |
 | POST | `/api/v1/bootconfigs` | Create a config |
 | PUT | `/api/v1/bootconfigs/{name}` | Update a config |
 | DELETE | `/api/v1/bootconfigs/{name}` | Delete a config |
 
-The `/config` sub-resource returns the raw file content with `Content-Type: text/plain`. No JSON wrapping, no metadata — just the file. This is what booting servers fetch.
+### Serving endpoint (used by booting servers)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/bootconfig` | Return the config for the requesting server |
+
+**Resolution logic:**
+
+1. Get source IP from request (remote addr)
+2. Find BMH where `spec.ip` matches the source IP
+3. Read `bmh.spec.bootConfig` → look up that `BootConfig` object
+4. Return `spec.config` as `text/plain`
+5. No BMH found or no bootConfig assigned → `404`
+
+One URL for all servers. Every ISO has the same kernel arg. Each server gets its own config.
 
 ## Storage
 
@@ -67,48 +114,64 @@ The `/config` sub-resource returns the raw file content with `Content-Type: text
 - **Key:** `{name}`
 - **Value:** JSON-serialized `BootConfig`
 
-Cluster-scoped (no namespace). Configs are global — same config can be referenced by any server on any network.
+Cluster-scoped (no namespace).
 
 ## Usage
 
-### Create a config
+### Create configs
 
 ```bash
+# Create the live installer config
 curl -X POST http://192.168.200.2:8082/api/v1/bootconfigs \
   -H 'Content-Type: application/json' \
   -d '{
     "metadata": { "name": "coreos-builder" },
     "spec": { "config": "{\"ignition\":{\"version\":\"3.4.0\"}, ...}" }
   }'
+
+# Create the target system config
+curl -X POST http://192.168.200.2:8082/api/v1/bootconfigs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "metadata": { "name": "builder-target" },
+    "spec": { "config": "variant: fcos\nversion: 1.5.0\n..." }
+  }'
 ```
 
-### Fetch raw config (what booting servers do)
+### Assign to a host
 
 ```bash
-curl http://192.168.200.2:8082/api/v1/bootconfigs/coreos-builder/config
+curl -X PUT http://192.168.200.2:8082/api/v1/namespaces/g10/baremetalhosts/server1 \
+  -H 'Content-Type: application/json' \
+  -d '{ "spec": { "bootConfig": "coreos-builder" } }'
 ```
 
-### ISO kernel args
+### Server fetches its own config (automatic — happens during boot)
 
-CoreOS live ISO GRUB config:
-```
-ignition.config.url=http://192.168.200.2:8082/api/v1/bootconfigs/coreos-builder/config
-```
-
-Fedora netinstall ISO GRUB config:
-```
-inst.ks=http://192.168.200.2:8082/api/v1/bootconfigs/fedora-server/config
+```bash
+# From server1 (192.168.10.10):
+curl http://192.168.200.2:8082/api/v1/bootconfig
+# → returns the coreos-builder ignition JSON
 ```
 
-### iPXE sanboot
+### ISO kernel args (baked into ISO GRUB config once)
 
-PXE manager generates:
+CoreOS live ISO:
+```
+ignition.config.url=http://192.168.200.2:8082/api/v1/bootconfig
+```
+
+Fedora netinstall ISO:
+```
+inst.ks=http://192.168.200.2:8082/api/v1/bootconfig
+```
+
+### iPXE sanboot (generated by pxemanager)
+
 ```
 #!ipxe
 sanboot iscsi:192.168.10.1::::iqn.2000-02.com.mikrotik:cdrom-coreos-live
 ```
-
-The ISO boots, fetches its config by name from the URL baked into its GRUB config. Different ISOs point to different config names.
 
 ## Example Configs
 
@@ -121,15 +184,17 @@ The ISO boots, fetches its config by name from the URL baked into its GRUB confi
     "units": [{
       "name": "coreos-installer.service",
       "enabled": true,
-      "contents": "[Unit]\nDescription=Install CoreOS to disk\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/coreos-installer install /dev/sda --ignition-url http://192.168.200.2:8082/api/v1/bootconfigs/builder-target/config --insecure-ignition --append-karg console=tty0 --append-karg console=ttyS0,115200n8 --append-karg console=ttyS1,115200n8\nExecStartPost=/usr/bin/systemctl reboot\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n"
+      "contents": "[Unit]\nDescription=Install CoreOS to disk\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/coreos-installer install /dev/sda --ignition-url http://192.168.200.2:8082/api/v1/bootconfig --insecure-ignition --append-karg console=tty0 --append-karg console=ttyS0,115200n8 --append-karg console=ttyS1,115200n8\nExecStartPost=/usr/bin/systemctl reboot\nStandardOutput=journal+console\nStandardError=journal+console\n\n[Install]\nWantedBy=multi-user.target\n"
     }]
   }
 }
 ```
 
+Note: after `coreos-installer` reboots, the server boots from disk. On disk boot, the BMH's `bootConfig` should be updated to `builder-target` (the post-install config). This can be handled by pxemanager's `boot_local_after` logic — when it switches to localboot, it also switches the bootConfig.
+
 ### builder-target (applied to installed system)
 
-The full `builder.bu` content (SSH keys, podman, cockpit, buildah/skopeo, serial consoles, firewall).
+Full `builder.bu` content: SSH keys, podman, cockpit, buildah/skopeo, serial consoles, firewall.
 
 ### fedora-server (kickstart)
 
@@ -150,6 +215,9 @@ reboot
 %end
 ```
 
-## No Changes to Other CRDs
+## Changes to Other CRDs
 
-ISCSICdrom and BareMetalHost are unchanged. This CRD is standalone — it just stores and serves files.
+| CRD | Change |
+|-----|--------|
+| BareMetalHost | Add `spec.bootConfig` field (string, references BootConfig name) |
+| ISCSICdrom | No changes |
