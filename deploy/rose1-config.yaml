@@ -197,6 +197,8 @@ storage:
   persistentMounts:
     - containerPath: "/raid1/cache"
       hostPath: "raid1/cache"
+    - containerPath: "/raid1/iso"
+      hostPath: "raid1/iso"
     - containerPath: "/data"
       hostPath: "raid1/volumes/kube.gt.lo/data"
   gcIntervalMinutes: 60
