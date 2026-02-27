@@ -114,6 +114,37 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, "ok")
 	})
+	mux.HandleFunc("GET /healthz/watch", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher.Flush()
+
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		// Send initial heartbeat immediately
+		fmt.Fprintf(w, "data: %d\n\n", time.Now().Unix())
+		flusher.Flush()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case t := <-ticker.C:
+				_, err := fmt.Fprintf(w, "data: %d\n\n", t.Unix())
+				if err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	})
 	mux.HandleFunc("POST /poll", func(w http.ResponseWriter, r *http.Request) {
 		if watcher == nil {
 			http.NotFound(w, r)

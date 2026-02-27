@@ -372,6 +372,7 @@ func runSharedServices(
 	go p.RunDHCPWatcher(ctx)
 	go p.RunSubnetScanner(ctx)
 	go p.RunBMHReconciler(ctx)
+	p.StartInfraHealthWatchers(ctx)
 
 	// ── Register routes and start HTTP server ───────────────────────
 	p.RegisterRoutes(mux)
