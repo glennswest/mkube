@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-02-27
+- **fix:** mkube-update tarball format — replaced `crane.Save` (OCI format: compressed layers, no repositories file, no VERSION/json per layer) with custom `saveRouterOSTarball` that produces the exact docker-save v1 format RouterOS expects. Matches `hack/make-tarball.sh` structure: `manifest.json`, `repositories`, `{configHash}.json`, `{layerHash}/layer.tar` (uncompressed), `{layerHash}/VERSION`, `{layerHash}/json`.
+- **feat:** mkube-update GHCR fallback — when local registry pull fails, automatically falls back to `ghcr.io/glennswest/{repo}:{tag}`.
+- **fix:** Registry TLS cert mismatch — installer regenerated CA+server certs on re-run but registry container wasn't restarted, causing ECDSA verification failure when mkube tried to pull images. Root cause: stale certs from previous installer run being served.
+
 ### 2026-02-26
 - **feat:** iSCSI CDROM CRD — cluster-scoped resource for sharing ISO images via RouterOS native iSCSI. Full CRUD API at `/api/v1/iscsi-cdroms/{name}` with watch support, table format for `oc get icd`. ISO upload via multipart POST to `/upload` subresource. Subscribe/unsubscribe endpoints track active consumers. RouterOS iSCSI target and LUN auto-created on upload, auto-removed on delete. Delete protected (409 if subscribers exist). Consistency checks verify memory↔NATS sync and ISO file existence. Export/import support in YAML multi-doc. NATS JetStream persistence in ISCSICDROMS bucket. Both immediate and deferred boot paths load from store.
 - **fix:** BMH create handler now defaults IPMI credentials to ADMIN/ADMIN when BMC address is set. Update handler preserves existing credentials when the PUT body omits them, preventing credential loss.
