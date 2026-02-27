@@ -86,6 +86,8 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/upload", p.handleUploadISCSICdrom)
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/subscribe", p.handleSubscribeISCSICdrom)
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/unsubscribe", p.handleUnsubscribeISCSICdrom)
+	mux.HandleFunc("GET /api/v1/iscsi-cdroms/{name}/files", p.handleISCSICdromReadFile)
+	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/derive", p.handleISCSICdromDerive)
 
 	// BootConfigs (cluster-scoped)
 	mux.HandleFunc("GET /api/v1/bootconfigs", p.handleListBootConfigs)

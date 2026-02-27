@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ type ISCSICdromSpec struct {
 	Description string   `json:"description,omitempty"`  // human-readable description
 	ReadOnly    bool     `json:"readOnly"`               // always true for CDROMs
 	BootConfigs []string `json:"bootConfigs,omitempty"`  // compatible BootConfig names for this ISO
+	DerivedFrom string   `json:"derivedFrom,omitempty"`  // base ISCSICdrom name (if derived via ISO patching)
 }
 
 // ISCSICdromStatus reports the observed state of an ISCSICdrom.
@@ -758,6 +760,207 @@ func formatISOSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%dB", bytes)
 	}
+}
+
+// ─── Read File / Derive Handlers ─────────────────────────────────────────────
+
+// handleISCSICdromReadFile reads a file from an ISO or lists a directory.
+// GET /api/v1/iscsi-cdroms/{name}/files?path=/EFI/BOOT/grub.cfg
+// GET /api/v1/iscsi-cdroms/{name}/files?path=/EFI/BOOT&list=true
+func (p *MicroKubeProvider) handleISCSICdromReadFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	cdrom, ok := p.iscsiCdroms[name]
+	if !ok {
+		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	if cdrom.Status.Phase != "Ready" {
+		http.Error(w, fmt.Sprintf("iSCSI CDROM %q is not ready (phase: %s)", name, cdrom.Status.Phase), http.StatusConflict)
+		return
+	}
+
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		filePath = "/"
+	}
+
+	isoPath := cdrom.Status.ISOPath
+
+	// List directory mode
+	if r.URL.Query().Get("list") == "true" {
+		entries, err := iso9660ListDirectoryByPath(isoPath, filePath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("listing directory: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		var result []iso9660DirEntry
+		for _, e := range entries {
+			result = append(result, iso9660DirEntry{
+				Name:  e.Name(),
+				Size:  e.DataLen,
+				IsDir: e.IsDir,
+			})
+		}
+
+		podWriteJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Read file mode
+	data, err := iso9660ReadFileByPath(isoPath, filePath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reading file: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// handleISCSICdromDerive creates a new ISCSICdrom by copying and patching the ISO.
+// POST /api/v1/iscsi-cdroms/{name}/derive
+func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *http.Request) {
+	baseName := r.PathValue("name")
+
+	baseCdrom, ok := p.iscsiCdroms[baseName]
+	if !ok {
+		http.Error(w, fmt.Sprintf("base iSCSI CDROM %q not found", baseName), http.StatusNotFound)
+		return
+	}
+
+	if baseCdrom.Status.Phase != "Ready" {
+		http.Error(w, fmt.Sprintf("base iSCSI CDROM %q is not ready (phase: %s)", baseName, baseCdrom.Status.Phase), http.StatusConflict)
+		return
+	}
+
+	var req iso9660DeriveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid derive request JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "derived CDROM name is required", http.StatusBadRequest)
+		return
+	}
+
+	if _, exists := p.iscsiCdroms[req.Name]; exists {
+		http.Error(w, fmt.Sprintf("iSCSI CDROM %q already exists", req.Name), http.StatusConflict)
+		return
+	}
+
+	if len(req.Operations) == 0 {
+		http.Error(w, "at least one operation is required", http.StatusBadRequest)
+		return
+	}
+
+	// Decode base64 content in operations
+	for i := range req.Operations {
+		op := &req.Operations[i]
+		if op.Op == "replace" || op.Op == "add" {
+			if len(op.Content) == 0 {
+				http.Error(w, fmt.Sprintf("operation %d (%s) requires content", i, op.Op), http.StatusBadRequest)
+				return
+			}
+			// Try base64 decode — if it fails, treat content as raw
+			decoded, err := base64.StdEncoding.DecodeString(string(op.Content))
+			if err == nil {
+				op.Content = decoded
+			}
+		}
+	}
+
+	// Copy base ISO to new path
+	newISOFile := req.Name + ".iso"
+	newISOPath := filepath.Join(isoBasePath, newISOFile)
+	tmpPath := newISOPath + ".deriving"
+
+	p.deps.Logger.Infow("deriving ISO", "base", baseName, "new", req.Name, "ops", len(req.Operations))
+
+	if err := iso9660CopyISO(baseCdrom.Status.ISOPath, tmpPath); err != nil {
+		http.Error(w, fmt.Sprintf("copying base ISO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Apply patch operations
+	if err := iso9660ApplyPatches(tmpPath, req.Operations); err != nil {
+		os.Remove(tmpPath)
+		http.Error(w, fmt.Sprintf("patching ISO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Rename temp to final path
+	if err := os.Rename(tmpPath, newISOPath); err != nil {
+		os.Remove(tmpPath)
+		http.Error(w, fmt.Sprintf("renaming ISO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Get file size
+	fi, err := os.Stat(newISOPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("stat new ISO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create new ISCSICdrom object
+	newCdrom := &ISCSICdrom{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSICdrom"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              req.Name,
+			CreationTimestamp: metav1.Now(),
+		},
+		Spec: ISCSICdromSpec{
+			ISOFile:     newISOFile,
+			Description: req.Description,
+			ReadOnly:    true,
+			BootConfigs: baseCdrom.Spec.BootConfigs,
+			DerivedFrom: baseName,
+		},
+		Status: ISCSICdromStatus{
+			Phase:      "Pending",
+			ISOPath:    newISOPath,
+			ISOSize:    fi.Size(),
+			TargetIQN:  iscsiIQNPrefix + req.Name,
+			PortalPort: iscsiDefaultPort,
+		},
+	}
+
+	// Set portal IP from config
+	if len(p.deps.Config.Networks) > 0 {
+		newCdrom.Status.PortalIP = p.deps.Config.Networks[0].Gateway
+	}
+
+	// Configure iSCSI target on RouterOS
+	if err := p.configureISCSITarget(r.Context(), newCdrom); err != nil {
+		p.deps.Logger.Warnw("failed to configure iSCSI target for derived CDROM", "name", req.Name, "error", err)
+		newCdrom.Status.Phase = "Error"
+	} else {
+		newCdrom.Status.Phase = "Ready"
+	}
+
+	// Persist to NATS
+	if p.deps.Store != nil && p.deps.Store.ISCSICdroms != nil {
+		if _, err := p.deps.Store.ISCSICdroms.PutJSON(r.Context(), req.Name, newCdrom); err != nil {
+			http.Error(w, fmt.Sprintf("persisting derived CDROM: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	p.iscsiCdroms[req.Name] = newCdrom
+
+	p.deps.Logger.Infow("derived ISO created",
+		"base", baseName,
+		"new", req.Name,
+		"size", fi.Size(),
+		"phase", newCdrom.Status.Phase,
+		"ops", len(req.Operations))
+
+	podWriteJSON(w, http.StatusCreated, newCdrom)
 }
 
 // ─── Consistency Checks ─────────────────────────────────────────────────────

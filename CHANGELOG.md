@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-02-27
+- **feat:** ISO9660 binary patching — derive ISCSICdroms by copying and patching ISOs at the binary level. New `pkg/provider/iso9660.go` implements PVD parsing, directory record parsing with Rock Ridge NM support, path resolution, and file read/replace/delete/add operations. No external tools (xorriso, mkisofs) required. New API endpoints: `GET /api/v1/iscsi-cdroms/{name}/files?path=...` reads files or lists directories from ISOs, `POST /api/v1/iscsi-cdroms/{name}/derive` creates a new ISCSICdrom by copying the base ISO, applying patch operations (replace/delete/add files), and configuring a new iSCSI target. `ISCSICdromSpec.DerivedFrom` tracks the base ISO lineage. Enables baking serial console and iBFT kernel args into ISO grub.cfg for iPXE sanboot.
+
+### 2026-02-27
 - **fix:** Registry HTTP/2 GOAWAY crash — disabled HTTP/2 on registry server (TLSNextProto). Go's h2 implementation sends GOAWAY during large blob uploads, killing the registry process. HTTP/1.1 is sufficient for internal use.
 - **feat:** Registry panic recovery middleware — all registry HTTP handlers wrapped with `recover()`. A single request panic no longer crashes the entire registry process; instead logs the stack trace and returns 500.
 - **feat:** Infrastructure health check — mkube reconcile loop now checks registry.gt.lo health via HTTP GET to `:5001/healthz` every 10s. After 3 consecutive failures, automatically restarts the container via RouterOS API. Catches zombie state where RouterOS shows RUNNING but process is dead.
