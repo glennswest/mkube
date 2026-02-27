@@ -117,22 +117,18 @@ func (r *RouterOSRuntime) RemoveMountsByList(ctx context.Context, listName strin
 	return r.client.RemoveMountsByList(ctx, listName)
 }
 
-// ─── iSCSI Operations ────────────────────────────────────────────────────────
+// ─── iSCSI Operations (via ROSE /disk) ──────────────────────────────────────
 
-func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, iqn string) (string, error) {
-	return r.client.CreateISCSITarget(ctx, name, iqn)
+func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {
+	return r.client.CreateISCSITarget(ctx, name, filePath)
 }
 
 func (r *RouterOSRuntime) RemoveISCSITarget(ctx context.Context, id string) error {
 	return r.client.RemoveISCSITarget(ctx, id)
 }
 
-func (r *RouterOSRuntime) CreateISCSILun(ctx context.Context, targetID, filePath string, readOnly bool) (string, error) {
-	return r.client.CreateISCSILun(ctx, targetID, filePath, readOnly)
-}
-
-func (r *RouterOSRuntime) RemoveISCSILun(ctx context.Context, id string) error {
-	return r.client.RemoveISCSILun(ctx, id)
+func (r *RouterOSRuntime) GetISCSIDisk(ctx context.Context, id string) (*routeros.FileDisk, error) {
+	return r.client.GetISCSIDisk(ctx, id)
 }
 
 func (r *RouterOSRuntime) Backend() string {

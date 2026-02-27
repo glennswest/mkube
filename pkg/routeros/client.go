@@ -425,94 +425,94 @@ func (c *Client) GetLogs(ctx context.Context) ([]LogEntry, error) {
 	return logs, err
 }
 
-// ─── iSCSI Operations ────────────────────────────────────────────────────────
+// ─── iSCSI Operations (via ROSE /disk) ──────────────────────────────────────
+//
+// RouterOS ROSE storage uses /disk to manage iSCSI exports. A file-backed disk
+// is created with type=file, then iscsi-export=yes enables the iSCSI target.
+// RouterOS auto-generates the IQN based on the disk slot name.
 
-// ISCSITarget represents a RouterOS iSCSI target.
-type ISCSITarget struct {
-	ID   string `json:".id"`
-	Name string `json:"name"`
-	IQN  string `json:"iqn,omitempty"`
+// FileDisk represents a RouterOS file-backed disk entry.
+type FileDisk struct {
+	ID            string `json:".id"`
+	Slot          string `json:"slot"`
+	Type          string `json:"type"`
+	FilePath      string `json:"file-path"`
+	ISCSIExport   string `json:"iscsi-export"`
+	ISCSIServerIQN string `json:"iscsi-server-iqn,omitempty"`
 }
 
-// ISCSILun represents a RouterOS iSCSI LUN.
-type ISCSILun struct {
-	ID       string `json:".id"`
-	Target   string `json:"target"`
-	FilePath string `json:"file-path"`
-	ReadOnly string `json:"read-only,omitempty"`
-}
-
-// CreateISCSITarget creates an iSCSI target on RouterOS.
-// Returns the .id of the created target.
-func (c *Client) CreateISCSITarget(ctx context.Context, name, iqn string) (string, error) {
+// CreateISCSITarget creates a file-backed disk and enables iSCSI export.
+// Returns the .id of the created disk.
+func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {
+	// Step 1: Create file-backed disk
 	var result map[string]interface{}
-	err := c.restPOST(ctx, "/iscsi/target/add", map[string]string{
-		"name": name,
-		"iqn":  iqn,
+	err := c.restPOST(ctx, "/disk/add", map[string]string{
+		"type":      "file",
+		"file-path": filePath,
 	}, &result)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("creating file disk for %s: %w", filePath, err)
 	}
-	if id, ok := result["ret"].(string); ok {
-		return id, nil
-	}
-	// If no ret field, try to find by name
-	targets, err := c.ListISCSITargets(ctx)
+
+	// Find the disk by file-path to get its .id
+	disks, err := c.listFileDisks(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("listing disks after create: %w", err)
 	}
-	for _, t := range targets {
-		if t.Name == name {
-			return t.ID, nil
+	var diskID string
+	for _, d := range disks {
+		if d.FilePath == filePath {
+			diskID = d.ID
+			break
 		}
 	}
-	return "", fmt.Errorf("created iSCSI target %q but could not find its ID", name)
-}
-
-// RemoveISCSITarget removes an iSCSI target by .id.
-func (c *Client) RemoveISCSITarget(ctx context.Context, id string) error {
-	return c.restPOST(ctx, "/iscsi/target/remove", map[string]string{".id": id}, nil)
-}
-
-// ListISCSITargets lists all iSCSI targets.
-func (c *Client) ListISCSITargets(ctx context.Context) ([]ISCSITarget, error) {
-	var targets []ISCSITarget
-	err := c.restGET(ctx, "/iscsi/target", &targets)
-	return targets, err
-}
-
-// CreateISCSILun creates an iSCSI LUN on a target, pointing to a file.
-// Returns the .id of the created LUN.
-func (c *Client) CreateISCSILun(ctx context.Context, targetID, filePath string, readOnly bool) (string, error) {
-	roStr := "false"
-	if readOnly {
-		roStr = "true"
+	if diskID == "" {
+		return "", fmt.Errorf("created file disk for %s but could not find it", filePath)
 	}
-	var result map[string]interface{}
-	err := c.restPOST(ctx, "/iscsi/lun/add", map[string]string{
-		"target":    targetID,
-		"file-path": filePath,
-		"read-only": roStr,
-	}, &result)
+
+	// Step 2: Enable iSCSI export
+	err = c.restPOST(ctx, "/disk/set", map[string]string{
+		".id":          diskID,
+		"iscsi-export": "yes",
+	}, nil)
 	if err != nil {
-		return "", err
+		// Clean up the disk we just created
+		_ = c.restPOST(ctx, "/disk/remove", map[string]string{".id": diskID}, nil)
+		return "", fmt.Errorf("enabling iSCSI export: %w", err)
 	}
-	if id, ok := result["ret"].(string); ok {
-		return id, nil
-	}
-	return "", nil
+
+	return diskID, nil
 }
 
-// RemoveISCSILun removes an iSCSI LUN by .id.
-func (c *Client) RemoveISCSILun(ctx context.Context, id string) error {
-	return c.restPOST(ctx, "/iscsi/lun/remove", map[string]string{".id": id}, nil)
+// RemoveISCSITarget disables iSCSI export and removes the file-backed disk.
+func (c *Client) RemoveISCSITarget(ctx context.Context, id string) error {
+	// Disable export first
+	_ = c.restPOST(ctx, "/disk/set", map[string]string{
+		".id":          id,
+		"iscsi-export": "no",
+	}, nil)
+	return c.restPOST(ctx, "/disk/remove", map[string]string{".id": id}, nil)
 }
 
-// ListISCSILuns lists all iSCSI LUNs.
-func (c *Client) ListISCSILuns(ctx context.Context) ([]ISCSILun, error) {
-	var luns []ISCSILun
-	err := c.restGET(ctx, "/iscsi/lun", &luns)
-	return luns, err
+// GetISCSIDisk returns the file disk details including auto-generated IQN.
+func (c *Client) GetISCSIDisk(ctx context.Context, id string) (*FileDisk, error) {
+	disks, err := c.listFileDisks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range disks {
+		if d.ID == id {
+			return &d, nil
+		}
+	}
+	return nil, fmt.Errorf("disk %s not found", id)
+}
+
+// listFileDisks returns all file-type disks.
+func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
+	var disks []FileDisk
+	err := c.restGET(ctx, "/disk?type=file", &disks)
+	return disks, err
 }
 
 // ─── REST Helpers ───────────────────────────────────────────────────────────

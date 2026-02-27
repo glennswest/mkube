@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/store"
 )
 
@@ -41,8 +42,7 @@ type ISCSICdromStatus struct {
 	TargetIQN   string            `json:"targetIQN"`              // e.g. iqn.2024-01.lo.gt:cdrom-{name}
 	PortalIP    string            `json:"portalIP"`               // rose1 IP for iSCSI
 	PortalPort  int               `json:"portalPort"`             // default 3260
-	RouterOSID  string            `json:"routerosID,omitempty"`   // RouterOS .id for the iSCSI target
-	LunID       string            `json:"lunID,omitempty"`        // RouterOS .id for the LUN
+	RouterOSID  string            `json:"routerosID,omitempty"`   // RouterOS .id for the file disk
 	Subscribers []ISCSISubscriber `json:"subscribers,omitempty"`
 }
 
@@ -501,61 +501,54 @@ func (p *MicroKubeProvider) handleUnsubscribeISCSICdrom(w http.ResponseWriter, r
 func (p *MicroKubeProvider) configureISCSITarget(ctx context.Context, cdrom *ISCSICdrom) error {
 	ros := p.deps.Runtime
 	rosClient, ok := ros.(interface {
-		CreateISCSITarget(ctx context.Context, name, iqn string) (string, error)
-		CreateISCSILun(ctx context.Context, targetID, filePath string, readOnly bool) (string, error)
+		CreateISCSITarget(ctx context.Context, name, filePath string) (string, error)
 	})
 	if !ok {
-		p.deps.Logger.Warnw("runtime does not support iSCSI operations (not RouterOS), skipping iSCSI target creation")
+		p.deps.Logger.Warnw("runtime does not support iSCSI operations (not RouterOS), skipping")
 		return nil
 	}
 
-	// Translate container path to host-visible path
+	// Translate container path to host-visible path for RouterOS
 	hostPath := p.deps.StorageMgr.HostVisiblePath(cdrom.Status.ISOPath)
 
-	// Create iSCSI target
-	targetID, err := rosClient.CreateISCSITarget(ctx, cdrom.Name, cdrom.Status.TargetIQN)
+	// Create file-backed disk with iSCSI export enabled
+	diskID, err := rosClient.CreateISCSITarget(ctx, cdrom.Name, hostPath)
 	if err != nil {
 		return fmt.Errorf("creating iSCSI target: %w", err)
 	}
-	cdrom.Status.RouterOSID = targetID
+	cdrom.Status.RouterOSID = diskID
 
-	// Create LUN pointing to the ISO file
-	lunID, err := rosClient.CreateISCSILun(ctx, targetID, hostPath, cdrom.Spec.ReadOnly)
-	if err != nil {
-		return fmt.Errorf("creating iSCSI LUN: %w", err)
+	// RouterOS auto-generates IQN from the slot name. Update status with
+	// the actual IQN if we can retrieve it.
+	if rosRT, ok2 := ros.(*runtime.RouterOSRuntime); ok2 {
+		if disk, err := rosRT.GetISCSIDisk(ctx, diskID); err == nil && disk.ISCSIServerIQN != "" {
+			cdrom.Status.TargetIQN = disk.ISCSIServerIQN
+		}
 	}
-	cdrom.Status.LunID = lunID
 
-	p.deps.Logger.Infow("iSCSI target configured",
+	p.deps.Logger.Infow("iSCSI target configured via ROSE /disk",
 		"name", cdrom.Name,
 		"iqn", cdrom.Status.TargetIQN,
-		"targetID", targetID,
-		"lunID", lunID,
+		"diskID", diskID,
 		"file", hostPath)
 
 	return nil
 }
 
 func (p *MicroKubeProvider) removeISCSITarget(ctx context.Context, cdrom *ISCSICdrom) {
+	if cdrom.Status.RouterOSID == "" {
+		return
+	}
 	ros := p.deps.Runtime
 	rosClient, ok := ros.(interface {
-		RemoveISCSILun(ctx context.Context, id string) error
 		RemoveISCSITarget(ctx context.Context, id string) error
 	})
 	if !ok {
 		return
 	}
 
-	if cdrom.Status.LunID != "" {
-		if err := rosClient.RemoveISCSILun(ctx, cdrom.Status.LunID); err != nil {
-			p.deps.Logger.Warnw("failed to remove iSCSI LUN", "id", cdrom.Status.LunID, "error", err)
-		}
-	}
-
-	if cdrom.Status.RouterOSID != "" {
-		if err := rosClient.RemoveISCSITarget(ctx, cdrom.Status.RouterOSID); err != nil {
-			p.deps.Logger.Warnw("failed to remove iSCSI target", "id", cdrom.Status.RouterOSID, "error", err)
-		}
+	if err := rosClient.RemoveISCSITarget(ctx, cdrom.Status.RouterOSID); err != nil {
+		p.deps.Logger.Warnw("failed to remove iSCSI disk", "id", cdrom.Status.RouterOSID, "error", err)
 	}
 }
 
