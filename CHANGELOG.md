@@ -3,8 +3,12 @@
 ## [Unreleased]
 
 ### 2026-02-27
-- **fix:** mkube-update tarball format — replaced `crane.Save` (OCI format: compressed layers, no repositories file, no VERSION/json per layer) with custom `saveRouterOSTarball` that produces the exact docker-save v1 format RouterOS expects. Matches `hack/make-tarball.sh` structure: `manifest.json`, `repositories`, `{configHash}.json`, `{layerHash}/layer.tar` (uncompressed), `{layerHash}/VERSION`, `{layerHash}/json`.
+- **fix:** mkube-update tarball format — replaced `crane.Save` (OCI format: compressed layers, no repositories file, no VERSION/json per layer) with custom `saveRouterOSTarball` that produces the exact docker-save v1 format RouterOS expects. Matches `hack/make-tarball.sh` structure: `manifest.json`, `repositories`, `{configHash}.json`, `{layerHash}/layer.tar` (uncompressed), `{layerHash}/VERSION`, `{layerHash}/json`. Verified end-to-end: mkube-update successfully detects digest change, pulls image, creates correct 43MB tarball, and replaces mkube container.
 - **feat:** mkube-update GHCR fallback — when local registry pull fails, automatically falls back to `ghcr.io/glennswest/{repo}:{tag}`.
+- **fix:** mkube-update scratch container /tmp — `os.CreateTemp` defaults to /tmp which doesn't exist in scratch containers. Now uses the staging directory for temp files.
+- **fix:** mkube-update bootstrap retry — REST API may not be reachable immediately after container start. Bootstrap now retries 5 times with 3s backoff before concluding mkube doesn't exist, preventing false bootstraps that fail with "root-dir overlap".
+- **fix:** iSCSI CDROM uses ROSE /disk API — RouterOS doesn't have `/iscsi` REST path. Rewrote iSCSI integration to use `/disk/add type=file` + `/disk/set iscsi-export=yes`. RouterOS auto-generates IQN from slot name. Verified end-to-end: create, upload ISO, iSCSI export enabled, subscribe, unsubscribe, delete with cleanup.
+- **fix:** gw DNS server address — was 192.168.1.199 (unreachable), corrected to 192.168.1.52 (pvex CT 117). Removed gw.lo from forward zones temporarily (external DNS sync deferred).
 - **fix:** Registry TLS cert mismatch — installer regenerated CA+server certs on re-run but registry container wasn't restarted, causing ECDSA verification failure when mkube tried to pull images. Root cause: stale certs from previous installer run being served.
 
 ### 2026-02-26
