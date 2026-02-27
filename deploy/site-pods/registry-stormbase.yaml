@@ -1,0 +1,26 @@
+# Stormbase OCI registry
+# Apply via: curl -X POST http://192.168.200.2:8082/api/v1/registries -H 'Content-Type: application/json' -d @-  < this-as-json
+# Or via oc apply once Registry kind is supported.
+#
+# Persists in NATS — only needs to be applied once.
+# managed=true auto-deploys the registry pod and ConfigMap.
+---
+apiVersion: v1
+kind: Registry
+metadata:
+  name: stormbase
+spec:
+  network: gt
+  staticIP: "192.168.200.6"
+  hostname: registry-stormbase.gt.lo
+  storePath: /raid1/registry/stormbase
+  listenAddr: ":5000"
+  pullThrough: true
+  upstreamRegistries:
+    - "ghcr.io"
+  watchImages:
+    - upstream: "ghcr.io/glennswest/stormbase:edge"
+      localRepo: stormbase
+  watchPollSeconds: 120
+  notifyURL: "http://192.168.200.2:8082/api/v1/registry/push-notify"
+  managed: true
