@@ -29,9 +29,10 @@ type ISCSICdrom struct {
 
 // ISCSICdromSpec defines the desired state of an ISCSICdrom.
 type ISCSICdromSpec struct {
-	ISOFile     string `json:"isoFile"`               // ISO file name under /raid1/iso/
-	Description string `json:"description,omitempty"`  // human-readable description
-	ReadOnly    bool   `json:"readOnly"`               // always true for CDROMs
+	ISOFile     string   `json:"isoFile"`               // ISO file name under /raid1/iso/
+	Description string   `json:"description,omitempty"`  // human-readable description
+	ReadOnly    bool     `json:"readOnly"`               // always true for CDROMs
+	BootConfigs []string `json:"bootConfigs,omitempty"`  // compatible BootConfig names for this ISO
 }
 
 // ISCSICdromStatus reports the observed state of an ISCSICdrom.
@@ -64,6 +65,7 @@ type ISCSICdromList struct {
 func (c *ISCSICdrom) DeepCopy() *ISCSICdrom {
 	out := *c
 	out.ObjectMeta = *c.ObjectMeta.DeepCopy()
+	out.Spec.BootConfigs = append([]string(nil), c.Spec.BootConfigs...)
 	out.Status.Subscribers = append([]ISCSISubscriber(nil), c.Status.Subscribers...)
 	return &out
 }
