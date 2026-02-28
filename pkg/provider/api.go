@@ -96,6 +96,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/bootconfigs/{name}", p.handleUpdateBootConfig)
 	mux.HandleFunc("PATCH /api/v1/bootconfigs/{name}", p.handlePatchBootConfig)
 	mux.HandleFunc("DELETE /api/v1/bootconfigs/{name}", p.handleDeleteBootConfig)
+	mux.HandleFunc("GET /api/v1/bootconfigs/{name}/serve", p.handleServeBootConfig)
 	mux.HandleFunc("GET /api/v1/bootconfig", p.handleBootConfigLookup)
 	mux.HandleFunc("POST /api/v1/boot-complete", p.handleBootComplete)
 

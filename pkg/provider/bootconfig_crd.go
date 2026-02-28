@@ -284,6 +284,46 @@ func (p *MicroKubeProvider) handleDeleteBootConfig(w http.ResponseWriter, r *htt
 	})
 }
 
+// ─── Serve by Name ──────────────────────────────────────────────────────────
+
+// handleServeBootConfig serves raw boot config content by name.
+// Usage: coreos-installer --ignition-url http://192.168.200.2:8082/api/v1/bootconfigs/coreos-base/serve
+func (p *MicroKubeProvider) handleServeBootConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	bc, ok := p.bootConfigs[name]
+	if !ok {
+		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	if len(bc.Spec.Data) == 0 {
+		http.Error(w, fmt.Sprintf("BootConfig %q has no data entries", bc.Name), http.StatusNotFound)
+		return
+	}
+
+	// Return the first data entry
+	var content string
+	for _, v := range bc.Spec.Data {
+		content = v
+		break
+	}
+
+	switch bc.Spec.Format {
+	case "ignition":
+		w.Header().Set("Content-Type", "application/vnd.coreos.ignition+json")
+	case "cloud-init":
+		w.Header().Set("Content-Type", "text/yaml")
+	case "kickstart":
+		w.Header().Set("Content-Type", "text/plain")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, content)
+}
+
 // ─── Source IP Lookup ────────────────────────────────────────────────────────
 
 // handleBootConfigLookup serves boot config content based on the caller's source IP.
