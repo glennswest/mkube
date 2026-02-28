@@ -24,6 +24,7 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/glennswest/mkube/pkg/cluster"
 	"github.com/glennswest/mkube/pkg/config"
 	"github.com/glennswest/mkube/pkg/lifecycle"
 	"github.com/glennswest/mkube/pkg/namespace"
@@ -96,6 +97,7 @@ type MicroKubeProvider struct {
 	redeploying        map[string]bool              // pod keys currently being redeployed (skip in reconciler)
 	networkFailures    map[string]int               // pod key -> consecutive network health failures
 	consistencyRunning atomic.Bool                  // guards CheckConsistencyAsync against goroutine leaks
+	clusterMgr         *cluster.Manager             // nil if clustering is disabled
 }
 
 // SetStore sets the NATS store on the provider (used for deferred NATS connection).
@@ -112,6 +114,24 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadISCSICdromsFromStore(context.Background())
 	p.LoadBootConfigsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
+}
+
+// SetClusterManager sets the cluster manager on the provider.
+func (p *MicroKubeProvider) SetClusterManager(mgr *cluster.Manager) {
+	p.clusterMgr = mgr
+}
+
+// isLocalPod returns true if the pod should be reconciled by this node.
+// Pods without a vkube.io/node annotation are local (legacy/unassigned).
+func (p *MicroKubeProvider) isLocalPod(pod *corev1.Pod) bool {
+	if p.clusterMgr == nil {
+		return true // no clustering, everything is local
+	}
+	targetNode := pod.Annotations["vkube.io/node"]
+	if targetNode == "" {
+		return true // unassigned = local (legacy compat)
+	}
+	return targetNode == p.nodeName
 }
 
 // NewMicroKubeProvider creates a new provider instance.
@@ -1409,6 +1429,18 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	}
 	for _, cm := range generateDefaultConfigMaps(p.deps.Config) {
 		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
+	}
+
+	// 1c. Filter to local pods only (multi-node clustering)
+	if p.clusterMgr != nil {
+		localPods := make([]*corev1.Pod, 0, len(desiredPods))
+		for _, pod := range desiredPods {
+			if p.isLocalPod(pod) {
+				localPods = append(localPods, pod)
+			}
+		}
+		log.Debugw("RECONCILE: filtered to local pods", "total", len(desiredPods), "local", len(localPods))
+		desiredPods = localPods
 	}
 
 	// 2. List actual containers on RouterOS

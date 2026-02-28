@@ -319,12 +319,22 @@ func (p *MicroKubeProvider) reconcileOneDeployment(ctx context.Context, deploy *
 	}
 
 	// Create missing pods
-	for name := range desiredNames {
+	for i := int32(0); i < replicas; i++ {
+		name := fmt.Sprintf("%s-%d", deploy.Name, i)
 		if _, exists := ownedByName[name]; exists {
 			continue
 		}
 		log.Infow("creating deployment pod", "deployment", deployKey, "pod", name)
 		pod := p.podFromDeployment(deploy, name)
+
+		// Assign node for multi-node scheduling
+		if p.clusterMgr != nil {
+			targetNode := p.scheduleReplicaNode(i)
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			pod.Annotations["vkube.io/node"] = targetNode
+		}
 
 		// Persist to NATS Pods bucket
 		if p.deps.Store != nil {
@@ -333,6 +343,13 @@ func (p *MicroKubeProvider) reconcileOneDeployment(ctx context.Context, deploy *
 				log.Errorw("failed to persist deployment pod to store", "pod", name, "error", err)
 				continue
 			}
+		}
+
+		// Only create locally if this pod is assigned to us
+		if !p.isLocalPod(pod) {
+			log.Infow("deployment pod assigned to peer, skipping local create",
+				"deployment", deployKey, "pod", name, "node", pod.Annotations["vkube.io/node"])
+			continue
 		}
 
 		if err := p.CreatePod(ctx, pod); err != nil {
@@ -354,6 +371,10 @@ func (p *MicroKubeProvider) reconcileOneDeployment(ctx context.Context, deploy *
 	})
 	for _, pod := range extras {
 		podKey := pod.Namespace + "/" + pod.Name
+		// In cluster mode, only delete pods assigned to this node
+		if p.clusterMgr != nil && !p.isLocalPod(pod) {
+			continue
+		}
 		log.Infow("removing excess deployment pod", "deployment", deployKey, "pod", podKey)
 		if err := p.DeletePod(ctx, pod); err != nil {
 			log.Errorw("failed to delete excess pod", "pod", podKey, "error", err)
@@ -414,6 +435,19 @@ func (p *MicroKubeProvider) rollingUpdateDeployment(ctx context.Context, deploy 
 }
 
 // podFromDeployment generates a pod spec from a deployment template.
+// scheduleReplicaNode returns the node name for a deployment replica index,
+// distributing replicas round-robin across healthy nodes.
+func (p *MicroKubeProvider) scheduleReplicaNode(replicaIndex int32) string {
+	if p.clusterMgr == nil {
+		return p.nodeName
+	}
+	nodes := p.clusterMgr.HealthyNodes()
+	if len(nodes) == 0 {
+		return p.nodeName
+	}
+	return nodes[int(replicaIndex)%len(nodes)]
+}
+
 func (p *MicroKubeProvider) podFromDeployment(deploy *Deployment, podName string) *corev1.Pod {
 	pod := &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},

@@ -49,6 +49,8 @@ go test ./...
 | `pkg/proxmox/` | Proxmox VE REST API client, VMID allocator, OCI→LXC template converter |
 | `pkg/stormbase/` | StormBase gRPC client |
 | `pkg/runtime/` | Container runtime abstraction (RouterOS, StormBase, Proxmox adapters) |
+| `pkg/nats/` | Embedded NATS server (in-process JetStream) |
+| `pkg/cluster/` | Multi-node clustering (peer health, push sync, full resync) |
 
 ### Backends
 | Backend | Config key | Runtime adapter | Network driver | Init function |
@@ -133,6 +135,7 @@ go test ./...
 - Zero-downtime blue-green container updates: UpdatePod pre-extracts new image in staging container while old serves traffic. Fast cutover (~5-8s) uses pre-extracted root-dir (RouterOS skips extraction). Alternating root-dir pattern. Staging health check with fallback to destructive update.
 - Proxmox VE LXC backend: Third backend provider. REST API client with PVE API token auth, async task polling (UPID), VMID range allocator, OCI→rootfs template converter, ContainerRuntime adapter with mount accumulator, NetworkDriver for pre-existing bridges, discovery module. Config: `backend: proxmox`. Deploy config: `deploy/proxmox-config.yaml`. 17 tests.
 - ISCSICdrom `version` field: Tracks ISO version in spec, shown in table output, inherited on derive.
+- Multi-node cluster architecture: Embedded NATS, peer sync, node-scoped reconciliation, multi-node deployment scheduling. Packages: `pkg/nats/`, `pkg/cluster/`. rose1↔pvex cluster with independent NATS and HTTP sync.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
@@ -160,7 +163,7 @@ go test ./...
 10. **gw.lo DNS forward zone**: Re-enable forwarding to gw.lo DNS at 192.168.1.52 once routing from gt/g10/g11 networks to gw network is verified working.
 11. **Registry HTTP/2 proper fix**: Currently h2 is disabled as workaround. Need high-speed registry — either find root cause in Go's h2 server (GOAWAY under blob upload load), switch to a production registry lib (e.g. `distribution/distribution`), or use a reverse proxy (caddy/nginx) in front that handles h2 correctly.
 12. **microdns health-checked DNS load balancing**: Add SSE-style health check to microdns round-robin — probe backends, remove dead ones from DNS responses until recovered. General-purpose pattern for any service.
-13. **mkube HA (2-node)**: Two mkube instances behind microdns health-checked round-robin. NATS is already shared state. Needs leader election or active/passive coordination for the reconcile loop (avoid two reconcilers creating/deleting simultaneously). microdns health check auto-removes dead mkube from DNS.
+13. ~~**mkube HA (2-node)**~~: Done — multi-node cluster with embedded NATS, peer sync, node-scoped reconciliation. No leader election needed — each node only reconciles its own pods.
 14. **Proxmox integration test**: Deploy mkube with `backend: proxmox` against pvex.gw.lo. Smoke test: create pod via API, verify LXC container appears, test start/stop/restart, verify IPAM + DNS, verify OCI→template conversion + upload.
 15. **Proxmox PVE 9.1+ native OCI**: Detect PVE version and pass OCI image ref directly to `pct create` (skip rootfs conversion). Requires PVE 9.1+ with native OCI support.
 

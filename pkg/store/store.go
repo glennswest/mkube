@@ -20,6 +20,7 @@ type Store struct {
 	js       jetstream.JetStream
 	log      *zap.SugaredLogger
 	replicas int
+	syncHook func(bucket, key, op string, value []byte)
 
 	Pods           *Bucket
 	ConfigMaps     *Bucket
@@ -34,10 +35,48 @@ type Store struct {
 	BootConfigs            *Bucket
 }
 
+// SetSyncHook sets a callback invoked after every successful local Put or Delete.
+// The hook receives the bucket name, key, operation ("put" or "delete"), and value.
+func (s *Store) SetSyncHook(hook func(bucket, key, op string, value []byte)) {
+	s.syncHook = hook
+}
+
+// BucketByName returns the Bucket corresponding to the given name.
+func (s *Store) BucketByName(name string) *Bucket {
+	switch name {
+	case "PODS":
+		return s.Pods
+	case "CONFIGMAPS":
+		return s.ConfigMaps
+	case "NAMESPACES":
+		return s.Namespaces
+	case "NODE_STATUS":
+		return s.NodeStatus
+	case "BAREMETALHOSTS":
+		return s.BareMetalHosts
+	case "DEPLOYMENTS":
+		return s.Deployments
+	case "PVCS":
+		return s.PersistentVolumeClaims
+	case "NETWORKS":
+		return s.Networks
+	case "REGISTRIES":
+		return s.Registries
+	case "ISCSICDROMS":
+		return s.ISCSICdroms
+	case "BOOTCONFIGS":
+		return s.BootConfigs
+	default:
+		return nil
+	}
+}
+
 // Bucket wraps a NATS JetStream KeyValue store with typed operations.
 type Bucket struct {
-	kv  jetstream.KeyValue
-	log *zap.SugaredLogger
+	kv       jetstream.KeyValue
+	log      *zap.SugaredLogger
+	store    *Store  // back-reference for sync hook
+	name     string  // bucket name for sync hook
 }
 
 // New connects to NATS and initializes JetStream KV buckets.
@@ -190,7 +229,7 @@ func (s *Store) initBucket(ctx context.Context, name string, replicas int, ttl t
 		return nil, fmt.Errorf("creating KV bucket %s: %w", name, err)
 	}
 
-	return &Bucket{kv: kv, log: s.log.Named(strings.ToLower(name))}, nil
+	return &Bucket{kv: kv, log: s.log.Named(strings.ToLower(name)), store: s, name: name}, nil
 }
 
 // Subscribe creates a NATS core subscription on the given subject.
@@ -222,7 +261,21 @@ func (b *Bucket) Get(ctx context.Context, key string) ([]byte, uint64, error) {
 }
 
 // Put stores a value at key. Returns the new revision.
+// Fires the sync hook after a successful write.
 func (b *Bucket) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	rev, err := b.kv.Put(ctx, key, value)
+	if err != nil {
+		return 0, err
+	}
+	if b.store != nil && b.store.syncHook != nil {
+		b.store.syncHook(b.name, key, "put", value)
+	}
+	return rev, nil
+}
+
+// PutFromPeer stores a value received from a peer node.
+// Does NOT fire the sync hook (prevents ping-pong replication).
+func (b *Bucket) PutFromPeer(ctx context.Context, key string, value []byte) (uint64, error) {
 	rev, err := b.kv.Put(ctx, key, value)
 	if err != nil {
 		return 0, err
@@ -231,7 +284,21 @@ func (b *Bucket) Put(ctx context.Context, key string, value []byte) (uint64, err
 }
 
 // Delete removes a key.
+// Fires the sync hook after a successful delete.
 func (b *Bucket) Delete(ctx context.Context, key string) error {
+	err := b.kv.Delete(ctx, key)
+	if err != nil {
+		return err
+	}
+	if b.store != nil && b.store.syncHook != nil {
+		b.store.syncHook(b.name, key, "delete", nil)
+	}
+	return nil
+}
+
+// DeleteFromPeer removes a key received from a peer node.
+// Does NOT fire the sync hook (prevents ping-pong replication).
+func (b *Bucket) DeleteFromPeer(ctx context.Context, key string) error {
 	return b.kv.Delete(ctx, key)
 }
 

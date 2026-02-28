@@ -1,7 +1,7 @@
-# mkube config for Proxmox VE backend
+# mkube config for Proxmox VE backend (cluster member)
 # Deploy on the Proxmox host or a container with API access.
 
-nodeName: pvex-mkube
+nodeName: pvex
 standalone: true
 backend: proxmox
 
@@ -41,4 +41,13 @@ lifecycle:
   restartCooldown: 10
 
 nats:
-  url: "nats://nats.gt.lo:4222"
+  embedded: true
+  storeDir: /var/lib/mkube/nats
+  port: 4222
+  replicas: 1
+
+cluster:
+  enabled: true
+  peers:
+    - name: rose1
+      address: "http://192.168.1.88:8082"

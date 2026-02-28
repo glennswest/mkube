@@ -227,8 +227,16 @@ logging:
   url: "http://logging.kube.gt.lo:8084"
 
 nats:
-  url: "nats://192.168.200.10:4222"
+  embedded: true
+  storeDir: /data/nats
+  port: 4222
   replicas: 1
+
+cluster:
+  enabled: true
+  peers:
+    - name: pvex
+      address: "http://192.168.1.160:8082"
 
 bmh:
   pxeManagerURL: "http://pxe.g10.lo:8080"
