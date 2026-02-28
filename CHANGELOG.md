@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-02-27
+- **feat:** Zero-downtime blue-green container updates — `UpdatePod` now pre-extracts the new image in a throwaway staging container while the old container continues serving traffic, then performs a fast cutover (~5-8s) that skips tarball extraction entirely (RouterOS skips extraction when root-dir already has content). Staging container is health-checked before cutover; on failure, old container remains untouched and falls back to destructive update. Alternating root-dir pattern avoids naming conflicts across successive updates. Reduces update downtime from 120s+ to ~5-8s for all mkube-managed containers.
 - **feat:** ISO9660 binary patching — derive ISCSICdroms by copying and patching ISOs at the binary level. New `pkg/provider/iso9660.go` implements PVD parsing, directory record parsing with Rock Ridge NM support, path resolution, and file read/replace/delete/add operations. No external tools (xorriso, mkisofs) required. New API endpoints: `GET /api/v1/iscsi-cdroms/{name}/files?path=...` reads files or lists directories from ISOs, `POST /api/v1/iscsi-cdroms/{name}/derive` creates a new ISCSICdrom by copying the base ISO, applying patch operations (replace/delete/add files), and configuring a new iSCSI target. `ISCSICdromSpec.DerivedFrom` tracks the base ISO lineage. Enables baking serial console and iBFT kernel args into ISO grub.cfg for iPXE sanboot.
 
 ### 2026-02-27

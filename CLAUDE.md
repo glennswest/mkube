@@ -120,6 +120,7 @@ go test ./...
 - Registry panic recovery middleware (recover() on all handlers, log stack trace, return 500 instead of crashing)
 - Infrastructure health check (mkube checks registry :5001/healthz every reconcile, restarts after 3 failures. Catches zombie state where RouterOS says RUNNING but process is dead)
 - mkube-update poll interval 60s → 15s (code default + installer template + live config)
+- Zero-downtime blue-green container updates: UpdatePod pre-extracts new image in staging container while old serves traffic. Fast cutover (~5-8s) uses pre-extracted root-dir (RouterOS skips extraction). Alternating root-dir pattern. Staging health check with fallback to destructive update.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
