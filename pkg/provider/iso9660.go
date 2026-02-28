@@ -612,6 +612,7 @@ func iso9660CopyISO(srcPath, dstPath string) error {
 type iso9660DeriveRequest struct {
 	Name        string           `json:"name"`        // new ISCSICdrom name
 	Description string           `json:"description"` // human-readable description
+	Version     string           `json:"version"`     // version string (inherited from base if empty)
 	Operations  []iso9660PatchOp `json:"operations"`  // patch operations to apply
 }
 

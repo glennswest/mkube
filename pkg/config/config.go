@@ -16,9 +16,10 @@ type Config struct {
 	NodeName   string          `yaml:"nodeName"`
 	Standalone bool            `yaml:"standalone"`
 	KubeConfig string          `yaml:"kubeconfig"`
-	Backend    string          `yaml:"backend"` // "routeros" (default) or "stormbase"
+	Backend    string          `yaml:"backend"` // "routeros" (default), "stormbase", or "proxmox"
 	RouterOS   RouterOSConfig  `yaml:"routeros"`
 	StormBase  StormBaseConfig `yaml:"stormbase"`
+	Proxmox    ProxmoxConfig   `yaml:"proxmox"`
 	Networks   []NetworkDef    `yaml:"networks"`
 	Storage    StorageConfig   `yaml:"storage"`
 	Lifecycle  LifecycleConfig `yaml:"lifecycle"`
@@ -37,6 +38,11 @@ type Config struct {
 // IsStormBase returns true if the backend is stormbase.
 func (c *Config) IsStormBase() bool {
 	return c.Backend == "stormbase"
+}
+
+// IsProxmox returns true if the backend is proxmox.
+func (c *Config) IsProxmox() bool {
+	return c.Backend == "proxmox"
 }
 
 // DZOConfig configures the Domain Zone Operator.
@@ -168,6 +174,21 @@ type StormBaseConfig struct {
 	ClientCert string `yaml:"clientCert"` // path to client cert PEM
 	ClientKey  string `yaml:"clientKey"`  // path to client key PEM
 	Insecure   bool   `yaml:"insecure"`   // skip TLS (dev/test only)
+}
+
+// ProxmoxConfig holds connection settings for a Proxmox VE node.
+type ProxmoxConfig struct {
+	URL            string `yaml:"url"`            // e.g. "https://pvex.gw.lo:8006"
+	TokenID        string `yaml:"tokenID"`        // e.g. "mkube@pve!mkube-token"
+	TokenSecret    string `yaml:"tokenSecret"`    // UUID secret
+	Node           string `yaml:"node"`           // Proxmox node name, e.g. "pvex"
+	InsecureVerify bool   `yaml:"insecureVerify"` // allow self-signed certs
+	VMIDRange      string `yaml:"vmidRange"`      // e.g. "200-299"
+	Storage        string `yaml:"storage"`        // template storage, e.g. "local"
+	RootFSStorage  string `yaml:"rootfsStorage"`  // container rootfs storage, e.g. "local-lvm"
+	RootFSSize     string `yaml:"rootfsSize"`     // default rootfs size GB, e.g. "8"
+	Unprivileged   bool   `yaml:"unprivileged"`   // default true
+	Features       string `yaml:"features"`       // e.g. "nesting=1"
 }
 
 type StorageConfig struct {
@@ -398,5 +419,19 @@ func applyFlagOverrides(cfg *Config, flags *pflag.FlagSet) {
 	}
 	if flags.Changed("gc-interval-minutes") {
 		cfg.Storage.GCIntervalMinutes, _ = flags.GetInt("gc-interval-minutes")
+	}
+
+	// Proxmox overrides
+	if flags.Changed("proxmox-url") {
+		cfg.Proxmox.URL, _ = flags.GetString("proxmox-url")
+	}
+	if flags.Changed("proxmox-token-id") {
+		cfg.Proxmox.TokenID, _ = flags.GetString("proxmox-token-id")
+	}
+	if flags.Changed("proxmox-token-secret") {
+		cfg.Proxmox.TokenSecret, _ = flags.GetString("proxmox-token-secret")
+	}
+	if flags.Changed("proxmox-node") {
+		cfg.Proxmox.Node, _ = flags.GetString("proxmox-node")
 	}
 }

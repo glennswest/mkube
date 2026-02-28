@@ -1,0 +1,44 @@
+# mkube config for Proxmox VE backend
+# Deploy on the Proxmox host or a container with API access.
+
+nodeName: pvex-mkube
+standalone: true
+backend: proxmox
+
+proxmox:
+  url: "https://pvex.gw.lo:8006"
+  tokenID: "mkube@pve!mkube-token"
+  tokenSecret: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  node: "pvex"
+  insecureVerify: true
+  vmidRange: "200-299"
+  storage: "local"
+  rootfsStorage: "local-lvm"
+  rootfsSize: "8"
+  unprivileged: true
+  features: "nesting=1"
+
+networks:
+  - name: gw
+    bridge: vmbr0
+    cidr: "192.168.1.0/24"
+    gateway: "192.168.1.1"
+    dns:
+      endpoint: "http://192.168.1.52:8080"
+      zone: "gw.lo"
+      server: "192.168.1.52"
+
+storage:
+  basePath: "/var/lib/mkube/images"
+  tarballCache: "/var/lib/mkube/cache"
+  gcIntervalMinutes: 30
+  gcKeepLastN: 5
+
+lifecycle:
+  bootManifestPath: "/etc/mkube/boot-order.yaml"
+  watchdogIntervalSeconds: 10
+  maxRestarts: 5
+  restartCooldown: 10
+
+nats:
+  url: "nats://nats.gt.lo:4222"

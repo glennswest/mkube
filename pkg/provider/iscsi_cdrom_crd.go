@@ -32,6 +32,7 @@ type ISCSICdrom struct {
 type ISCSICdromSpec struct {
 	ISOFile     string   `json:"isoFile"`               // ISO file name under /raid1/iso/
 	Description string   `json:"description,omitempty"`  // human-readable description
+	Version     string   `json:"version,omitempty"`      // version string, e.g. "4.17.8" or "rhcos-4.18"
 	ReadOnly    bool     `json:"readOnly"`               // always true for CDROMs
 	BootConfigs []string `json:"bootConfigs,omitempty"`  // compatible BootConfig names for this ISO
 	DerivedFrom string   `json:"derivedFrom,omitempty"`  // base ISCSICdrom name (if derived via ISO patching)
@@ -698,6 +699,7 @@ func iscsiCdromListToTable(cdroms []ISCSICdrom) *metav1.Table {
 		},
 		ColumnDefinitions: []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name"},
+			{Name: "Version", Type: "string"},
 			{Name: "Phase", Type: "string"},
 			{Name: "ISO Size", Type: "string"},
 			{Name: "Target IQN", Type: "string"},
@@ -731,6 +733,7 @@ func iscsiCdromListToTable(cdroms []ISCSICdrom) *metav1.Table {
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
 				cdrom.Name,
+				cdrom.Spec.Version,
 				cdrom.Status.Phase,
 				isoSize,
 				cdrom.Status.TargetIQN,
@@ -907,6 +910,12 @@ func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Inherit version from base if not specified in request
+	version := req.Version
+	if version == "" {
+		version = baseCdrom.Spec.Version
+	}
+
 	// Create new ISCSICdrom object
 	newCdrom := &ISCSICdrom{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSICdrom"},
@@ -917,6 +926,7 @@ func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *htt
 		Spec: ISCSICdromSpec{
 			ISOFile:     newISOFile,
 			Description: req.Description,
+			Version:     version,
 			ReadOnly:    true,
 			BootConfigs: baseCdrom.Spec.BootConfigs,
 			DerivedFrom: baseName,

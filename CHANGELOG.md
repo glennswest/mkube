@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-02-28
+- **feat:** Proxmox VE LXC backend — third backend provider for mkube enabling LXC container management on Proxmox VE nodes via REST API. New `pkg/proxmox/` package with API client (`client.go`), VMID range allocator (`vmid.go`), and OCI→LXC rootfs template converter (`template.go`). Runtime adapter (`pkg/runtime/proxmox.go`) implements ContainerRuntime with mount accumulator pattern (Proxmox requires mounts at creation time). Network driver (`pkg/network/driver/proxmox.go`) handles pre-existing bridges. Discovery module (`pkg/discovery/proxmox.go`) enumerates existing LXC containers. Config extended with `ProxmoxConfig` struct and `IsProxmox()` method. Main entry point adds `runProxmox()` initialization path with CLI flags. Auth via PVE API tokens, async task polling for mutating operations, VMID range-based allocation with bidirectional name mapping. Example deploy config at `deploy/proxmox-config.yaml`. 17 tests (client + VMID allocator).
+- **feat:** ISCSICdrom `version` field — added `version` string field to `ISCSICdromSpec` for tracking ISO version (e.g. "4.17.8", "rhcos-4.18"). Shown in table output. Inherited from base CDROM on derive unless overridden. Derive request also accepts optional `version` field.
+
 ### 2026-02-27
 - **chore:** `make deploy` now builds scratch container and pushes to local registry (`registry.gt.lo:5000/mkube:edge`). mkube-update auto-detects the new image. Old tarball+SCP path preserved as `make deploy-tarball` for bootstrap.
 - **feat:** Zero-downtime blue-green container updates — `UpdatePod` now pre-extracts the new image in a throwaway staging container while the old container continues serving traffic, then performs a fast cutover (~5-8s) that skips tarball extraction entirely (RouterOS skips extraction when root-dir already has content). Staging container is health-checked before cutover; on failure, old container remains untouched and falls back to destructive update. Alternating root-dir pattern avoids naming conflicts across successive updates. Reduces update downtime from 120s+ to ~5-8s for all mkube-managed containers.

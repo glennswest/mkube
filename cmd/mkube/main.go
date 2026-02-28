@@ -1,5 +1,5 @@
 // mkube: A single-binary Virtual Kubelet provider for heterogeneous clusters.
-// Supports MikroTik RouterOS (REST API) and StormBase (gRPC) backends.
+// Supports MikroTik RouterOS (REST API), StormBase (gRPC), and Proxmox VE (REST API) backends.
 
 package main
 
@@ -24,6 +24,7 @@ import (
 	"github.com/glennswest/mkube/pkg/network"
 	netdriver "github.com/glennswest/mkube/pkg/network/driver"
 	"github.com/glennswest/mkube/pkg/provider"
+	"github.com/glennswest/mkube/pkg/proxmox"
 	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/storage"
@@ -39,7 +40,7 @@ var (
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "mkube",
-		Short:   "Virtual Kubelet provider for heterogeneous clusters (RouterOS + StormBase)",
+		Short:   "Virtual Kubelet provider for heterogeneous clusters (RouterOS + StormBase + Proxmox)",
 		Version: fmt.Sprintf("%s (%s)", version, commit),
 		RunE:    run,
 	}
@@ -57,6 +58,12 @@ func main() {
 	f.String("routeros-rest-url", "https://192.168.200.1/rest", "RouterOS REST API URL")
 	f.String("routeros-user", "admin", "RouterOS API username")
 	f.String("routeros-password", "", "RouterOS API password")
+
+	// Proxmox connection
+	f.String("proxmox-url", "", "Proxmox VE API URL (e.g. https://pvex.gw.lo:8006)")
+	f.String("proxmox-token-id", "", "Proxmox API token ID (e.g. mkube@pve!mkube-token)")
+	f.String("proxmox-token-secret", "", "Proxmox API token secret")
+	f.String("proxmox-node", "", "Proxmox node name (e.g. pvex)")
 
 	// Network
 	f.String("pod-cidr", "192.168.200.0/24", "CIDR range for pod IP allocation")
@@ -90,6 +97,9 @@ func run(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	if cfg.IsProxmox() {
+		return runProxmox(ctx, cfg, log)
+	}
 	if cfg.IsStormBase() {
 		return runStormBase(ctx, cfg, log)
 	}
@@ -271,7 +281,122 @@ func runStormBase(ctx context.Context, cfg *config.Config, log *zap.SugaredLogge
 	return runSharedServices(ctx, cfg, sbClient, netMgr, storageMgr, lcMgr, dnsClient, nil, log, time.Now())
 }
 
-// runSharedServices starts services common to both backends (DZO, registry,
+// runProxmox initializes the Proxmox VE LXC backend.
+func runProxmox(ctx context.Context, cfg *config.Config, log *zap.SugaredLogger) error {
+	bootStart := time.Now()
+	phaseStart := time.Now()
+
+	// ── Proxmox API Client ──────────────────────────────────────────
+	pveClient, err := proxmox.NewClient(proxmox.ClientConfig{
+		URL:            cfg.Proxmox.URL,
+		TokenID:        cfg.Proxmox.TokenID,
+		TokenSecret:    cfg.Proxmox.TokenSecret,
+		Node:           cfg.Proxmox.Node,
+		InsecureVerify: cfg.Proxmox.InsecureVerify,
+		VMIDRange:      cfg.Proxmox.VMIDRange,
+		Storage:        cfg.Proxmox.Storage,
+		RootFSStorage:  cfg.Proxmox.RootFSStorage,
+		RootFSSize:     cfg.Proxmox.RootFSSize,
+	})
+	if err != nil {
+		return fmt.Errorf("connecting to Proxmox VE: %w", err)
+	}
+	defer pveClient.Close()
+	log.Infow("BOOT: Proxmox connected", "node", cfg.Proxmox.Node, "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
+
+	// Sync existing VMIDs from Proxmox
+	if err := pveClient.SyncVMIDs(ctx); err != nil {
+		log.Warnw("failed to sync VMIDs from Proxmox", "error", err)
+	}
+
+	rt := runtime.NewProxmoxRuntime(
+		pveClient,
+		cfg.Proxmox.Storage,
+		cfg.Proxmox.RootFSStorage,
+		cfg.Proxmox.RootFSSize,
+		cfg.Proxmox.Unprivileged,
+		cfg.Proxmox.Features,
+	)
+
+	// ── DNS Client ──────────────────────────────────────────────────
+	dnsClient := dns.NewClient(log)
+	defer dnsClient.Close()
+
+	// ── Proxmox Discovery ───────────────────────────────────────────
+	phaseStart = time.Now()
+	inv, err := discovery.DiscoverProxmox(ctx, pveClient, log)
+	if err != nil {
+		log.Warnw("proxmox discovery failed, continuing with static config", "error", err)
+	} else {
+		log.Infow("proxmox discovery complete",
+			"containers", len(inv.Containers),
+			"networks", len(inv.Networks),
+		)
+	}
+	log.Infow("BOOT: discovery complete", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
+
+	// ── Network Driver ──────────────────────────────────────────────
+	pveDriver := netdriver.NewProxmox(pveClient, cfg.NodeName, log)
+
+	// ── Network Manager (IPAM + DNS) ────────────────────────────────
+	phaseStart = time.Now()
+	netMgr, err := network.NewManager(cfg.Networks, pveDriver, dnsClient, log)
+	if err != nil {
+		return fmt.Errorf("initializing network manager: %w", err)
+	}
+	netMgr.InitDNSZones(ctx)
+	for _, n := range cfg.Networks {
+		log.Infow("network ready", "name", n.Name, "cidr", n.CIDR, "bridge", n.Bridge, "dns_zone", n.DNS.Zone)
+	}
+	log.Infow("BOOT: network manager created", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
+
+	// ── Storage Manager ─────────────────────────────────────────────
+	phaseStart = time.Now()
+	storageMgr, err := storage.NewManager(cfg.Storage, cfg.Registry, nil, log)
+	if err != nil {
+		return fmt.Errorf("initializing storage manager: %w", err)
+	}
+	go storageMgr.RunGarbageCollector(ctx)
+	log.Infow("BOOT: storage manager ready", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
+
+	// ── Lifecycle Manager ───────────────────────────────────────────
+	phaseStart = time.Now()
+	lcMgr := lifecycle.NewManager(cfg.Lifecycle, rt, log)
+
+	if inv != nil {
+		units := discovery.BuildLifecycleUnitsFromProxmox(inv)
+		lcMgr.SyncDiscoveredContainers(units)
+		log.Infow("registered proxmox containers for lifecycle", "count", len(units))
+	}
+
+	go lcMgr.RunWatchdog(ctx)
+
+	// Periodic re-discovery
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				newInv, err := discovery.DiscoverProxmox(ctx, pveClient, log)
+				if err != nil {
+					log.Warnw("periodic proxmox re-discovery failed", "error", err)
+					continue
+				}
+				units := discovery.BuildLifecycleUnitsFromProxmox(newInv)
+				lcMgr.SyncDiscoveredContainers(units)
+			}
+		}
+	}()
+
+	log.Infow("BOOT: lifecycle manager ready", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
+
+	return runSharedServices(ctx, cfg, rt, netMgr, storageMgr, lcMgr, dnsClient, nil, log, bootStart)
+}
+
+// runSharedServices starts services common to all backends (DZO, registry,
 // provider, HTTP API, etc.).
 func runSharedServices(
 	ctx context.Context,
