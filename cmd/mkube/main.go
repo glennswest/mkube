@@ -521,11 +521,17 @@ func runSharedServices(
 
 	// ── Cluster Manager (optional) ──────────────────────────────────
 	if cfg.Cluster.Enabled && kvStore != nil {
-		clusterMgr := cluster.New(cfg.NodeName, cfg.Cluster, kvStore, log)
+		// Determine architecture from backend type
+		arch := "arm64"
+		switch rt.Backend() {
+		case "proxmox", "stormbase":
+			arch = "amd64"
+		}
+		clusterMgr := cluster.New(cfg.NodeName, cfg.Cluster, kvStore, arch, log)
 		clusterMgr.Start(ctx)
 		p.SetClusterManager(clusterMgr)
 		clusterMgr.RegisterRoutes(mux)
-		log.Infow("BOOT: cluster manager started", "peers", len(cfg.Cluster.Peers))
+		log.Infow("BOOT: cluster manager started", "peers", len(cfg.Cluster.Peers), "arch", arch)
 	}
 
 	// ── Register routes and start HTTP server ───────────────────────

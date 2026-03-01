@@ -17,11 +17,12 @@ import (
 
 // NodeStatus is written to the NODE_STATUS bucket as a heartbeat.
 type NodeStatus struct {
-	Name      string `json:"name"`
-	Address   string `json:"address"`
-	Backend   string `json:"backend,omitempty"`
-	Healthy   bool   `json:"healthy"`
-	Timestamp int64  `json:"timestamp"` // unix millis
+	Name         string `json:"name"`
+	Address      string `json:"address"`
+	Backend      string `json:"backend,omitempty"`
+	Architecture string `json:"architecture,omitempty"` // "arm64", "amd64"
+	Healthy      bool   `json:"healthy"`
+	Timestamp    int64  `json:"timestamp"` // unix millis
 }
 
 // ClusterStatus is the response for GET /api/v1/cluster/status.
@@ -32,15 +33,18 @@ type ClusterStatus struct {
 
 // PeerStatus describes a peer node's health.
 type PeerStatus struct {
-	Name     string `json:"name"`
-	Address  string `json:"address"`
-	Healthy  bool   `json:"healthy"`
-	LastSeen int64  `json:"lastSeen"` // unix millis, 0 if never seen
+	Name         string `json:"name"`
+	Address      string `json:"address"`
+	Backend      string `json:"backend,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
+	Healthy      bool   `json:"healthy"`
+	LastSeen     int64  `json:"lastSeen"` // unix millis, 0 if never seen
 }
 
 // Manager handles cluster peer health monitoring and node heartbeat.
 type Manager struct {
 	nodeName string
+	arch     string // "arm64", "amd64"
 	cfg      config.ClusterConfig
 	store    *store.Store
 	log      *zap.SugaredLogger
@@ -51,10 +55,11 @@ type Manager struct {
 	lastSeen map[string]time.Time
 }
 
-// New creates a cluster manager.
-func New(nodeName string, cfg config.ClusterConfig, st *store.Store, log *zap.SugaredLogger) *Manager {
+// New creates a cluster manager. arch is the local node's architecture (e.g. "arm64", "amd64").
+func New(nodeName string, cfg config.ClusterConfig, st *store.Store, arch string, log *zap.SugaredLogger) *Manager {
 	return &Manager{
 		nodeName: nodeName,
+		arch:     arch,
 		cfg:      cfg,
 		store:    st,
 		log:      log.Named("cluster"),
@@ -141,9 +146,10 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 
 func (m *Manager) writeHeartbeat(ctx context.Context) {
 	status := NodeStatus{
-		Name:      m.nodeName,
-		Healthy:   true,
-		Timestamp: time.Now().UnixMilli(),
+		Name:         m.nodeName,
+		Architecture: m.arch,
+		Healthy:      true,
+		Timestamp:    time.Now().UnixMilli(),
 	}
 	if _, err := m.store.NodeStatus.PutJSON(ctx, m.nodeName, status); err != nil {
 		m.log.Warnw("failed to write heartbeat", "error", err)
@@ -214,6 +220,12 @@ func (m *Manager) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		if t, ok := m.lastSeen[peer.Name]; ok {
 			ps.LastSeen = t.UnixMilli()
 		}
+		// Read peer's NodeStatus from bucket for backend/architecture
+		var ns NodeStatus
+		if _, err := m.store.NodeStatus.GetJSON(r.Context(), peer.Name, &ns); err == nil {
+			ps.Backend = ns.Backend
+			ps.Architecture = ns.Architecture
+		}
 		status.Peers = append(status.Peers, ps)
 	}
 
@@ -254,6 +266,31 @@ func (m *Manager) PeerDownDuration(name string) time.Duration {
 		return time.Since(t)
 	}
 	return 0 // never seen = we don't know, don't fail over
+}
+
+// Architecture returns the local node's architecture.
+func (m *Manager) Architecture() string {
+	return m.arch
+}
+
+// PeerArchitecture returns the architecture of a peer node by reading its
+// NodeStatus from the NODE_STATUS bucket. Returns "" if unknown.
+func (m *Manager) PeerArchitecture(name string) string {
+	var ns NodeStatus
+	if _, err := m.store.NodeStatus.GetJSON(context.Background(), name, &ns); err == nil {
+		return ns.Architecture
+	}
+	return ""
+}
+
+// PeerNodeStatus returns the full NodeStatus for a peer by reading from the
+// NODE_STATUS bucket. Returns nil if not found.
+func (m *Manager) PeerNodeStatus(name string) *NodeStatus {
+	var ns NodeStatus
+	if _, err := m.store.NodeStatus.GetJSON(context.Background(), name, &ns); err == nil {
+		return &ns
+	}
+	return nil
 }
 
 // SetPeerAddress updates a peer's address (for tests).

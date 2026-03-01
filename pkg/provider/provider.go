@@ -53,6 +53,9 @@ const (
 	// "auto" triggers a rolling update when the registry digest changes.
 	annotationImagePolicy = "vkube.io/image-policy"
 
+	// annotationNode tracks which cluster node a pod is assigned to.
+	annotationNode = "vkube.io/node"
+
 	// Device passthrough annotations (StormBase only)
 	annotationDeviceClass = "stormbase.io/device-class"
 	annotationDeviceCount = "stormbase.io/device-count"
@@ -127,7 +130,7 @@ func (p *MicroKubeProvider) isLocalPod(pod *corev1.Pod) bool {
 	if p.clusterMgr == nil {
 		return true // no clustering, everything is local
 	}
-	targetNode := pod.Annotations["vkube.io/node"]
+	targetNode := pod.Annotations[annotationNode]
 	if targetNode == "" {
 		return true // unassigned = local (legacy compat)
 	}
@@ -1431,7 +1434,27 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
 	}
 
-	// 1c. Filter to local pods only (multi-node clustering)
+	// 1c. Stamp vkube.io/node on pods that lack it (one-time migration for clustering)
+	var allClusterPods []*corev1.Pod // unfiltered, used for stale container cleanup
+	if p.clusterMgr != nil {
+		for _, pod := range desiredPods {
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			if pod.Annotations[annotationNode] == "" {
+				pod.Annotations[annotationNode] = p.nodeName
+				if p.deps.Store != nil {
+					storeKey := pod.Namespace + "." + pod.Name
+					if _, err := p.deps.Store.Pods.PutJSON(ctx, storeKey, pod); err != nil {
+						log.Warnw("failed to stamp node annotation", "pod", podKey(pod), "error", err)
+					}
+				}
+			}
+		}
+		allClusterPods = desiredPods // save before filter
+	}
+
+	// 1d. Filter to local pods only (multi-node clustering)
 	if p.clusterMgr != nil {
 		localPods := make([]*corev1.Pod, 0, len(desiredPods))
 		for _, pod := range desiredPods {
@@ -1454,6 +1477,34 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		actualByName[c.Name] = c
 	}
 	log.Infow("RECONCILE: step 2 list containers", "count", len(actual), "ms", time.Since(stepStart).Milliseconds())
+
+	// 2b. Clean up stale containers from pods migrated to other nodes.
+	// If a pod was migrated away (vkube.io/node != local), but its containers
+	// still exist here (e.g. crash during migration), clean them up.
+	if p.clusterMgr != nil && len(allClusterPods) > 0 {
+		for _, pod := range allClusterPods {
+			if p.isLocalPod(pod) {
+				continue
+			}
+			for _, c := range pod.Spec.Containers {
+				cName := sanitizeName(pod, c.Name)
+				if ct, exists := actualByName[cName]; exists {
+					log.Infow("cleaning up migrated-away container",
+						"pod", podKey(pod), "container", cName,
+						"assignedTo", pod.Annotations[annotationNode])
+					p.stopAndRemoveContainer(ctx, cName, ct.ID)
+					delete(actualByName, cName)
+				}
+			}
+			// Release veths for migrated-away pods
+			for i := range pod.Spec.Containers {
+				veth := vethName(pod, i)
+				_ = p.deps.NetworkMgr.ReleaseInterface(ctx, veth)
+			}
+			// Untrack if still in memory
+			delete(p.pods, podKey(pod))
+		}
+	}
 
 	// 3. Create missing containers and collect stale-image pods
 	type staleEntry struct {

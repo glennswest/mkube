@@ -30,6 +30,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/pods/{name}", p.handleUpdatePod)
 	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/pods/{name}", p.handlePatchPod)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/pods/{name}", p.handleDeletePod)
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/pods/{name}/migrate", p.handleMigratePod)
 
 	// Logs
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/pods/{name}/log", p.handleGetPodLog)
@@ -259,6 +260,16 @@ func (p *MicroKubeProvider) handleCreatePod(w http.ResponseWriter, r *http.Reque
 		pod.CreationTimestamp = metav1.Now()
 	}
 
+	// Stamp node assignment if clustering is enabled
+	if p.clusterMgr != nil {
+		if pod.Annotations == nil {
+			pod.Annotations = make(map[string]string)
+		}
+		if pod.Annotations["vkube.io/node"] == "" {
+			pod.Annotations["vkube.io/node"] = p.nodeName
+		}
+	}
+
 	// Check for duplicate
 	if _, err := p.GetPod(r.Context(), ns, pod.Name); err == nil {
 		http.Error(w, fmt.Sprintf("pod %s/%s already exists", ns, pod.Name), http.StatusConflict)
@@ -426,29 +437,46 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// handleListNodes returns a NodeList with this node.
+// handleListNodes returns a NodeList with this node and any cluster peers.
 func (p *MicroKubeProvider) handleListNodes(w http.ResponseWriter, r *http.Request) {
-	node := p.buildNode(r)
+	nodes := []corev1.Node{*p.buildNode(r)}
+
+	// Include peer nodes if clustering is enabled
+	if p.clusterMgr != nil {
+		for _, peer := range p.clusterMgr.Peers() {
+			if peerNode := p.buildPeerNode(r.Context(), peer.Name); peerNode != nil {
+				nodes = append(nodes, *peerNode)
+			}
+		}
+	}
 
 	if wantsTable(r) {
-		podWriteJSON(w, http.StatusOK, nodeListToTable([]corev1.Node{*node}))
+		podWriteJSON(w, http.StatusOK, nodeListToTable(nodes))
 		return
 	}
 
 	podWriteJSON(w, http.StatusOK, corev1.NodeList{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "NodeList"},
-		Items:    []corev1.Node{*node},
+		Items:    nodes,
 	})
 }
 
 // handleGetNode returns the node object for the requested node name.
 func (p *MicroKubeProvider) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if name != p.nodeName {
+
+	var node *corev1.Node
+	if name == p.nodeName {
+		node = p.buildNode(r)
+	} else if p.clusterMgr != nil {
+		node = p.buildPeerNode(r.Context(), name)
+	}
+
+	if node == nil {
 		http.Error(w, fmt.Sprintf("node %q not found", name), http.StatusNotFound)
 		return
 	}
-	node := p.buildNode(r)
+
 	if wantsTable(r) {
 		podWriteJSON(w, http.StatusOK, nodeListToTable([]corev1.Node{*node}))
 		return
@@ -499,6 +527,60 @@ func (p *MicroKubeProvider) buildNode(r *http.Request) *corev1.Node {
 	node.Status.Addresses = []corev1.NodeAddress{
 		{Type: corev1.NodeInternalIP, Address: p.deps.Config.DefaultNetwork().Gateway},
 		{Type: corev1.NodeHostName, Address: p.nodeName},
+	}
+
+	return node
+}
+
+// buildPeerNode constructs a corev1.Node from a peer's NodeStatus in the cluster.
+func (p *MicroKubeProvider) buildPeerNode(_ context.Context, name string) *corev1.Node {
+	if p.clusterMgr == nil {
+		return nil
+	}
+	ns := p.clusterMgr.PeerNodeStatus(name)
+	if ns == nil {
+		return nil
+	}
+
+	healthy := p.clusterMgr.IsPeerHealthy(name)
+	readyStatus := corev1.ConditionFalse
+	if healthy {
+		readyStatus = corev1.ConditionTrue
+	}
+
+	node := &corev1.Node{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Node"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			CreationTimestamp: metav1.Time{Time: time.UnixMilli(ns.Timestamp)},
+			Labels: map[string]string{
+				"type":                         "virtual-kubelet",
+				"kubernetes.io/os":             "linux",
+				"kubernetes.io/arch":           ns.Architecture,
+				"node.kubernetes.io/role":      "mkube",
+				"mkube.io/device-type":         ns.Backend,
+				"node-role.kubernetes.io/mkube": "",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: readyStatus},
+			},
+			NodeInfo: corev1.NodeSystemInfo{
+				Architecture:   ns.Architecture,
+				KubeletVersion: "v1.29.0-mkube",
+			},
+		},
+	}
+
+	// Add address from peer config
+	for _, peer := range p.clusterMgr.Peers() {
+		if peer.Name == name {
+			node.Status.Addresses = []corev1.NodeAddress{
+				{Type: corev1.NodeHostName, Address: name},
+			}
+			break
+		}
 	}
 
 	return node
@@ -1113,6 +1195,7 @@ func nodeListToTable(nodes []corev1.Node) *metav1.Table {
 			{Name: "Roles", Type: "string"},
 			{Name: "Age", Type: "string"},
 			{Name: "Version", Type: "string"},
+			{Name: "Arch", Type: "string"},
 		},
 	}
 
@@ -1142,6 +1225,11 @@ func nodeListToTable(nodes []corev1.Node) *metav1.Table {
 			age = formatAge(time.Since(node.CreationTimestamp.Time))
 		}
 
+		arch := node.Status.NodeInfo.Architecture
+		if arch == "" {
+			arch = "-"
+		}
+
 		raw, _ := json.Marshal(map[string]interface{}{
 			"kind":       "PartialObjectMetadata",
 			"apiVersion": "meta.k8s.io/v1",
@@ -1157,6 +1245,7 @@ func nodeListToTable(nodes []corev1.Node) *metav1.Table {
 				roles,
 				age,
 				node.Status.NodeInfo.KubeletVersion,
+				arch,
 			},
 			Object: kruntime.RawExtension{Raw: raw},
 		})
@@ -1178,6 +1267,7 @@ func podListToTable(pods []corev1.Pod) *metav1.Table {
 			{Name: "Status", Type: "string"},
 			{Name: "Restarts", Type: "integer"},
 			{Name: "Age", Type: "string"},
+			{Name: "Node", Type: "string"},
 		},
 	}
 
@@ -1208,6 +1298,11 @@ func podListToTable(pods []corev1.Pod) *metav1.Table {
 			age = formatAge(time.Since(pod.CreationTimestamp.Time))
 		}
 
+		node := "-"
+		if n := pod.Annotations["vkube.io/node"]; n != "" {
+			node = n
+		}
+
 		// Wrap as PartialObjectMetadata so oc can extract namespace/name
 		partialMeta := map[string]interface{}{
 			"kind":       "PartialObjectMetadata",
@@ -1226,6 +1321,7 @@ func podListToTable(pods []corev1.Pod) *metav1.Table {
 				status,
 				restarts,
 				age,
+				node,
 			},
 			Object: kruntime.RawExtension{Raw: raw},
 		})

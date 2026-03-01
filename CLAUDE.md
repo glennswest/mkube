@@ -136,6 +136,7 @@ go test ./...
 - Proxmox VE LXC backend: Third backend provider. REST API client with PVE API token auth, async task polling (UPID), VMID range allocator, OCI→rootfs template converter, ContainerRuntime adapter with mount accumulator, NetworkDriver for pre-existing bridges, discovery module. Config: `backend: proxmox`. Deploy config: `deploy/proxmox-config.yaml`. 17 tests.
 - ISCSICdrom `version` field: Tracks ISO version in spec, shown in table output, inherited on derive.
 - Multi-node cluster architecture: Embedded NATS, peer sync, node-scoped reconciliation, multi-node deployment scheduling. Packages: `pkg/nats/`, `pkg/cluster/`. rose1↔pvex cluster with independent NATS and HTTP sync.
+- Node tracking and pod migration: All pods auto-stamped with `vkube.io/node` annotation. Pod table shows NODE column. Node list shows all cluster nodes with architecture. Pod migration API (`POST .../migrate`) with architecture mismatch validation. Stale container cleanup for migrated pods.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
