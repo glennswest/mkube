@@ -516,9 +516,15 @@ func (p *MicroKubeProvider) generateNetworkTOML(net *Network) string {
 		dhcpSection += section
 	}
 
+	// RouterOS containers use "gateway" mode (DHCP via relay, no raw sockets).
+	dnsMode := "standalone"
+	if p.deps.Config.Backend == "" || p.deps.Config.Backend == "routeros" {
+		dnsMode = "gateway"
+	}
+
 	return fmt.Sprintf(`[instance]
 id = "microdns-%s"
-mode = "standalone"
+mode = "%s"
 
 [dns.auth]
 enabled = true
@@ -541,7 +547,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, net.Spec.DNS.Zone, fwdZones, dhcpSection)
+%s`, net.Name, dnsMode, net.Spec.DNS.Zone, fwdZones, dhcpSection)
 }
 
 // computeForwardZones builds the TOML forward_zones map for a network,

@@ -34,6 +34,9 @@ func TestGenerateDefaultConfigMaps_DNSRecursor(t *testing.T) {
 			t.Errorf("cm[%d] name = %q, want dns-config", i, cm.Name)
 		}
 		toml := cm.Data["microdns.toml"]
+		if !strings.Contains(toml, `mode = "gateway"`) {
+			t.Errorf("cm[%d] expected mode = gateway for default (routeros) backend", i)
+		}
 		if !strings.Contains(toml, "enabled = true") {
 			t.Errorf("cm[%d] missing recursor enabled", i)
 		}

@@ -94,9 +94,15 @@ registry:
 		// plumbing like NATS URLs must come from the container environment
 		// so the config stays portable across different sites/networks.
 
+		// RouterOS containers use "gateway" mode (DHCP via relay, no raw sockets).
+		dnsMode := "standalone"
+		if cfg.Backend == "" || cfg.Backend == "routeros" {
+			dnsMode = "gateway"
+		}
+
 		toml := fmt.Sprintf(`[instance]
 id = "microdns-%s"
-mode = "standalone"
+mode = "%s"
 
 [dns.auth]
 enabled = true
@@ -119,7 +125,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, net.DNS.Zone, fwdZones.String(), dhcpSection)
+%s`, net.Name, dnsMode, net.DNS.Zone, fwdZones.String(), dhcpSection)
 
 		cms = append(cms, &corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
