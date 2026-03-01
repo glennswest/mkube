@@ -10,7 +10,8 @@ GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 .PHONY: build build-local tarball deploy deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-all \
-        deploy-update deploy-installer
+        deploy-update deploy-installer \
+        build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube
 
 ## Build the Go binary for the target architecture
 build:
@@ -32,8 +33,16 @@ build-installer:
 build-update:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build $(GOFLAGS) -o dist/mkube-update-$(ARCH) ./cmd/mkube-update/
 
+## Build pve-deploy CLI (runs locally on workstation, deploys to Proxmox)
+build-pve-deploy:
+	go build $(GOFLAGS) -o dist/pve-deploy ./cmd/pve-deploy/
+
+## Build mkube-boot for amd64 (runs inside Proxmox LXC)
+build-mkube-boot:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -o dist/mkube-boot ./cmd/mkube-boot/
+
 ## Build all binaries for the target architecture
-build-all: build build-registry build-installer build-update
+build-all: build build-registry build-installer build-update build-pve-deploy
 
 ## Create RouterOS-compatible docker-save tarball (no Docker needed)
 tarball: build
@@ -72,6 +81,18 @@ deploy-update:
 ## Deploy mkube-installer to bootstrap a fresh device
 deploy-installer:
 	bash hack/deploy-installer.sh $(DEVICE)
+
+## Deploy registry to Proxmox (CT 119)
+deploy-pvex-registry: build-pve-deploy
+	./dist/pve-deploy --config deploy/pvex-registry.yaml
+
+## Deploy mkube-boot to Proxmox (CT 120)
+deploy-pvex-boot: build-pve-deploy
+	./dist/pve-deploy --config deploy/pvex-mkube-boot.yaml
+
+## Deploy mkube controller to Proxmox (CT 121)
+deploy-pvex-mkube: build-pve-deploy
+	./dist/pve-deploy --config deploy/pvex-mkube.yaml
 
 ## Generate mocks for testing
 mocks:

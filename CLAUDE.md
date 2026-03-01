@@ -3,7 +3,7 @@
 ## Build & Deploy
 
 ```bash
-# Build all binaries (mkube, mkube-update, mkube-registry, installer)
+# Build all binaries (mkube, mkube-update, mkube-registry, installer, pve-deploy)
 make build-all
 
 # Build mkube only (ARM64 cross-compile)
@@ -12,8 +12,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/mkube/
 # Deploy to rose1
 make deploy
 
-# Bootstrap a fresh device
+# Bootstrap a fresh device (RouterOS)
 make deploy-installer
+
+# Proxmox LXC deployment
+make build-pve-deploy                        # Build pve-deploy CLI
+make deploy-pvex-registry                    # Deploy registry to CT 119
+make deploy-pvex-mkube                       # Deploy mkube to CT 121
+pve-deploy --config deploy/pvex-registry.yaml  # Direct CLI usage
 
 # Run tests
 go test ./...
@@ -32,7 +38,9 @@ go test ./...
 | mkube | `cmd/mkube/` | RouterOS (ARM64), Proxmox (x86_64), StormBase | Main controller |
 | mkube-update | `cmd/mkube-update/` | RouterOS (ARM64) | Image update watcher |
 | mkube-registry | `cmd/registry/` | RouterOS (ARM64) | Standalone OCI registry |
-| installer | `cmd/installer/` | Mac (local) | One-shot bootstrap CLI |
+| installer | `cmd/installer/` | Mac (local) | One-shot RouterOS bootstrap CLI |
+| pve-deploy | `cmd/pve-deploy/` | Mac (local) | Deploy OCI images as Proxmox LXC containers |
+| mkube-boot | `cmd/mkube-boot/` | Proxmox LXC (x86_64) | Bootstrap mkube infrastructure on Proxmox |
 
 ### Key Packages
 | Package | Purpose |
@@ -47,6 +55,7 @@ go test ./...
 | `pkg/registry/` | OCI registry implementation |
 | `pkg/routeros/` | RouterOS REST API client |
 | `pkg/proxmox/` | Proxmox VE REST API client, VMID allocator, OCI→LXC template converter |
+| `pkg/pvectl/` | Proxmox LXC deploy library (OCI binary extraction, SSH/pct helpers, systemd install) |
 | `pkg/stormbase/` | StormBase gRPC client |
 | `pkg/runtime/` | Container runtime abstraction (RouterOS, StormBase, Proxmox adapters) |
 | `pkg/nats/` | Embedded NATS server (in-process JetStream) |
@@ -64,6 +73,14 @@ go test ./...
 |------|-----|------|
 | rose1.gw.lo | 192.168.1.88 | MikroTik ARM64, runs mkube + all containers (RouterOS backend) |
 | pvex.gw.lo | 192.168.1.160 | Proxmox node, runs gw microdns (CT 117), Proxmox backend target |
+
+### Proxmox LXC Allocation (pvex, gw network)
+| VMID | Hostname | IP | Purpose |
+|------|----------|----|---------|
+| 117 | dns-gw | 192.168.1.52 | gw microdns (existing) |
+| 119 | registry | 192.168.1.161 | OCI registry |
+| 120 | mkube-boot | 192.168.1.162 | Bootstrap container |
+| 121 | mkube | 192.168.1.163 | mkube controller |
 
 ### Container IPs (gt network)
 | Container | IP | Notes |

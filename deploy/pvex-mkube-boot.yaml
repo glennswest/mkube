@@ -1,0 +1,65 @@
+# pve-deploy config: mkube-boot bootstrap container on Proxmox (CT 120)
+#
+# Deploy: pve-deploy --config deploy/pvex-mkube-boot.yaml
+# Destroy: pve-deploy --config deploy/pvex-mkube-boot.yaml --destroy
+
+pveHost: pvex.gw.lo
+pveUser: root
+pveAPIUser: mkube@pve!mkube-token
+pveAPIToken: $PVE_API_TOKEN
+pveNode: pvex
+
+vmid: 120
+hostname: mkube-boot
+
+imageRef: ghcr.io/glennswest/mkube-boot:latest
+binaryName: mkube-boot
+binaryPath: /usr/local/bin/mkube-boot
+
+memory: 256
+cores: 1
+diskSize: 2G
+storage: local-lvm
+
+bridge: vmbr0
+ip: 192.168.1.162/24
+gateway: 192.168.1.1
+dns: 192.168.1.52
+
+serviceName: mkube-boot
+execArgs: "--config /etc/mkube-boot/config.yaml"
+
+configFiles:
+  /etc/mkube-boot/config.yaml: |
+    steps:
+      - name: "Deploy mkube controller"
+        configFile: /etc/mkube-boot/mkube.yaml
+        healthURL: "http://192.168.1.163:8082/api/v1/pods"
+        healthWait: 120
+
+    watchdog:
+      enabled: true
+      interval: 30
+      target: "http://192.168.1.163:8082/api/v1/pods"
+
+  /etc/mkube-boot/mkube.yaml: |
+    pveHost: pvex.gw.lo
+    pveUser: root
+    pveAPIUser: mkube@pve!mkube-token
+    pveAPIToken: $PVE_API_TOKEN
+    pveNode: pvex
+    vmid: 121
+    hostname: mkube
+    imageRef: ghcr.io/glennswest/mkube:latest
+    binaryName: mkube
+    binaryPath: /usr/local/bin/mkube
+    memory: 1024
+    cores: 2
+    diskSize: 8G
+    storage: local-lvm
+    bridge: vmbr0
+    ip: 192.168.1.163/24
+    gateway: 192.168.1.1
+    dns: 192.168.1.52
+    serviceName: mkube
+    execArgs: "--config /etc/mkube/config.yaml"

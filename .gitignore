@@ -2,3 +2,5 @@ dist/
 *.tar.gz
 *.tar
 /mkube
+/pve-deploy
+/mkube-boot

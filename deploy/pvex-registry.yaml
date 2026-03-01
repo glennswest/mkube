@@ -1,0 +1,38 @@
+# pve-deploy config: OCI registry on Proxmox (CT 119)
+#
+# Deploy: pve-deploy --config deploy/pvex-registry.yaml
+# Destroy: pve-deploy --config deploy/pvex-registry.yaml --destroy
+
+pveHost: pvex.gw.lo
+pveUser: root
+pveAPIUser: mkube@pve!mkube-token
+pveAPIToken: $PVE_API_TOKEN
+pveNode: pvex
+
+vmid: 119
+hostname: registry
+
+imageRef: ghcr.io/glennswest/mkube-registry:latest
+binaryName: mkube-registry
+binaryPath: /usr/local/bin/mkube-registry
+
+memory: 512
+cores: 2
+diskSize: 4G
+storage: local-lvm
+
+bridge: vmbr0
+ip: 192.168.1.161/24
+gateway: 192.168.1.1
+dns: 192.168.1.52
+
+serviceName: mkube-registry
+execArgs: "--config /etc/mkube/registry.yaml"
+
+configFiles:
+  /etc/mkube/registry.yaml: |
+    listenAddr: ":5000"
+    storePath: /var/lib/registry
+    pullThrough: true
+    upstreamRegistries:
+      - "ghcr.io"

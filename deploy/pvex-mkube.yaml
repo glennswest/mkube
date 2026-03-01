@@ -1,0 +1,56 @@
+# pve-deploy config: mkube controller on Proxmox (CT 121)
+#
+# Deploy: pve-deploy --config deploy/pvex-mkube.yaml
+# Destroy: pve-deploy --config deploy/pvex-mkube.yaml --destroy
+#
+# Can be deployed directly or via mkube-boot (CT 120).
+
+pveHost: pvex.gw.lo
+pveUser: root
+pveAPIUser: mkube@pve!mkube-token
+pveAPIToken: $PVE_API_TOKEN
+pveNode: pvex
+
+vmid: 121
+hostname: mkube
+
+imageRef: ghcr.io/glennswest/mkube:latest
+binaryName: mkube
+binaryPath: /usr/local/bin/mkube
+
+memory: 1024
+cores: 2
+diskSize: 8G
+storage: local-lvm
+
+bridge: vmbr0
+ip: 192.168.1.163/24
+gateway: 192.168.1.1
+dns: 192.168.1.52
+
+serviceName: mkube
+execArgs: "--config /etc/mkube/config.yaml"
+
+configFiles:
+  /etc/mkube/config.yaml: |
+    backend: proxmox
+    nodeName: pvex-mkube
+    listenAddr: ":8082"
+    proxmox:
+      url: "https://pvex.gw.lo:8006"
+      tokenID: "mkube@pve!mkube-token"
+      tokenSecret: "$PVE_API_TOKEN"
+      node: "pvex"
+      vmidRange: "200-299"
+      storage: "local"
+      rootfsStorage: "local-lvm"
+      rootfsSize: "8"
+      unprivileged: true
+      features: "nesting=1"
+    networks:
+      - name: gw
+        bridge: vmbr0
+        cidr: "192.168.1.0/24"
+        gateway: "192.168.1.1"
+        dns: "192.168.1.52"
+        dnsZone: "gw.lo"
