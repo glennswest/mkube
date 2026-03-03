@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-03
+- **fix:** Add `sync.RWMutex` to `MicroKubeProvider` protecting all in-memory maps from concurrent access. HTTP handler middleware serializes write requests (Lock) and allows concurrent reads (RLock). Watch handlers snapshot maps under RLock before streaming. Panic recovery middleware catches any remaining panics and returns HTTP 500 instead of crashing. HTTP server gains ReadTimeout (30s) and IdleTimeout (120s). Prevents `fatal error: concurrent map read and map write` crash (exit 2) when bmh-operator or other clients send concurrent requests.
 - **chore:** In-progress work moved to branch `wip/export-and-stormbase`: BMH reload endpoint, ExportYAML for BMH/BootConfigs, pvex-registry IP fix, site backup dumps, stormbase gRPC proto.
 - **feat:** Added `HardwareDetails` and `NICInfo` structs to `BMHStatus` — full hardware inventory (manufacturer, product, serial, CPU, memory, BIOS, disks) and per-interface network tracking stored directly on BMH status. `bmhReferencesNetwork` now also checks `NetworkInterfaces` for network join queries.
 - **feat:** Added `AvailableImages []string` to `BMHStatus` — populated by bmh-operator from ISCSICdrom watch so GUI can show available OS images per server.
