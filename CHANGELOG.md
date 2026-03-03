@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-03
+- **feat:** Added `AvailableImages []string` to `BMHStatus` — populated by bmh-operator from ISCSICdrom watch so GUI can show available OS images per server.
+
 ### 2026-02-28
 - **feat:** Proxmox LXC bootstrap toolchain — new `pkg/pvectl/` library and CLI tools for deploying OCI image binaries into Proxmox LXC containers. Creates Debian 12 LXC via PVE API, extracts Go binary from OCI image layers using crane, pushes into container via `pct push`, installs systemd service. New `cmd/pve-deploy/` CLI (runs on Mac, deploys to Proxmox) with YAML config or CLI flags. New `cmd/mkube-boot/` bootstrap binary (runs inside LXC, deploys mkube infrastructure in sequence with health checks and watchdog mode). Deploy configs for pvex: registry CT 119 (`deploy/pvex-registry.yaml`), mkube-boot CT 120 (`deploy/pvex-mkube-boot.yaml`), mkube CT 121 (`deploy/pvex-mkube.yaml`). Makefile targets: `build-pve-deploy`, `build-mkube-boot`, `deploy-pvex-registry`, `deploy-pvex-boot`, `deploy-pvex-mkube`. Bootstrap chain: Mac → CT 119 (registry) → CT 120 (mkube-boot) → CT 121 (mkube controller).
 - **feat:** Microdns config uses `mode = "gateway"` for RouterOS backend — both defaults.go (startup ConfigMaps) and network_crd.go (Network CRD config endpoint) now set DNS mode based on backend. RouterOS containers get `gateway` mode (relay-based DHCP), other backends get `standalone`.
