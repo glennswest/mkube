@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/glennswest/mkube/pkg/config"
 )
@@ -47,8 +46,20 @@ type microdnsLeaseEvent struct {
 	Timestamp  string `json:"timestamp"`
 }
 
+// mkubeDHCPEvent is the typed event published by mkube for the bmh-operator.
+// It enriches the raw microdns event with the resolved network name and type.
+type mkubeDHCPEvent struct {
+	Type        string `json:"type"`         // "LeaseCreated" or "LeaseReleased"
+	Network     string `json:"network"`      // resolved network name (e.g. "g10")
+	NetworkType string `json:"network_type"` // "ipmi", "data", etc.
+	IPAddr      string `json:"ip_addr"`
+	MACAddr     string `json:"mac_addr"`
+	Hostname    string `json:"hostname"`
+	Timestamp   string `json:"timestamp"`
+}
+
 // dhcpNetworkIndex is a precomputed lookup structure built from the network
-// config so processDHCPLease never needs hardcoded subnets or hostnames.
+// config so DHCP event publishing never needs hardcoded subnets or hostnames.
 type dhcpNetworkIndex struct {
 	// reservationsByIP maps an IP string to its reservation + network name.
 	// Built from all networks' DHCP reservations.
@@ -186,7 +197,7 @@ func (p *MicroKubeProvider) startDHCPSubscription(ctx context.Context) {
 			"hostname", evt.Hostname,
 		)
 
-		p.processDHCPLease(ctx, evt.IPAddr, evt.MACAddr, evt.Hostname)
+		p.publishDHCPEvent(evt.Type, network, evt.IPAddr, evt.MACAddr, evt.Hostname)
 	})
 	if err != nil {
 		log.Warnw("failed to subscribe to DHCP lease events", "error", err)
@@ -196,11 +207,9 @@ func (p *MicroKubeProvider) startDHCPSubscription(ctx context.Context) {
 	log.Info("DHCP NATS subscription started on microdns.*.leases")
 }
 
-// processDHCPLease handles a single DHCP lease from any network.
-// It looks up the IP in the reservation index to find the hostname and
-// network, falling back to subnet matching for unreserved IPs.
-func (p *MicroKubeProvider) processDHCPLease(ctx context.Context, ip, mac, eventHostname string) {
-	cfg := p.deps.Config.BMH
+// publishDHCPEvent resolves the network and publishes a typed event on
+// mkube.dhcp.{network}.lease for the bmh-operator (and any other consumer).
+func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostname string) {
 	log := p.deps.Logger.Named("dhcp-watcher")
 
 	if ip == "" || mac == "" {
@@ -211,109 +220,64 @@ func (p *MicroKubeProvider) processDHCPLease(ctx context.Context, ip, mac, event
 		return
 	}
 
-	// Look up by reservation first (known servers)
-	var network, hostname string
+	// Resolve hostname from reservation if available
 	if entry, ok := p.dhcpIndex.reservationsByIP[ip]; ok {
-		network = entry.Network
-		hostname = entry.Hostname
-	} else {
-		// Fall back to subnet match for unreserved leases
-		network = p.dhcpIndex.networkForIP(ip)
 		if network == "" {
-			return
+			network = entry.Network
 		}
-		// Use the hostname from the DHCP event, or derive from IP
-		hostname = eventHostname
 		if hostname == "" {
-			hostname = "host-" + strings.ReplaceAll(ip, ".", "-")
+			hostname = entry.Hostname
 		}
+	} else if network == "" {
+		network = p.dhcpIndex.networkForIP(ip)
 	}
 
-	// Only auto-create BMH from IPMI networks — a MAC on a data network
-	// means it's already booted, not a bare metal host awaiting provisioning.
-	if net, ok := p.networks[network]; ok && net.Spec.Type != "ipmi" {
+	if network == "" {
 		return
 	}
 
-	key := network + "/" + hostname
+	// Look up network type
+	networkType := ""
+	if net, ok := p.networks[network]; ok {
+		networkType = net.Spec.Type
+	}
 
-	if _, exists := p.bareMetalHosts[key]; exists {
+	evt := mkubeDHCPEvent{
+		Type:        eventType,
+		Network:     network,
+		NetworkType: networkType,
+		IPAddr:      ip,
+		MACAddr:     mac,
+		Hostname:    hostname,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		log.Warnw("failed to marshal DHCP event", "error", err)
 		return
 	}
 
-	// Cross-namespace dedup: skip if any BMH already has this MAC or hostname
-	for _, existing := range p.bareMetalHosts {
-		if mac != "" && strings.EqualFold(existing.Spec.BootMACAddress, mac) {
-			return
-		}
-		if mac != "" && strings.EqualFold(existing.Spec.BMC.MAC, mac) {
-			return
-		}
-		if existing.Name == hostname && existing.Namespace != network {
-			return
-		}
-	}
-
-	// Skip if this MAC already has a DHCP reservation in any Network CRD
-	// (known NIC on an existing server — not a new host)
-	if mac != "" {
-		for _, net := range p.networks {
-			for _, res := range net.Spec.DHCP.Reservations {
-				if strings.EqualFold(res.MAC, mac) {
-					return
-				}
-			}
-		}
-	}
-
-	log.Infow("auto-discovered host from DHCP",
-		"name", hostname,
-		"network", network,
-		"ip", ip,
-		"mac", mac,
-	)
-
-	bmh := &BareMetalHost{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              hostname,
-			Namespace:         network,
-			CreationTimestamp: metav1.Now(),
-		},
-		Spec: BMHSpec{
-			Image: "localboot",
-			BMC: BMCDetails{
-				Address:  ip,
-				Username: "ADMIN",
-				Password: "ADMIN",
-			},
-			BootMACAddress: mac,
-		},
-		Status: BMHStatus{
-			Phase: "Discovered",
-			IP:    ip,
-		},
-	}
-
-	p.bareMetalHosts[key] = bmh
-
-	// Persist to NATS
-	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-		storeKey := network + "." + hostname
-		if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bmh); err != nil {
-			log.Warnw("failed to persist discovered BMH", "name", hostname, "error", err)
-		}
-	}
-
-	// Configure IPMI in pxemanager
-	if cfg.PXEManagerURL != "" {
-		if err := pxeConfigureIPMI(ctx, cfg.PXEManagerURL, hostname, ip, "ADMIN", "ADMIN"); err != nil {
-			log.Warnw("failed to configure IPMI for discovered host", "name", hostname, "error", err)
+	subject := "mkube.dhcp." + network + ".lease"
+	if p.deps.Store != nil {
+		if err := p.deps.Store.Publish(subject, data); err != nil {
+			log.Warnw("failed to publish DHCP event", "subject", subject, "error", err)
+		} else {
+			log.Infow("published DHCP event",
+				"subject", subject,
+				"network", network,
+				"type", networkType,
+				"ip", ip,
+				"mac", mac,
+				"hostname", hostname,
+			)
 		}
 	}
 }
 
-// reconcileDHCPLeases polls every DHCP-enabled microdns instance for leases.
+// reconcileDHCPLeases polls every DHCP-enabled microdns instance for leases
+// and publishes events for any discovered leases. This serves as a fallback
+// consistency check for the event-driven NATS subscription.
 func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	log := p.deps.Logger.Named("dhcp-watcher")
 
@@ -344,7 +308,7 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 		resp.Body.Close()
 
 		for _, lease := range leases {
-			p.processDHCPLease(ctx, lease.getIP(), lease.getMAC(), "")
+			p.publishDHCPEvent("LeaseCreated", n.Name, lease.getIP(), lease.getMAC(), "")
 		}
 	}
 }

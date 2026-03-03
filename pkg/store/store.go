@@ -237,6 +237,11 @@ func (s *Store) Subscribe(subject string, handler nats.MsgHandler) (*nats.Subscr
 	return s.conn.Subscribe(subject, handler)
 }
 
+// Publish publishes a message to the given NATS subject.
+func (s *Store) Publish(subject string, data []byte) error {
+	return s.conn.Publish(subject, data)
+}
+
 // Close closes the NATS connection.
 func (s *Store) Close() {
 	if s.conn != nil {
