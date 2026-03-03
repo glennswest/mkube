@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -81,6 +82,7 @@ type Deps struct {
 // container operations, managing the full lifecycle including networking,
 // storage, and boot ordering.
 type MicroKubeProvider struct {
+	mu              sync.RWMutex // protects all in-memory maps below
 	deps            Deps
 	nodeName        string
 	startTime       time.Time

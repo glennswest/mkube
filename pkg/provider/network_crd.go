@@ -669,10 +669,15 @@ func (p *MicroKubeProvider) handleWatchNetworks(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
-	// Send existing Network objects as ADDED events
+	// Send existing Network objects as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	netSnapshot := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
-		enriched := net.DeepCopy()
+		netSnapshot = append(netSnapshot, net.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, enriched := range netSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 		p.enrichNetworkStatus(ctx, enriched)
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}

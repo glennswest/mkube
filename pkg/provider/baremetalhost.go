@@ -925,13 +925,18 @@ func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Reques
 
 	ctx := r.Context()
 
-	// Send existing BMH objects as ADDED events first
+	// Send existing BMH objects as ADDED events first (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	snapshot := make([]*BareMetalHost, 0, len(p.bareMetalHosts))
 	for _, bmh := range p.bareMetalHosts {
 		if nsFilter != "" && bmh.Namespace != nsFilter {
 			continue
 		}
-		enriched := bmh.DeepCopy()
+		snapshot = append(snapshot, bmh.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, enriched := range snapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
 		p.enrichBMHStatus(ctx, enriched)
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}

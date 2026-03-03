@@ -883,10 +883,15 @@ func (p *MicroKubeProvider) handleWatchISCSICdroms(w http.ResponseWriter, r *htt
 
 	ctx := r.Context()
 
-	// Send existing objects as ADDED events
+	// Send existing objects as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	cdromSnapshot := make([]*ISCSICdrom, 0, len(p.iscsiCdroms))
 	for _, cdrom := range p.iscsiCdroms {
-		c := cdrom.DeepCopy()
+		cdromSnapshot = append(cdromSnapshot, cdrom.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, c := range cdromSnapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSICdrom"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: c}
 		if err := enc.Encode(evt); err != nil {

@@ -457,10 +457,15 @@ func (p *MicroKubeProvider) handleWatchBootConfigs(w http.ResponseWriter, r *htt
 
 	ctx := r.Context()
 
-	// Send existing objects as ADDED events
+	// Send existing objects as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	bcSnapshot := make([]*BootConfig, 0, len(p.bootConfigs))
 	for _, bc := range p.bootConfigs {
-		c := bc.DeepCopy()
+		bcSnapshot = append(bcSnapshot, bc.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, c := range bcSnapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BootConfig"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: c}
 		if err := enc.Encode(evt); err != nil {

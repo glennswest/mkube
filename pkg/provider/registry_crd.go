@@ -531,10 +531,15 @@ func (p *MicroKubeProvider) handleWatchRegistries(w http.ResponseWriter, r *http
 
 	ctx := r.Context()
 
-	// Send existing Registry objects as ADDED events
+	// Send existing Registry objects as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	regSnapshot := make([]*Registry, 0, len(p.registries))
 	for _, reg := range p.registries {
-		enriched := reg.DeepCopy()
+		regSnapshot = append(regSnapshot, reg.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, enriched := range regSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Registry"}
 		p.enrichRegistryStatus(ctx, enriched)
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}

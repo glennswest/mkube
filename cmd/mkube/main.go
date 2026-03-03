@@ -536,7 +536,13 @@ func runSharedServices(
 	p.RegisterRoutes(mux)
 
 	go func() {
-		srv := &http.Server{Addr: listenAddr, Handler: mux}
+		srv := &http.Server{
+			Addr:        listenAddr,
+			Handler:     p.WrapHandler(mux),
+			ReadTimeout: 30 * time.Second,
+			IdleTimeout: 120 * time.Second,
+			// No WriteTimeout — watch/streaming endpoints need long-lived connections.
+		}
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

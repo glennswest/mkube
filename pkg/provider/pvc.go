@@ -305,13 +305,18 @@ func (p *MicroKubeProvider) handleWatchPVCs(w http.ResponseWriter, r *http.Reque
 
 	ctx := r.Context()
 
-	// Send existing PVCs as ADDED events
+	// Send existing PVCs as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
+	p.mu.RLock()
+	pvcSnapshot := make([]*corev1.PersistentVolumeClaim, 0, len(p.pvcs))
 	for _, pvc := range p.pvcs {
 		if nsFilter != "" && pvc.Namespace != nsFilter {
 			continue
 		}
-		enriched := pvc.DeepCopy()
+		pvcSnapshot = append(pvcSnapshot, pvc.DeepCopy())
+	}
+	p.mu.RUnlock()
+	for _, enriched := range pvcSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}
 		if err := enc.Encode(evt); err != nil {
