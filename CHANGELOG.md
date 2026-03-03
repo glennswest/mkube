@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-03
+- **chore:** In-progress work moved to branch `wip/export-and-stormbase`: BMH reload endpoint, ExportYAML for BMH/BootConfigs, pvex-registry IP fix, site backup dumps, stormbase gRPC proto.
 - **feat:** Added `HardwareDetails` and `NICInfo` structs to `BMHStatus` — full hardware inventory (manufacturer, product, serial, CPU, memory, BIOS, disks) and per-interface network tracking stored directly on BMH status. `bmhReferencesNetwork` now also checks `NetworkInterfaces` for network join queries.
 - **feat:** Added `AvailableImages []string` to `BMHStatus` — populated by bmh-operator from ISCSICdrom watch so GUI can show available OS images per server.
 - **refactor:** DHCP watcher now publishes typed NATS events (`mkube.dhcp.{network}.lease`) instead of auto-creating BMH objects — BMH creation is now handled by bmh-operator.
