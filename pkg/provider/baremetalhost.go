@@ -441,6 +441,39 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// handleRefreshBMH triggers a baremetalservices re-probe by setting an annotation.
+func (p *MicroKubeProvider) handleRefreshBMH(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+	key := ns + "/" + name
+
+	existing, ok := p.bareMetalHosts[key]
+	if !ok {
+		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
+		return
+	}
+
+	// Set refresh annotation with current timestamp
+	if existing.Annotations == nil {
+		existing.Annotations = make(map[string]string)
+	}
+	existing.Annotations["bmh.mkube.io/refresh"] = time.Now().UTC().Format(time.RFC3339)
+
+	// Persist to NATS so the watch fires
+	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, existing); err != nil {
+			http.Error(w, fmt.Sprintf("persisting refresh: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	podWriteJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": fmt.Sprintf("refresh requested for %s", name),
+	})
+}
+
 // ─── Reconcile spec changes → pxemanager actions ────────────────────────────
 
 func (p *MicroKubeProvider) reconcileBMHChanges(ctx context.Context, old, new *BareMetalHost) {
