@@ -119,9 +119,10 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/nodes", p.handleListNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{name}", p.handleGetNode)
 
-	// Events (stub)
+	// Events
 	mux.HandleFunc("GET /api/v1/events", p.handleListEvents)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/events", p.handleListEvents)
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/events", p.handleCreateEvent)
 
 	// Services (stub)
 	mux.HandleFunc("GET /api/v1/services", p.handleListServices)
@@ -1193,6 +1194,35 @@ func (p *MicroKubeProvider) handleListEvents(w http.ResponseWriter, r *http.Requ
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "EventList"},
 		Items:    items,
 	})
+}
+
+// handleCreateEvent accepts an event from external operators (e.g. bmh-operator).
+func (p *MicroKubeProvider) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
+	var evt corev1.Event
+	if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+		http.Error(w, fmt.Sprintf("invalid event JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+	if evt.Namespace == "" {
+		evt.Namespace = r.PathValue("namespace")
+	}
+	if evt.CreationTimestamp.IsZero() {
+		evt.CreationTimestamp = metav1.Now()
+	}
+	if evt.FirstTimestamp.IsZero() {
+		evt.FirstTimestamp = evt.CreationTimestamp
+	}
+	if evt.LastTimestamp.IsZero() {
+		evt.LastTimestamp = evt.CreationTimestamp
+	}
+	evt.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Event"}
+
+	p.events = append(p.events, evt)
+	if len(p.events) > maxEvents {
+		p.events = p.events[len(p.events)-maxEvents:]
+	}
+
+	podWriteJSON(w, http.StatusCreated, &evt)
 }
 
 // handleListServices returns an empty ServiceList.
