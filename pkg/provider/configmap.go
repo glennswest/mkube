@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -112,6 +113,35 @@ func (p *MicroKubeProvider) handleDeleteConfigMap(w http.ResponseWriter, r *http
 		Status:   "Success",
 		Message:  fmt.Sprintf("configmap %q deleted", name),
 	})
+}
+
+// LoadConfigMapsFromStore loads ConfigMap objects from the NATS CONFIGMAPS bucket.
+func (p *MicroKubeProvider) LoadConfigMapsFromStore(ctx context.Context) {
+	if p.deps.Store == nil || p.deps.Store.ConfigMaps == nil {
+		return
+	}
+
+	keys, err := p.deps.Store.ConfigMaps.Keys(ctx, "")
+	if err != nil {
+		p.deps.Logger.Warnw("failed to list configmaps from store", "error", err)
+		return
+	}
+
+	loaded := 0
+	for _, key := range keys {
+		var cm corev1.ConfigMap
+		if _, err := p.deps.Store.ConfigMaps.GetJSON(ctx, key, &cm); err != nil {
+			p.deps.Logger.Warnw("failed to read configmap from store", "key", key, "error", err)
+			continue
+		}
+		mapKey := cm.Namespace + "/" + cm.Name
+		p.configMaps[mapKey] = &cm
+		loaded++
+	}
+
+	if loaded > 0 {
+		p.deps.Logger.Infow("loaded configmaps from store", "count", loaded)
+	}
 }
 
 // resolveConfigMapVolume looks up ConfigMap data for a pod's named volume.

@@ -116,6 +116,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.MigrateNetworkConfig(context.Background())
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
+	p.LoadConfigMapsFromStore(context.Background())
 	p.LoadISCSICdromsFromStore(context.Background())
 	p.LoadBootConfigsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
