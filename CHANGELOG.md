@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-04
+- **fix:** Stale root-dir causes containers to run old image after push — `RemoveFile` fails silently on non-empty directories (RouterOS `/file/remove` can't delete extracted rootfs trees). Added `RemoveDirectory` to all runtime backends with recursive removal. Blue-green staging and `CreatePod` now use `RemoveDirectory`.
+- **fix:** Root-dir path normalization mismatch — `basePath` has leading `/` but RouterOS returns root-dir without it, breaking staging alternation (both updates used the same `__stg` dir). Added `normalizePath()` for consistent comparison.
+- **fix:** Multi-pod stale detection — `RefreshImage()` updated the in-memory cache on first call, causing subsequent pods with the same image to see matching digests and miss the change. Now calls `RefreshImage` once per unique image and propagates the changed flag to all pods.
+- **fix:** `EnsureImage` cache hit now verifies tarball file actually exists on disk before returning cached path.
+- **fix:** `ClearImageDigestByRepo` now deletes the entire in-memory cache entry (not just clearing digest) to force a complete re-pull.
+
 ### 2026-03-03
 - **feat:** BMC credential masking — all BMH API responses (get, list, create, update, patch, watch) now return `"xxxxx"` for `spec.bmc.username` and `spec.bmc.password`. PUT/PATCH handlers preserve real credentials when masked values are submitted back. Real credentials are only stored internally and in NATS.
 - **feat:** BMH refresh endpoints — `POST /api/v1/namespaces/{ns}/baremetalhosts/{name}/refresh` (single host) and `POST /api/v1/baremetalhosts/refresh` (all hosts) set `bmh.mkube.io/refresh` annotation, triggering bmh-operator to run full orchestrated refresh cycle (power off, boot baremetalservices, probe inventory, restore state).
