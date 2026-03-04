@@ -1049,36 +1049,42 @@ func (p *MicroKubeProvider) handleUpdateConfigMap(w http.ResponseWriter, r *http
 	podWriteJSON(w, http.StatusOK, &cm)
 }
 
-// handlePatchConfigMap applies a patch (treated as replace) to a ConfigMap.
+// handlePatchConfigMap applies a merge patch to a ConfigMap.
 func (p *MicroKubeProvider) handlePatchConfigMap(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.configMaps[key]; !ok {
+	existing, ok := p.configMaps[key]
+	if !ok {
 		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
 		return
 	}
 
-	var cm corev1.ConfigMap
-	if err := json.NewDecoder(r.Body).Decode(&cm); err != nil {
+	// Start from existing, overlay patch fields
+	merged := existing.DeepCopy()
+	if err := json.NewDecoder(r.Body).Decode(merged); err != nil {
 		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
 		return
 	}
-	cm.Namespace = ns
-	cm.Name = name
-	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
+	merged.Namespace = ns
+	merged.Name = name
+	merged.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
 
 	if p.deps.Store != nil {
 		storeKey := ns + "." + name
-		if _, err := p.deps.Store.ConfigMaps.PutJSON(r.Context(), storeKey, &cm); err != nil {
+		if _, err := p.deps.Store.ConfigMaps.PutJSON(r.Context(), storeKey, merged); err != nil {
 			http.Error(w, fmt.Sprintf("persisting configmap patch: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	p.configMaps[key] = &cm
-	podWriteJSON(w, http.StatusOK, &cm)
+	p.configMaps[key] = merged
+
+	// Sync to disk and trigger pod updates if content changed
+	p.syncConfigMapsToDisk(r.Context())
+
+	podWriteJSON(w, http.StatusOK, merged)
 }
 
 // handleListNamespaces returns namespaces derived from tracked pods and configmaps.
