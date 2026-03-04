@@ -1051,7 +1051,7 @@ func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Reques
 	for _, enriched := range snapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
 		p.enrichBMHStatus(ctx, enriched)
-		evt := K8sWatchEvent{Type: "ADDED", Object: sanitizeBMH(enriched)}
+		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}
 		if err := enc.Encode(evt); err != nil {
 			return
 		}
@@ -1096,7 +1096,7 @@ func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Reques
 
 			watchEvt := K8sWatchEvent{
 				Type:   string(evt.Type),
-				Object: sanitizeBMH(&bmh),
+				Object: &bmh,
 			}
 
 			if err := enc.Encode(watchEvt); err != nil {
