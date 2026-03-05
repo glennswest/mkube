@@ -155,6 +155,8 @@ go test ./...
 - ISCSICdrom `version` field: Tracks ISO version in spec, shown in table output, inherited on derive.
 - Multi-node cluster architecture: Embedded NATS, peer sync, node-scoped reconciliation, multi-node deployment scheduling. Packages: `pkg/nats/`, `pkg/cluster/`. rose1↔pvex cluster with independent NATS and HTTP sync.
 - Node tracking and pod migration: All pods auto-stamped with `vkube.io/node` annotation. Pod table shows NODE column. Node list shows all cluster nodes with architecture. Pod migration API (`POST .../migrate`) with architecture mismatch validation. Stale container cleanup for migrated pods.
+- DNS ConfigMap reconcile fix: `generateDefaultConfigMaps` from static config (`rose1-config.yaml`) was overwriting Network CRD-derived ConfigMaps every 10s reconcile cycle. Fixed by overriding static ConfigMaps with Network CRD-generated TOML for migrated networks. Also added boot-time `ReconcileNetworkConfigMaps` to fix stale ConfigMaps on startup.
+- server30 → server9 migration: Updated `deploy/rose1-config.yaml` (g10: .30→.18 with server9 hostname, removed server30b, g11: hostname change). Cleaned stale DNS A records from microdns redb database.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
