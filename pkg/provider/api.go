@@ -178,6 +178,9 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/images", p.handleListImages)
 	mux.HandleFunc("POST /api/v1/images/redeploy", p.handleImageRedeploy)
 
+	// Lifecycle stats
+	mux.HandleFunc("GET /api/v1/lifecycle/stats", p.handleLifecycleStats)
+
 	// Health
 	mux.HandleFunc("GET /healthz", p.handleHealthz)
 }
@@ -822,6 +825,12 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, "ok\nnode: %s\nversion: %s\ncommit: %s\nuptime: %s\n",
 		p.nodeName, p.deps.Version, p.deps.Commit, time.Since(p.startTime).Truncate(time.Second))
+}
+
+// handleLifecycleStats returns lifecycle phase timing stats and recovery stats.
+func (p *MicroKubeProvider) handleLifecycleStats(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetLifecycleStats().Snapshot())
 }
 
 // pushNotifyRequest is the JSON body for POST /api/v1/registry/push-notify.

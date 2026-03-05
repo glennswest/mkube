@@ -176,11 +176,15 @@ func (p *MicroKubeProvider) checkContainers(ctx context.Context) []CheckItem {
 					Details: fmt.Sprintf("expected RouterOS container %q", name),
 				})
 			} else if ct.Status != "running" {
+				detail := fmt.Sprintf("id=%s", ct.ID)
+				if ct.Comment != "" {
+					detail = fmt.Sprintf("id=%s comment=%q", ct.ID, ct.Comment)
+				}
 				items = append(items, CheckItem{
 					Name:    checkName,
 					Status:  "fail",
 					Message: fmt.Sprintf("container exists but status is %q", ct.Status),
-					Details: fmt.Sprintf("id=%s", ct.ID),
+					Details: detail,
 				})
 			} else {
 				items = append(items, CheckItem{

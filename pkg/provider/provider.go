@@ -193,6 +193,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("creating pod")
+	tracker := newPhaseTracker()
 
 	// Determine target network from annotation
 	networkName := pod.Annotations[annotationNetwork]
@@ -233,6 +234,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// 0. Pre-creation cleanup: remove any stale RouterOS container with
 		// the same name from a previous failed CreatePod attempt. Without this,
 		// the orphaned container holds the veth interface and blocks recreation.
+		tracker.start(PhaseCleanup)
 		if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil {
 			log.Warnw("stale container found, cleaning up before recreation",
 				"name", name, "status", ct.Status, "id", ct.ID)
@@ -240,7 +242,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 		}
 
+		tracker.done()
+
 		// 1. Resolve image → tarball path
+		tracker.start(PhaseImageResolve)
 		var tarballPath string
 		if filePath := pod.Annotations[annotationFile]; filePath != "" {
 			// Use local tarball directly (skip OCI pull)
@@ -253,7 +258,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
+		tracker.done()
+
 		// 2. Allocate network (registers containerName.podName in network zone)
+		tracker.start(PhaseNetworkAlloc)
 		vethName := vethName(pod, i)
 		containerHostname := container.Name + "." + pod.Name
 		staticIP := pod.Annotations[annotationStaticIP]
@@ -297,8 +305,11 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
+		tracker.done()
+
 		// 3. Provision volumes, write ConfigMap data, and create mount entries.
 		// Clean up any orphaned mounts from previous failed attempts first.
+		tracker.start(PhaseVolumeMount)
 		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 		mountListName := ""
 		for _, vm := range container.VolumeMounts {
@@ -345,6 +356,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 
+		tracker.done()
+
 		// 4. Determine boot behavior
 		startOnBoot := "false"
 		if pod.Spec.RestartPolicy == corev1.RestartPolicyAlways {
@@ -360,6 +373,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 
 		// 6. Create the container
+		tracker.start(PhaseContainerCreate)
 		spec := runtime.ContainerSpec{
 			Name:        name,
 			Image:       tarballPath,
@@ -385,9 +399,12 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			return fmt.Errorf("creating container %s: %w", name, err)
 		}
 
+		tracker.done()
+
 		// 7. Wait for tarball extraction then start the container.
 		// After creation RouterOS extracts the tarball; the container is
 		// not yet "stopped" until extraction finishes.
+		tracker.start(PhaseTarballExtract)
 		ct, err := p.waitForStopped(ctx, name, 120*time.Second)
 		if err != nil {
 			return fmt.Errorf("waiting for container %s to be ready: %w", name, err)
@@ -396,6 +413,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// Start with retry — MikroTik REST API can return EOF if the
 		// previous container hasn't fully torn down yet (race between
 		// delete and create).
+		tracker.done()
+		tracker.start(PhaseContainerStart)
 		startBackoffs := []time.Duration{
 			2 * time.Second, 2 * time.Second,
 			3 * time.Second, 3 * time.Second,
@@ -420,7 +439,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			return fmt.Errorf("starting container %s after %d attempts: %w", name, len(startBackoffs)+1, startErr)
 		}
 
+		tracker.done()
+
 		// 8. Register with lifecycle manager for boot ordering / health probes
+		tracker.start(PhaseLifecycleReg)
 		if startOnBoot == "true" {
 			p.deps.LifecycleMgr.Register(name, lifecycle.ContainerUnit{
 				Name:          name,
@@ -436,13 +458,18 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			})
 		}
 
+		tracker.done()
 		log.Infow("container created and started", "name", name, "id", ct.ID)
 	}
 
 	// 9. Register DNS aliases (pod-level default + custom aliases from annotation)
+	tracker.start(PhaseDNSRegister)
 	p.registerPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
 
+	tracker.done()
+
 	// 10. Push pod→container mappings to micrologs
+	tracker.start(PhasePodReady)
 	p.pushLogMappings(ctx, pod, log)
 
 	// Track the pod
@@ -455,6 +482,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		p.recordEvent(pod, "Created", fmt.Sprintf("Created container %s", c.Name), "Normal")
 		p.recordEvent(pod, "Started", fmt.Sprintf("Started container %s", c.Name), "Normal")
 	}
+
+	tracker.done()
 
 	// Run async consistency check to clean up any orphaned resources
 	p.CheckConsistencyAsync("create-pod/" + podKey(pod))
@@ -1230,9 +1259,13 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 					},
 				}
 			case ct.IsStopped():
+				reason := "Stopped"
+				if ct.Comment != "" {
+					reason = "Stopped: " + ct.Comment
+				}
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{
-						Reason: "Stopped",
+						Reason: reason,
 					},
 				}
 				allRunning = false
@@ -1516,6 +1549,72 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		actualByName[c.Name] = c
 	}
 	log.Infow("RECONCILE: step 2 list containers", "count", len(actual), "ms", time.Since(stepStart).Milliseconds())
+
+	// 2c. Auto-recover stopped/faulted containers.
+	// Containers that are stopped but belong to tracked pods with start-on-boot=yes
+	// should be restarted. If restart fails (e.g. veth gone), remove the container
+	// from actualByName so step 3 recreates the entire pod.
+	for name, ct := range actualByName {
+		if ct.IsRunning() {
+			continue
+		}
+		if ct.StartOnBoot != "true" {
+			continue
+		}
+
+		// Find the tracked pod owning this container
+		var ownerPod *corev1.Pod
+		for _, pod := range desiredPods {
+			for _, c := range pod.Spec.Containers {
+				if sanitizeName(pod, c.Name) == name {
+					ownerPod = pod
+					break
+				}
+			}
+			if ownerPod != nil {
+				break
+			}
+		}
+		if ownerPod == nil {
+			continue // orphan, handled elsewhere
+		}
+
+		comment := ct.Comment
+		if comment == "" {
+			comment = "no error detail"
+		}
+		log.Warnw("RECOVERY: stopped container detected",
+			"container", name, "comment", comment, "id", ct.ID)
+		p.recordEvent(ownerPod, "ContainerStopped",
+			fmt.Sprintf("Container %s stopped: %s", name, comment), "Warning")
+
+		// Attempt restart first — cheapest fix
+		if err := p.deps.Runtime.StartContainer(ctx, ct.ID); err == nil {
+			// Verify it actually came up
+			time.Sleep(2 * time.Second)
+			if updated, err := p.deps.Runtime.GetContainer(ctx, name); err == nil && updated.IsRunning() {
+				log.Infow("RECOVERY: container restarted successfully", "container", name)
+				p.recordEvent(ownerPod, "Restarted",
+					fmt.Sprintf("Container %s restarted after fault: %s", name, comment), "Normal")
+				globalStats.RecordRestart(true, name, comment)
+				actualByName[name] = *updated
+				continue
+			}
+		}
+
+		// Restart failed — destroy container, veths, mounts so step 3 recreates
+		log.Warnw("RECOVERY: restart failed, destroying for full recreation",
+			"container", name, "comment", comment)
+		globalStats.RecordRestart(false, name, comment)
+		p.stopAndRemoveContainer(ctx, name, ct.ID)
+		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
+		delete(actualByName, name)
+		// Untrack the pod so step 3 sees it as missing
+		delete(p.pods, podKey(ownerPod))
+		globalStats.RecordRecreate(name)
+		p.recordEvent(ownerPod, "RecoveryRecreate",
+			fmt.Sprintf("Container %s destroyed for recreation after persistent fault: %s", name, comment), "Warning")
+	}
 
 	// 2b. Clean up stale containers from pods migrated to other nodes.
 	// If a pod was migrated away (vkube.io/node != local), but its containers

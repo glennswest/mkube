@@ -164,6 +164,7 @@ func rosContainerToRuntime(ct *routeros.Container) *Container {
 		Status:      status,
 		Hostname:    ct.Hostname,
 		DNS:         ct.DNS,
+		Comment:     ct.Comment,
 		MountLists:  ct.MountLists,
 		Cmd:         ct.Cmd,
 		Entrypoint:  ct.Entrypoint,

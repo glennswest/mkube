@@ -36,6 +36,7 @@ type Container struct {
 	Entrypoint  string `json:"entrypoint,omitempty"`
 	Running     string `json:"running,omitempty"` // "true" if running
 	Stopped     string `json:"stopped,omitempty"` // "true" if stopped
+	Comment     string `json:"comment,omitempty"` // error message when stopped (e.g. "could not acquire interface")
 	Logging     string `json:"logging"`
 	WorkDir     string `json:"workdir,omitempty"`
 	Hostname    string `json:"hostname,omitempty"`

@@ -50,6 +50,7 @@ type Container struct {
 	Status    string // "running", "stopped", "pending", "failed"
 	Hostname  string
 	DNS       string
+	Comment   string // error/status message from the runtime (e.g. "could not acquire interface")
 
 	// RouterOS-specific fields (populated by RouterOS adapter)
 	Tag         string

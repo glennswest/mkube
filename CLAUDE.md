@@ -174,6 +174,8 @@ go test ./...
 - iSCSI root_path for DHCP: Pool-level default root_path (baremetalservices iSCSI target) auto-set for data networks. Per-reservation root_path from BMH spec overrides pool default. Flows through dns_seed.go, dns_proxy.go, Network CRD, and BMH sync.
 - Config sync in `make deploy`: `make deploy` previously only pushed the binary (container image) — config files on the device were never updated. Added `deploy-config` target that SCPs `rose1-config.yaml` + `boot-order.yaml` to the device. `make deploy` now depends on `deploy-config`. This was the root cause of g10/g11 DNS outage after bridge rename: device had stale config with old bridge names (`bridge` instead of `bridge-g10`).
 - Deploy version verification: healthz now reports version and commit hash. `make deploy` waits up to 90s after push for mkube-update to swap in the new binary, then verifies the running commit matches the build. Prevents silently running stale code after deploy.
+- Auto-recovery for stopped/faulted containers: Reconciler detects stopped containers with start-on-boot=yes, attempts restart first (cheapest fix), falls back to full destroy+recreate if restart fails. RouterOS `comment` field propagated through the stack for diagnostics. Events: ContainerStopped, Restarted, RecoveryRecreate. Lifecycle phase timing stats via `GET /api/v1/lifecycle/stats`.
+- Live integration test CLI: `cmd/mkube-test` runs against live mkube API with dedicated test network. 4 suites: container start/stop, DHCP reservation CRUD, DNS record CRUD, DHCP pool CRUD. Reports timing stats.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:

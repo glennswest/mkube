@@ -11,7 +11,8 @@ GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 .PHONY: build build-local tarball deploy deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-all \
         deploy-update deploy-installer \
-        build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube
+        build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube \
+        build-test test-integration
 
 ## Build the Go binary for the target architecture
 build:
@@ -124,6 +125,14 @@ deploy-pvex-boot: build-pve-deploy
 ## Deploy mkube controller to Proxmox (CT 121)
 deploy-pvex-mkube: build-pve-deploy
 	./dist/pve-deploy --config deploy/pvex-mkube.yaml
+
+## Build mkube-test integration test CLI
+build-test:
+	go build $(GOFLAGS) -o dist/mkube-test ./cmd/mkube-test/
+
+## Run live integration tests against rose1
+test-integration: build-test
+	./dist/mkube-test --api $(MKUBE_API)
 
 ## Generate mocks for testing
 mocks:
