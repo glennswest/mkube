@@ -30,12 +30,14 @@ func NewRouterOS(client *routeros.Client, nodeName string, log *zap.SugaredLogge
 
 // ─── Bridge Operations ───────────────────────────────────────────────────────
 
-func (d *RouterOS) CreateBridge(_ context.Context, _ string, _ network.BridgeOpts) error {
-	return network.ErrNotSupported
+func (d *RouterOS) CreateBridge(ctx context.Context, name string, _ network.BridgeOpts) error {
+	d.log.Infow("creating bridge", "name", name)
+	return d.client.CreateBridge(ctx, name)
 }
 
-func (d *RouterOS) DeleteBridge(_ context.Context, _ string) error {
-	return network.ErrNotSupported
+func (d *RouterOS) DeleteBridge(ctx context.Context, name string) error {
+	d.log.Infow("deleting bridge", "name", name)
+	return d.client.DeleteBridge(ctx, name)
 }
 
 func (d *RouterOS) ListBridges(ctx context.Context) ([]network.BridgeInfo, error) {

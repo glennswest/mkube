@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"go.uber.org/zap"
 
 	"github.com/glennswest/mkube/pkg/config"
 )
@@ -122,15 +123,93 @@ func (idx *dhcpNetworkIndex) networkForIP(ip string) string {
 	return ""
 }
 
+// rebuildDHCPIndex rebuilds the DHCP network index from both static config
+// and Network CRDs. This ensures the index stays current when networks are
+// added/removed/updated via the API.
+func (p *MicroKubeProvider) rebuildDHCPIndex() {
+	idx := &dhcpNetworkIndex{
+		reservationsByIP: make(map[string]dhcpReservationEntry),
+	}
+
+	// Include static config networks
+	for _, n := range p.deps.Config.Networks {
+		if n.CIDR != "" {
+			_, subnet, err := net.ParseCIDR(n.CIDR)
+			if err == nil {
+				idx.subnets = append(idx.subnets, dhcpSubnetEntry{
+					Network: n.Name,
+					Subnet:  subnet,
+				})
+			}
+		}
+		for _, r := range n.DNS.DHCP.Reservations {
+			if r.IP != "" && r.Hostname != "" {
+				idx.reservationsByIP[r.IP] = dhcpReservationEntry{
+					Network:  n.Name,
+					Hostname: r.Hostname,
+				}
+			}
+		}
+	}
+
+	// Include Network CRDs (these take precedence — overwrite static entries)
+	for _, crd := range p.networks {
+		if crd.Spec.CIDR != "" {
+			_, subnet, err := net.ParseCIDR(crd.Spec.CIDR)
+			if err == nil {
+				// Avoid duplicate subnet entries
+				found := false
+				for _, s := range idx.subnets {
+					if s.Network == crd.Name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					idx.subnets = append(idx.subnets, dhcpSubnetEntry{
+						Network: crd.Name,
+						Subnet:  subnet,
+					})
+				}
+			}
+		}
+		for _, r := range crd.Spec.DHCP.Reservations {
+			if r.IP != "" && r.Hostname != "" {
+				idx.reservationsByIP[r.IP] = dhcpReservationEntry{
+					Network:  crd.Name,
+					Hostname: r.Hostname,
+				}
+			}
+		}
+	}
+
+	p.dhcpIndex = idx
+	p.deps.Logger.Debugw("rebuilt DHCP index",
+		"subnets", len(idx.subnets),
+		"reservations", len(idx.reservationsByIP),
+	)
+}
+
 // RunDHCPWatcher subscribes to NATS lease events for instant discovery and
 // polls each DHCP-enabled microdns as a fallback consistency check.
 func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
-	// Check if any network has DHCP enabled
+	// Rebuild index from CRDs (covers networks loaded from NATS)
+	p.rebuildDHCPIndex()
+
+	// Check if any network has DHCP enabled (static config or CRDs)
 	hasAny := false
 	for _, n := range p.deps.Config.Networks {
 		if n.DNS.DHCP.Enabled {
 			hasAny = true
 			break
+		}
+	}
+	if !hasAny {
+		for _, n := range p.networks {
+			if n.Spec.DHCP.Enabled {
+				hasAny = true
+				break
+			}
 		}
 	}
 	if !hasAny {
@@ -281,35 +360,62 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	log := p.deps.Logger.Named("dhcp-watcher")
 
+	// Poll static config networks
 	for _, n := range p.deps.Config.Networks {
 		if !n.DNS.DHCP.Enabled || n.DNS.Endpoint == "" {
 			continue
 		}
+		p.pollDHCPLeases(ctx, log, n.Name, n.DNS.Endpoint)
+	}
 
-		url := n.DNS.Endpoint + "/api/v1/leases"
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if err != nil {
-			log.Warnw("failed to create lease request", "network", n.Name, "error", err)
+	// Poll Network CRD networks
+	for _, n := range p.networks {
+		if !n.Spec.DHCP.Enabled {
 			continue
 		}
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Debugw("DHCP lease fetch failed", "network", n.Name, "error", err)
+		endpoint := p.networkDNSEndpoint(n)
+		if endpoint == "" {
 			continue
 		}
-
-		var leases []dhcpLease
-		if err := json.NewDecoder(resp.Body).Decode(&leases); err != nil {
-			resp.Body.Close()
-			log.Warnw("failed to decode leases", "network", n.Name, "error", err)
-			continue
+		// Skip if already polled via static config
+		alreadyPolled := false
+		for _, sc := range p.deps.Config.Networks {
+			if sc.Name == n.Name {
+				alreadyPolled = true
+				break
+			}
 		}
+		if !alreadyPolled {
+			p.pollDHCPLeases(ctx, log, n.Name, endpoint)
+		}
+	}
+}
+
+// pollDHCPLeases fetches active leases from a microdns instance and publishes events.
+func (p *MicroKubeProvider) pollDHCPLeases(ctx context.Context, log *zap.SugaredLogger, networkName, endpoint string) {
+	url := endpoint + "/api/v1/leases"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		log.Warnw("failed to create lease request", "network", networkName, "error", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Debugw("DHCP lease fetch failed", "network", networkName, "error", err)
+		return
+	}
+
+	var leases []dhcpLease
+	if err := json.NewDecoder(resp.Body).Decode(&leases); err != nil {
 		resp.Body.Close()
+		log.Warnw("failed to decode leases", "network", networkName, "error", err)
+		return
+	}
+	resp.Body.Close()
 
-		for _, lease := range leases {
-			p.publishDHCPEvent("LeaseCreated", n.Name, lease.getIP(), lease.getMAC(), "")
-		}
+	for _, lease := range leases {
+		p.publishDHCPEvent("LeaseCreated", networkName, lease.getIP(), lease.getMAC(), "")
 	}
 }

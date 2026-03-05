@@ -77,6 +77,24 @@ func mockRouterOS(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusCreated)
 	})
 
+	// POST /rest/interface/bridge/add — create bridge
+	mux.HandleFunc("/rest/interface/bridge/add", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	// POST /rest/interface/bridge/remove — remove bridge
+	mux.HandleFunc("/rest/interface/bridge/remove", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
 	return httptest.NewServer(mux)
 }
 
@@ -174,6 +192,22 @@ func TestDetachPortNoOp(t *testing.T) {
 	}
 }
 
+func TestCreateAndDeleteBridge(t *testing.T) {
+	srv := mockRouterOS(t)
+	defer srv.Close()
+	d := newTestDriver(t, srv.URL)
+
+	ctx := context.Background()
+
+	if err := d.CreateBridge(ctx, "bridge-g12", network.BridgeOpts{}); err != nil {
+		t.Fatalf("CreateBridge: %v", err)
+	}
+
+	if err := d.DeleteBridge(ctx, "bridge-g12"); err != nil {
+		t.Fatalf("DeleteBridge: %v", err)
+	}
+}
+
 func TestUnsupportedOperations(t *testing.T) {
 	srv := mockRouterOS(t)
 	defer srv.Close()
@@ -181,12 +215,6 @@ func TestUnsupportedOperations(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := d.CreateBridge(ctx, "br0", network.BridgeOpts{}); err != network.ErrNotSupported {
-		t.Errorf("CreateBridge should return ErrNotSupported, got %v", err)
-	}
-	if err := d.DeleteBridge(ctx, "br0"); err != network.ErrNotSupported {
-		t.Errorf("DeleteBridge should return ErrNotSupported, got %v", err)
-	}
 	// CreateTunnel with unsupported type should fail
 	if err := d.CreateTunnel(ctx, "tun0", network.TunnelSpec{Type: "vxlan"}); err == nil {
 		t.Error("CreateTunnel with unsupported type should return error")

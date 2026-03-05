@@ -117,6 +117,7 @@ networks:
             ip: "192.168.10.190"
             hostname: "macmini"
   - name: g11
+    type: ipmi
     bridge: bridge-boot
     cidr: "192.168.11.0/24"
     gateway: "192.168.11.1"

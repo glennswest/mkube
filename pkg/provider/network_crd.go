@@ -43,6 +43,7 @@ type Network struct {
 // NetworkSpec defines the desired state of a Network.
 type NetworkSpec struct {
 	Type          NetworkType       `json:"type"`                    // data, ipmi, management, boot, storage, external
+	PairNetwork   string            `json:"pairNetwork,omitempty"`   // companion network (e.g. g12↔g13 data/ipmi pairing)
 	Bridge        string            `json:"bridge,omitempty"`        // RouterOS bridge name
 	CIDR          string            `json:"cidr"`                    // e.g. "192.168.10.0/24"
 	Gateway       string            `json:"gateway"`                 // router IP on this network
@@ -53,6 +54,7 @@ type NetworkSpec struct {
 	IPAM          NetworkIPAMSpec   `json:"ipam,omitempty"`
 	ExternalDNS   bool              `json:"externalDNS,omitempty"`   // DNS not managed by mkube
 	Managed       bool              `json:"managed,omitempty"`       // part 2: auto-deploy microdns
+	Provisioned   bool              `json:"provisioned,omitempty"`   // infrastructure created by provider
 	StaticRecords []StaticDNSRecord `json:"staticRecords,omitempty"`
 }
 
@@ -227,7 +229,9 @@ func (p *MicroKubeProvider) MigrateNetworkConfig(ctx context.Context) {
 // networkDefToNetwork converts a config.NetworkDef to a Network CRD.
 func networkDefToNetwork(nd config.NetworkDef) Network {
 	netType := NetworkTypeData
-	if nd.ExternalDNS {
+	if nd.Type != "" {
+		netType = NetworkType(nd.Type)
+	} else if nd.ExternalDNS {
 		netType = NetworkTypeExternal
 	}
 
@@ -376,12 +380,20 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 
 	p.networks[net.Name] = &net
 
+	// Provision infrastructure (bridge, gateway IP, DHCP relay) if not already done
+	if !net.Spec.Provisioned {
+		go p.provisionNetwork(context.Background(), &net)
+	}
+
 	// Auto-deploy managed DNS pod if network is managed with DNS config
 	if net.Spec.Managed && net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != "" {
 		if err := p.deployManagedDNS(r.Context(), &net); err != nil {
 			p.deps.Logger.Warnw("auto-deploy DNS failed", "network", net.Name, "error", err)
 		}
 	}
+
+	// Rebuild DHCP index to include the new network
+	p.rebuildDHCPIndex()
 
 	podWriteJSON(w, http.StatusCreated, &net)
 }
@@ -420,6 +432,9 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, &net)
+
+	// Rebuild DHCP index on reservation changes
+	p.rebuildDHCPIndex()
 
 	podWriteJSON(w, http.StatusOK, &net)
 }
@@ -462,6 +477,9 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, merged)
 
+	// Rebuild DHCP index on reservation changes
+	p.rebuildDHCPIndex()
+
 	podWriteJSON(w, http.StatusOK, merged)
 }
 
@@ -479,6 +497,11 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 		if err := p.teardownManagedDNS(r.Context(), name); err != nil {
 			p.deps.Logger.Warnw("teardown managed DNS failed", "network", name, "error", err)
 		}
+	}
+
+	// Deprovision infrastructure (DHCP relay, bridge IP, bridge)
+	if net.Spec.Provisioned {
+		p.deprovisionNetwork(r.Context(), net)
 	}
 
 	// Check if any (non-managed) pod still references this network
@@ -575,6 +598,18 @@ default_ttl = 300
 `, net.Spec.DNS.Server, net.Spec.DNS.Zone, reverseZone)
 	}
 
+	// Build NATS messaging section
+	natsURL := p.natsURL()
+	var messagingSection string
+	if natsURL != "" {
+		messagingSection = fmt.Sprintf(`
+[messaging]
+backend = "nats"
+topic_prefix = "microdns"
+url = %q
+`, natsURL)
+	}
+
 	return fmt.Sprintf(`[instance]
 id = "microdns-%s"
 mode = "%s"
@@ -600,7 +635,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, dnsMode, net.Spec.DNS.Zone, dhcpSection)
+%s%s`, net.Name, dnsMode, net.Spec.DNS.Zone, dhcpSection, messagingSection)
 }
 
 // ─── Status Enrichment ──────────────────────────────────────────────────────
@@ -717,6 +752,7 @@ func networkListToTable(networks []Network) *metav1.Table {
 		ColumnDefinitions: []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name"},
 			{Name: "Type", Type: "string"},
+			{Name: "Pair", Type: "string"},
 			{Name: "CIDR", Type: "string"},
 			{Name: "Gateway", Type: "string"},
 			{Name: "DNS Zone", Type: "string"},
@@ -757,6 +793,7 @@ func networkListToTable(networks []Network) *metav1.Table {
 			Cells: []interface{}{
 				net.Name,
 				string(net.Spec.Type),
+				net.Spec.PairNetwork,
 				net.Spec.CIDR,
 				net.Spec.Gateway,
 				net.Spec.DNS.Zone,

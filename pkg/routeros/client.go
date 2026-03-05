@@ -366,6 +366,103 @@ func (c *Client) ListBridges(ctx context.Context) ([]Bridge, error) {
 	return bridges, err
 }
 
+// CreateBridge creates a bridge interface on RouterOS.
+func (c *Client) CreateBridge(ctx context.Context, name string) error {
+	return c.restPOST(ctx, "/interface/bridge/add", map[string]string{
+		"name": name,
+	}, nil)
+}
+
+// DeleteBridge removes a bridge interface by name.
+func (c *Client) DeleteBridge(ctx context.Context, name string) error {
+	bridges, err := c.ListBridges(ctx)
+	if err != nil {
+		return fmt.Errorf("listing bridges to find %q: %w", name, err)
+	}
+	for _, b := range bridges {
+		if b.Name == name {
+			return c.restPOST(ctx, "/interface/bridge/remove", map[string]string{".id": b.ID}, nil)
+		}
+	}
+	return nil // already gone
+}
+
+// AddIPAddress assigns an IP address to an interface.
+func (c *Client) AddIPAddress(ctx context.Context, address, iface string) error {
+	return c.restPOST(ctx, "/ip/address/add", map[string]string{
+		"address":   address,
+		"interface": iface,
+	}, nil)
+}
+
+// RemoveIPAddress removes an IP address assignment by its .id.
+func (c *Client) RemoveIPAddress(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/ip/address/remove", map[string]string{".id": id}, nil)
+}
+
+// RemoveIPAddressByInterface removes all IP addresses assigned to an interface.
+func (c *Client) RemoveIPAddressByInterface(ctx context.Context, iface string) error {
+	addrs, err := c.ListIPAddresses(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range addrs {
+		if a.Interface == iface {
+			if err := c.RemoveIPAddress(ctx, a.ID); err != nil {
+				return fmt.Errorf("removing IP %s from %s: %w", a.Address, iface, err)
+			}
+		}
+	}
+	return nil
+}
+
+// DHCPRelay represents a DHCP relay configuration on RouterOS.
+type DHCPRelay struct {
+	ID           string `json:".id"`
+	Name         string `json:"name"`
+	Interface    string `json:"interface"`
+	DHCPServer   string `json:"dhcp-server"`
+	LocalAddress string `json:"local-address"`
+}
+
+// ListDHCPRelays returns all DHCP relay configurations.
+func (c *Client) ListDHCPRelays(ctx context.Context) ([]DHCPRelay, error) {
+	var relays []DHCPRelay
+	err := c.restGET(ctx, "/ip/dhcp-relay", &relays)
+	return relays, err
+}
+
+// AddDHCPRelay creates a DHCP relay on an interface.
+func (c *Client) AddDHCPRelay(ctx context.Context, name, iface, server, localAddr string) error {
+	return c.restPOST(ctx, "/ip/dhcp-relay/add", map[string]string{
+		"name":          name,
+		"interface":     iface,
+		"dhcp-server":   server,
+		"local-address": localAddr,
+	}, nil)
+}
+
+// RemoveDHCPRelay removes a DHCP relay by its .id.
+func (c *Client) RemoveDHCPRelay(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/ip/dhcp-relay/remove", map[string]string{".id": id}, nil)
+}
+
+// RemoveDHCPRelayByInterface removes all DHCP relays on an interface.
+func (c *Client) RemoveDHCPRelayByInterface(ctx context.Context, iface string) error {
+	relays, err := c.ListDHCPRelays(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range relays {
+		if r.Interface == iface {
+			if err := c.RemoveDHCPRelay(ctx, r.ID); err != nil {
+				return fmt.Errorf("removing DHCP relay %s from %s: %w", r.Name, iface, err)
+			}
+		}
+	}
+	return nil
+}
+
 // ─── EoIP Tunnel Operations ──────────────────────────────────────────────────
 
 // CreateEoIPTunnel creates an EoIP tunnel interface.

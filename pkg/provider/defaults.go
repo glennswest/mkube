@@ -101,6 +101,22 @@ default_ttl = 300
 `, net.DNS.Server, net.DNS.Zone, reverseZone)
 		}
 
+		// NATS messaging section for DHCP event pipeline
+		natsURL := cfg.NATS.URL
+		if natsURL == "" {
+			natsPort := cfg.NATS.Port
+			if natsPort == 0 {
+				natsPort = 4222
+			}
+			natsURL = fmt.Sprintf("nats://192.168.200.10:%d", natsPort)
+		}
+		messagingSection := fmt.Sprintf(`
+[messaging]
+backend = "nats"
+topic_prefix = "microdns"
+url = %q
+`, natsURL)
+
 		toml := fmt.Sprintf(`[instance]
 id = "microdns-%s"
 mode = "%s"
@@ -126,7 +142,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, dnsMode, net.DNS.Zone, dhcpSection)
+%s%s`, net.Name, dnsMode, net.DNS.Zone, dhcpSection, messagingSection)
 
 		cms = append(cms, &corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},

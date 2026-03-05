@@ -114,6 +114,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadPVCsFromStore(context.Background())
 	p.LoadNetworksFromStore(context.Background())
 	p.MigrateNetworkConfig(context.Background())
+	p.rebuildDHCPIndex()
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
 	p.LoadConfigMapsFromStore(context.Background())

@@ -98,15 +98,16 @@ type NamespaceConfig struct {
 
 // NetworkDef defines a network that containers can be placed on.
 type NetworkDef struct {
-	Name      string    `yaml:"name"`
-	Bridge    string    `yaml:"bridge"`
-	CIDR      string    `yaml:"cidr"`
-	Gateway   string    `yaml:"gateway"`
-	VLAN      int       `yaml:"vlan,omitempty"`
-	DNS       DNSConfig `yaml:"dns"`
-	IPAMStart string    `yaml:"ipamStart,omitempty"` // first IP for container IPAM allocation
-	IPAMEnd   string    `yaml:"ipamEnd,omitempty"`   // last IP for container IPAM allocation
-	ExternalDNS bool   `yaml:"externalDNS,omitempty"` // DNS server is external (not managed by mkube)
+	Name        string    `yaml:"name"`
+	Type        string    `yaml:"type,omitempty"` // data, ipmi, management, boot, storage, external
+	Bridge      string    `yaml:"bridge"`
+	CIDR        string    `yaml:"cidr"`
+	Gateway     string    `yaml:"gateway"`
+	VLAN        int       `yaml:"vlan,omitempty"`
+	DNS         DNSConfig `yaml:"dns"`
+	IPAMStart   string    `yaml:"ipamStart,omitempty"` // first IP for container IPAM allocation
+	IPAMEnd     string    `yaml:"ipamEnd,omitempty"`   // last IP for container IPAM allocation
+	ExternalDNS bool      `yaml:"externalDNS,omitempty"` // DNS server is external (not managed by mkube)
 }
 
 // DNSConfig specifies the MicroDNS instance for a network.
