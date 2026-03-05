@@ -953,11 +953,12 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 
 	// 3. Ensure PVC exists for DNS data persistence
 	pvcName := net.Name + "-dns-data"
-	if _, exists := p.pvcs[pvcName]; !exists {
+	pvcMapKey := net.Name + "/" + pvcName
+	if _, exists := p.pvcs[pvcMapKey]; !exists {
 		storageClass := "local"
 		pvc := &corev1.PersistentVolumeClaim{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
-			ObjectMeta: metav1.ObjectMeta{Name: pvcName},
+			ObjectMeta: metav1.ObjectMeta{Name: pvcName, Namespace: net.Name},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				StorageClassName: &storageClass,
 			},
@@ -965,13 +966,14 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 				Phase: corev1.ClaimBound,
 			},
 		}
-		p.pvcs[pvcName] = pvc
+		p.pvcs[pvcMapKey] = pvc
+		storeKey := net.Name + "." + pvcName
 		if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
-			if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, pvcName, pvc); err != nil {
+			if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, storeKey, pvc); err != nil {
 				log.Warnw("failed to persist DNS data PVC", "error", err)
 			}
 		}
-		log.Infow("created DNS data PVC", "pvc", pvcName)
+		log.Infow("created DNS data PVC", "pvc", pvcName, "namespace", net.Name)
 	}
 
 	// 4. Persist pod to NATS

@@ -36,8 +36,46 @@ networks:
           ip: "192.168.200.2"
         - name: registry
           ip: "192.168.200.3"
+  - name: g8
+    type: data
+    bridge: bridge-g8
+    cidr: "192.168.8.0/24"
+    gateway: "192.168.8.1"
+    dns:
+      endpoint: "http://192.168.8.252:8080"
+      zone: "g8.lo"
+      server: "192.168.8.252"
+      staticRecords:
+        - name: rose1
+          ip: "192.168.8.1"
+        - name: dns
+          ip: "192.168.8.252"
+      dhcp:
+        enabled: true
+        rangeStart: "192.168.8.100"
+        rangeEnd: "192.168.8.200"
+        leaseTime: 86400
+  - name: g9
+    type: data
+    bridge: bridge-g9
+    cidr: "192.168.9.0/24"
+    gateway: "192.168.9.1"
+    dns:
+      endpoint: "http://192.168.9.252:8080"
+      zone: "g9.lo"
+      server: "192.168.9.252"
+      staticRecords:
+        - name: rose1
+          ip: "192.168.9.1"
+        - name: dns
+          ip: "192.168.9.252"
+      dhcp:
+        enabled: true
+        rangeStart: "192.168.9.100"
+        rangeEnd: "192.168.9.200"
+        leaseTime: 86400
   - name: g10
-    bridge: bridge
+    bridge: bridge-g10
     cidr: "192.168.10.0/24"
     gateway: "192.168.10.1"
     ipamStart: "192.168.10.200"
@@ -118,7 +156,7 @@ networks:
             hostname: "macmini"
   - name: g11
     type: ipmi
-    bridge: bridge-boot
+    bridge: bridge-g11
     cidr: "192.168.11.0/24"
     gateway: "192.168.11.1"
     ipamStart: "192.168.11.200"
