@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-05
+- **fix:** NATS URL for microdns TOML — embedded NATS sets config URL to `nats://0.0.0.0:4222` which is unreachable from external containers. `natsURL()` now detects bind-all addresses and substitutes the NATS container IP (192.168.200.10). Same fix in `defaults.go`.
+- **fix:** DNS data persistence — managed DNS pods now get PVC-backed data volume (`{network}-dns-data` PVC) so redb database survives container recreation/restart.
 - **feat:** Network provisioning flow — creating a Network CRD auto-provisions infrastructure on RouterOS (bridge, gateway IP, DHCP relay, microdns pod). Deprovisioning on delete tears down in reverse order. New `network_provision.go`.
 - **feat:** RouterOS client bridge/IP/DHCP-relay CRUD — `CreateBridge`, `DeleteBridge`, `AddIPAddress`, `RemoveIPAddress`, `RemoveIPAddressByInterface`, `AddDHCPRelay`, `RemoveDHCPRelay`, `RemoveDHCPRelayByInterface`, `ListDHCPRelays`, `BridgeExists`.
 - **feat:** Network CRD `pairNetwork` field — links companion data/IPMI networks (e.g. g12↔g13). `provisioned` tracks infrastructure state. Table shows Pair column.

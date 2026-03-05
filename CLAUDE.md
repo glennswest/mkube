@@ -162,6 +162,8 @@ go test ./...
 - pxemanager code removed from mkube: All pxemanager client code (pxeHost type, pxeHTTPClient, pxeRegisterHost, pxeSetImage, pxeIPMIPower, pxeIPMIStatus, pxeConfigureIPMI, pxeGetHost), reconcileBMHChanges, enrichBMHStatus, enrichBMHListConcurrent — all removed. bmh-operator handles IPMI directly. Eliminates stale error messages from decommissioned pxemanager.
 - Network provisioning flow: Creating a Network CRD auto-provisions infrastructure on RouterOS (bridge, gateway IP, DHCP relay). Deprovisioning on delete tears down in reverse. RouterOS client extended with bridge/IP/DHCP-relay CRUD. Network driver implements CreateBridge/DeleteBridge. `network_provision.go` handles the lifecycle.
 - Network CRD pairNetwork: Links companion data/IPMI networks (e.g. g12↔g13). Config `NetworkDef.Type` carries type classification through migration.
+- NATS URL for microdns: Embedded NATS sets URL to 0.0.0.0 (unreachable from other containers). Fixed to use NATS container IP.
+- DNS data persistence: Managed DNS pods now get PVC-backed data volume for redb persistence.
 - NATS messaging in microdns TOML: Generated TOML includes `[messaging]` section enabling microdns → NATS DHCP event pipeline.
 - dhcpIndex rebuild from CRDs: `rebuildDHCPIndex()` builds from both static config and Network CRDs. DHCP watcher polls CRD-based networks. Wired into CRD handlers and SetStore boot path.
 
