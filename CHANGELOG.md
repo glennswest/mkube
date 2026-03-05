@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-05
+- **feat:** Version verification in deploy — healthz now reports version and commit hash. `make deploy` waits up to 90s after push for mkube-update to swap in the new binary, then verifies the running commit matches what was built. No more silently running stale code.
 - **fix:** Config sync in `make deploy` — `make deploy` previously only pushed the binary via container image, never updating config files on the device. Stale config caused g10/g11 DNS outage after bridge rename (device still had `bridge` instead of `bridge-g10`). Added `deploy-config` target that SCPs `rose1-config.yaml` + `boot-order.yaml` to the device on every deploy.
 - **feat:** iSCSI root_path for DHCP pools and BMH reservations — pool-level default root_path (baremetalservices iSCSI target) auto-set for data networks. Per-reservation root_path from BMH spec overrides pool default. Flows through dns_seed, dns_proxy, Network CRD, and BMH sync.
 - **feat:** DNS & DHCP proxy resources via kube API — all microdns resources (DNS records, DHCP pools, DHCP reservations, DHCP leases, DNS forwarders) now accessible via `mk get/apply/delete`. Namespace = network name (e.g. `mk get dr -n g10`). Short names: dr, dp, dhcpr, dl, df. microdns is source of truth — no NATS persistence. New `dns_proxy.go` with 24 handler functions and 5 table formatters. DNS client extended with full record support (all record types), DHCP lease listing, and single-resource GET methods.

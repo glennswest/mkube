@@ -495,6 +495,8 @@ func runSharedServices(
 		Namespace:    nsMgr,
 		Store:        kvStore,
 		Logger:       log,
+		Version:      version,
+		Commit:       commit,
 	})
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)

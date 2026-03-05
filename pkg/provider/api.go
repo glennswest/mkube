@@ -815,11 +815,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// handleHealthz returns a simple health check response.
+// handleHealthz returns a simple health check response including version and commit
+// so deployers can verify the running binary matches what was built.
 func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "ok\nnode: %s\nuptime: %s\n", p.nodeName, time.Since(p.startTime).Truncate(time.Second))
+	_, _ = fmt.Fprintf(w, "ok\nnode: %s\nversion: %s\ncommit: %s\nuptime: %s\n",
+		p.nodeName, p.deps.Version, p.deps.Commit, time.Since(p.startTime).Truncate(time.Second))
 }
 
 // pushNotifyRequest is the JSON body for POST /api/v1/registry/push-notify.

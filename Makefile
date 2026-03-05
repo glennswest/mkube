@@ -51,13 +51,28 @@ tarball: build
 
 ## Deploy via local registry — build container, push, mkube-update picks it up.
 ## Also syncs config + boot-order to the device so they stay current.
+## After push, waits up to 90s for mkube-update to swap in the new binary
+## and verifies the running commit matches what was just built.
 deploy: build deploy-config
 	cp dist/$(BINARY)-$(ARCH) mkube
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
 	rm -f mkube
 	podman push --tls-verify=false $(IMAGE)
-	@echo "Pushed $(IMAGE) — mkube-update will auto-update"
-	@curl -sf -X POST $(MKUBE_API)/api/v1/images/redeploy && echo "Redeploy triggered" || echo "(mkube API not reachable, update will happen on next poll)"
+	@echo "Pushed $(IMAGE) — waiting for mkube-update to swap binary..."
+	@EXPECT_COMMIT=$(COMMIT); \
+	for i in $$(seq 1 18); do \
+		RUNNING=$$(curl -sf $(MKUBE_API)/healthz 2>/dev/null | grep '^commit:' | awk '{print $$2}'); \
+		if [ "$$RUNNING" = "$$EXPECT_COMMIT" ]; then \
+			echo "VERIFIED: running commit $$RUNNING matches build"; \
+			exit 0; \
+		fi; \
+		if [ $$i -eq 1 ]; then \
+			echo "  expecting commit: $$EXPECT_COMMIT, currently running: $${RUNNING:-unknown}"; \
+		fi; \
+		sleep 5; \
+	done; \
+	echo "WARNING: after 90s, running commit ($${RUNNING:-unknown}) != expected ($$EXPECT_COMMIT)"; \
+	echo "Check mkube-update logs on the device"
 
 ## Sync config and boot-order files to the device
 deploy-config:

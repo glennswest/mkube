@@ -75,6 +75,8 @@ type Deps struct {
 	Store        *store.Store                // optional, nil if NATS is not configured
 	PushEvents   <-chan registry.PushEvent   // optional, receives push events from embedded registry
 	Logger       *zap.SugaredLogger
+	Version      string // build version (git describe)
+	Commit       string // build commit (git rev-parse --short HEAD)
 }
 
 // MicroKubeProvider implements the Virtual Kubelet provider interface.
