@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-05
+- **refactor:** Remove all pxemanager client code — pxeHost type, pxeHTTPClient, all pxe* functions, reconcileBMHChanges, enrichBMHStatus, enrichBMHListConcurrent. bmh-operator handles all IPMI directly. Eliminates stale error messages from decommissioned pxemanager.
+- **chore:** Remove server7 references from `deploy/rose1-config.yaml` and g10 Network CRD (placeholder MACs).
 - **feat:** microdns liveness checks — new `checkMicroDNSServices()` in consistency report verifies REST API health, DHCP pool/reservation counts, and DNS forwarder topology for each managed network. New `MicroDNS` section in consistency report.
 - **feat:** Auto-recovery after DNS restart — `repairDNSLiveness()` now triggers `seedDNSConfig()` after restarting a dead DNS pod, re-populating DHCP pools/reservations/forwarders that may be lost when the database is ephemeral.
 - **feat:** `checkInfraHealth()` polling fallback now probes microdns REST API + port 53 for each managed network, detecting zombie containers (RouterOS reports "running" but process is dead).

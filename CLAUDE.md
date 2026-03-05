@@ -159,9 +159,10 @@ go test ./...
 - server30 → server9 migration: Updated `deploy/rose1-config.yaml` (g10: .30→.18 with server9 hostname, removed server30b, g11: hostname change). Cleaned stale DNS A records from microdns redb database.
 - Direct microdns REST API for DHCP/forwarders: mkube now calls microdns REST API directly for DHCP pool creation, reservation upsert/delete, and DNS forward zone management. Replaces the old TOML pipeline. TOML reduced to minimal structural config. Network CRD keeps reservations as NATS desired-state backup. `seedDNSConfig()` re-seeds on empty DB. BMH sync pushes changes via REST API immediately.
 - microdns liveness checks: `checkMicroDNSServices()` in consistency report verifies REST API health, DHCP pool/reservation counts, and DNS forwarder topology. `repairDNSLiveness()` triggers `seedDNSConfig()` after restart for auto-recovery. `checkInfraHealth()` polling fallback detects zombie microdns containers.
+- pxemanager code removed from mkube: All pxemanager client code (pxeHost type, pxeHTTPClient, pxeRegisterHost, pxeSetImage, pxeIPMIPower, pxeIPMIStatus, pxeConfigureIPMI, pxeGetHost), reconcileBMHChanges, enrichBMHStatus, enrichBMHListConcurrent — all removed. bmh-operator handles IPMI directly. Eliminates stale error messages from decommissioned pxemanager.
 
 ### TODO (priority order)
-1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. pxemanager becomes GUI-only (no SQLite state). Architecture:
+1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:
    - BMH objects in NATS are the source of truth for host registrations, image assignments, MAC discovery, IPMI config
    - BMH is per physical server (one BMH per server, not per NIC/MAC)
    - BMH has explicit fields for data network (network, ip, hostname, PXE) and IPMI network (bmc.network, bmc.mac, bmc.hostname) ✅
