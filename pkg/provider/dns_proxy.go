@@ -58,6 +58,7 @@ type DHCPPoolSpec struct {
 	BootFile      string   `json:"bootFile,omitempty"`
 	BootFileEFI   string   `json:"bootFileEfi,omitempty"`
 	IPXEBootURL   string   `json:"ipxeBootUrl,omitempty"`
+	RootPath      string   `json:"rootPath,omitempty"`
 }
 
 type DHCPPoolList struct {
@@ -81,6 +82,7 @@ type DHCPReservationSpec struct {
 	BootFile    string `json:"bootFile,omitempty"`
 	BootFileEFI string `json:"bootFileEfi,omitempty"`
 	IPXEBootURL string `json:"ipxeBootUrl,omitempty"`
+	RootPath    string `json:"rootPath,omitempty"`
 }
 
 type DHCPReservationList struct {
@@ -451,6 +453,7 @@ func (p *MicroKubeProvider) handleCreateDHCPPool(w http.ResponseWriter, r *http.
 		BootFile:      res.Spec.BootFile,
 		BootFileEFI:   res.Spec.BootFileEFI,
 		IPXEBootURL:   res.Spec.IPXEBootURL,
+		RootPath:      res.Spec.RootPath,
 	}
 
 	created, err := p.deps.NetworkMgr.DNSClient().CreateDHCPPool(r.Context(), endpoint, pool)
@@ -490,6 +493,7 @@ func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.
 		BootFile:      res.Spec.BootFile,
 		BootFileEFI:   res.Spec.BootFileEFI,
 		IPXEBootURL:   res.Spec.IPXEBootURL,
+		RootPath:      res.Spec.RootPath,
 	}
 
 	updated, err := p.deps.NetworkMgr.DNSClient().UpdateDHCPPool(r.Context(), endpoint, name, pool)
@@ -542,6 +546,7 @@ func dhcpPoolToResource(pool dns.DHCPPool, ns string) DHCPPoolResource {
 			BootFile:      pool.BootFile,
 			BootFileEFI:   pool.BootFileEFI,
 			IPXEBootURL:   pool.IPXEBootURL,
+			RootPath:      pool.RootPath,
 		},
 	}
 }
@@ -621,6 +626,7 @@ func (p *MicroKubeProvider) handleCreateDHCPReservation(w http.ResponseWriter, r
 		BootFile:    res.Spec.BootFile,
 		BootFileEFI: res.Spec.BootFileEFI,
 		IPXEBootURL: res.Spec.IPXEBootURL,
+		RootPath:    res.Spec.RootPath,
 	}
 
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
@@ -653,6 +659,7 @@ func (p *MicroKubeProvider) handleUpdateDHCPReservation(w http.ResponseWriter, r
 		BootFile:    res.Spec.BootFile,
 		BootFileEFI: res.Spec.BootFileEFI,
 		IPXEBootURL: res.Spec.IPXEBootURL,
+		RootPath:    res.Spec.RootPath,
 	}
 
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
@@ -700,6 +707,7 @@ func dhcpReservationToResource(res dns.DHCPReservation, ns string) DHCPReservati
 			BootFile:    res.BootFile,
 			BootFileEFI: res.BootFileEFI,
 			IPXEBootURL: res.IPXEBootURL,
+			RootPath:    res.RootPath,
 		},
 	}
 }

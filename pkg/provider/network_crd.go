@@ -29,6 +29,7 @@ const (
 	NetworkTypeManagement NetworkType = "management"
 	NetworkTypeBoot       NetworkType = "boot"
 	NetworkTypeStorage    NetworkType = "storage"
+	NetworkTypeUser       NetworkType = "user"
 	NetworkTypeExternal   NetworkType = "external"
 )
 
@@ -92,6 +93,7 @@ type NetworkDHCPReservation struct {
 	NextServer  string `json:"nextServer,omitempty"`  // per-host PXE next-server
 	BootFile    string `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
 	BootFileEFI string `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
+	RootPath    string `json:"rootPath,omitempty"`     // iSCSI root path (option 17)
 }
 
 // NetworkIPAMSpec defines IPAM allocation range for a network.

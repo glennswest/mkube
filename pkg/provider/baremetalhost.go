@@ -483,14 +483,26 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 	}
 	if bmh.Spec.Network != "" && bmh.Spec.BootMACAddress != "" {
 		hostname := firstNonEmpty(bmh.Spec.Hostname, bmh.Name)
-		p.upsertNetworkReservation(ctx, bmh.Spec.Network, NetworkDHCPReservation{
+		res := NetworkDHCPReservation{
 			MAC:         bmh.Spec.BootMACAddress,
 			IP:          bmh.Spec.IP,
 			Hostname:    hostname,
 			NextServer:  bmh.Spec.NextServer,
 			BootFile:    bmh.Spec.BootFile,
 			BootFileEFI: bmh.Spec.BootFileEFI,
-		}, bmh.Name)
+		}
+
+		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway
+		if bmh.Spec.Image != "" {
+			if cdrom, ok := p.iscsiCdroms[bmh.Spec.Image]; ok && cdrom.Status.TargetIQN != "" {
+				if net, ok := p.networks[bmh.Spec.Network]; ok {
+					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
+					log.Infow("BMH reservation root_path set", "bmh", bmh.Name, "image", bmh.Spec.Image, "root_path", res.RootPath)
+				}
+			}
+		}
+
+		p.upsertNetworkReservation(ctx, bmh.Spec.Network, res, bmh.Name)
 
 		// Auto-register DNS A record for the data network
 		if bmh.Spec.IP != "" && hostname != "" {

@@ -102,9 +102,14 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		BootFileEFI:   source.Spec.DHCP.BootFileEFI,
 	}
 
-	// Auto-derive iPXE boot URL
-	if source.Spec.DHCP.BootFile != "" && source.Spec.DHCP.NextServer != "" {
-		pool.IPXEBootURL = fmt.Sprintf("http://%s:8080/boot.ipxe", source.Spec.DHCP.NextServer)
+	// For data networks: set default iSCSI root_path to baremetalservices.
+	// All PXE clients on data networks boot baremetalservices by default
+	// unless overridden by a per-reservation root_path.
+	if source.Spec.Type == NetworkTypeData {
+		if cdrom, ok := p.iscsiCdroms["baremetalservices"]; ok && cdrom.Status.TargetIQN != "" {
+			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
+			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
+		}
 	}
 
 	if _, err := client.CreateDHCPPool(ctx, endpoint, pool); err != nil {
@@ -149,6 +154,7 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		NextServer:  r.NextServer,
 		BootFile:    r.BootFile,
 		BootFileEFI: r.BootFileEFI,
+		RootPath:    r.RootPath,
 	}
 }
 

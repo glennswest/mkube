@@ -473,6 +473,7 @@ type DHCPPool struct {
 	BootFile      string   `json:"boot_file,omitempty"`
 	BootFileEFI   string   `json:"boot_file_efi,omitempty"`
 	IPXEBootURL   string   `json:"ipxe_boot_url,omitempty"`
+	RootPath      string   `json:"root_path,omitempty"`
 }
 
 // ListDHCPPools returns all DHCP pools from a microdns instance.
@@ -565,6 +566,7 @@ type DHCPReservation struct {
 	BootFile    string `json:"boot_file,omitempty"`
 	BootFileEFI string `json:"boot_file_efi,omitempty"`
 	IPXEBootURL string `json:"ipxe_boot_url,omitempty"`
+	RootPath    string `json:"root_path,omitempty"`
 }
 
 // ListDHCPReservations returns all DHCP reservations from a microdns instance.
