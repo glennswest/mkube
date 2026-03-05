@@ -331,10 +331,11 @@ func (m *Manager) ReleaseInterface(ctx context.Context, vethName string) error {
 	}
 
 	if err := m.driver.DeletePort(ctx, vethName); err != nil {
-		m.log.Warnw("error removing veth", "name", vethName, "error", err)
+		m.log.Warnw("error removing veth — keeping internal state for retry", "name", vethName, "error", err)
+		return fmt.Errorf("delete veth %s: %w", vethName, err)
 	}
 
-	// Clean up allocation
+	// Clean up allocation only after the physical veth is gone
 	if alloc, ok := m.allocs[vethName]; ok {
 		m.ipam.Release(alloc.networkName, vethName)
 		delete(m.allocs, vethName)
