@@ -556,6 +556,11 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 
 	delete(p.networks, name)
 
+	// Unregister from IPAM and network manager
+	if p.deps.NetworkMgr != nil {
+		p.deps.NetworkMgr.UnregisterNetwork(name)
+	}
+
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
 		Status:   "Success",

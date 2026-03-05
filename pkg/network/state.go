@@ -94,6 +94,12 @@ func (s *stateStore) setSwitch(sw *LogicalSwitch) {
 	s.data.Switches[sw.Name] = sw
 }
 
+func (s *stateStore) removeSwitch(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data.Switches, name)
+}
+
 func (s *stateStore) setPort(p *LogicalPort) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

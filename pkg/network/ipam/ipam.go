@@ -70,6 +70,13 @@ func (a *Allocator) AddPool(name string, subnet *net.IPNet, gateway net.IP, opts
 	}
 }
 
+// RemovePool deletes a pool from the allocator (used when networks are deleted).
+func (a *Allocator) RemovePool(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.pools, name)
+}
+
 // Allocate picks the next free IP in the named pool and records it under key.
 func (a *Allocator) Allocate(poolName, key string) (net.IP, error) {
 	a.mu.Lock()

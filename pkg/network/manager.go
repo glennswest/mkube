@@ -567,6 +567,33 @@ func (m *Manager) RegisterNetwork(netDef config.NetworkDef) error {
 	return nil
 }
 
+// UnregisterNetwork removes a dynamically registered network from the manager
+// and IPAM allocator. This is the reverse of RegisterNetwork and is called
+// when a Network CRD is deleted. It is a no-op if the network doesn't exist.
+func (m *Manager) UnregisterNetwork(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.networks[name]; !exists {
+		return
+	}
+
+	delete(m.networks, name)
+	m.ipam.RemovePool(name)
+
+	// Remove from ordered list
+	for i, n := range m.netOrder {
+		if n == name {
+			m.netOrder = append(m.netOrder[:i], m.netOrder[i+1:]...)
+			break
+		}
+	}
+
+	m.state.removeSwitch(name)
+
+	m.log.Infow("unregistered dynamic network", "name", name)
+}
+
 // ResyncAllocations re-queries all veths from the device and fills in any
 // missing IPAM allocations. Idempotent — existing entries are overwritten
 // with the same data. Called during reconcile to ensure IPAM tracks veths
