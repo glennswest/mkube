@@ -498,6 +498,75 @@ func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 	return nil
 }
 
+// RegisterNetwork dynamically adds a new network to the manager and IPAM
+// allocator. This is used when Network CRDs are created via API (not present
+// in the static config.yaml at boot time). It is idempotent — if the network
+// already exists, it is a no-op.
+func (m *Manager) RegisterNetwork(netDef config.NetworkDef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Already registered — no-op
+	if _, exists := m.networks[netDef.Name]; exists {
+		return nil
+	}
+
+	_, subnet, err := net.ParseCIDR(netDef.CIDR)
+	if err != nil {
+		return fmt.Errorf("parsing CIDR %q for network %s: %w", netDef.CIDR, netDef.Name, err)
+	}
+
+	gateway := make(net.IP, len(subnet.IP))
+	copy(gateway, subnet.IP)
+	gateway[len(gateway)-1] = 1
+
+	if netDef.Gateway != "" {
+		gateway = net.ParseIP(netDef.Gateway)
+		if gateway == nil {
+			return fmt.Errorf("invalid gateway IP %q for network %s", netDef.Gateway, netDef.Name)
+		}
+	}
+
+	ns := &networkState{
+		def:     netDef,
+		subnet:  subnet,
+		gateway: gateway,
+	}
+
+	m.networks[netDef.Name] = ns
+	m.netOrder = append(m.netOrder, netDef.Name)
+
+	// Register IPAM pool
+	var poolOpts []ipam.PoolOpts
+	if netDef.IPAMStart != "" || netDef.IPAMEnd != "" {
+		o := ipam.PoolOpts{}
+		if netDef.IPAMStart != "" {
+			o.AllocStart = net.ParseIP(netDef.IPAMStart)
+			if o.AllocStart == nil {
+				return fmt.Errorf("invalid ipamStart %q for network %s", netDef.IPAMStart, netDef.Name)
+			}
+		}
+		if netDef.IPAMEnd != "" {
+			o.AllocEnd = net.ParseIP(netDef.IPAMEnd)
+			if o.AllocEnd == nil {
+				return fmt.Errorf("invalid ipamEnd %q for network %s", netDef.IPAMEnd, netDef.Name)
+			}
+		}
+		poolOpts = append(poolOpts, o)
+	}
+	m.ipam.AddPool(netDef.Name, subnet, gateway, poolOpts...)
+
+	m.state.setSwitch(&LogicalSwitch{
+		Name:    netDef.Name,
+		Bridge:  netDef.Bridge,
+		CIDR:    netDef.CIDR,
+		Gateway: gateway.String(),
+	})
+
+	m.log.Infow("registered dynamic network", "name", netDef.Name, "cidr", netDef.CIDR, "bridge", netDef.Bridge)
+	return nil
+}
+
 // ResyncAllocations re-queries all veths from the device and fills in any
 // missing IPAM allocations. Idempotent — existing entries are overwritten
 // with the same data. Called during reconcile to ensure IPAM tracks veths

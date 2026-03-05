@@ -150,6 +150,14 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 			continue
 		}
 		p.networks[net.Name] = &net
+
+		// Register with IPAM if not already known (CRD-only networks like
+		// g8/g9 are not in config.yaml and need dynamic registration)
+		if p.deps.NetworkMgr != nil {
+			if err := p.deps.NetworkMgr.RegisterNetwork(networkToNetworkDef(&net)); err != nil {
+				p.deps.Logger.Warnw("failed to register network with IPAM on load", "network", net.Name, "error", err)
+			}
+		}
 	}
 
 	if len(keys) > 0 {
@@ -293,6 +301,27 @@ func networkDefToNetwork(nd config.NetworkDef) Network {
 	}
 }
 
+// networkToNetworkDef converts a Network CRD back to a config.NetworkDef,
+// used for dynamic IPAM registration when networks are created via API.
+func networkToNetworkDef(n *Network) config.NetworkDef {
+	return config.NetworkDef{
+		Name:        n.Name,
+		Type:        string(n.Spec.Type),
+		Bridge:      n.Spec.Bridge,
+		CIDR:        n.Spec.CIDR,
+		Gateway:     n.Spec.Gateway,
+		VLAN:        n.Spec.VLAN,
+		IPAMStart:   n.Spec.IPAM.Start,
+		IPAMEnd:     n.Spec.IPAM.End,
+		ExternalDNS: n.Spec.ExternalDNS,
+		DNS: config.DNSConfig{
+			Endpoint: n.Spec.DNS.Endpoint,
+			Zone:     n.Spec.DNS.Zone,
+			Server:   n.Spec.DNS.Server,
+		},
+	}
+}
+
 // ─── CRUD Handlers ──────────────────────────────────────────────────────────
 
 func (p *MicroKubeProvider) handleListNetworks(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +408,11 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 	}
 
 	p.networks[net.Name] = &net
+
+	// Register with IPAM so pods on this network can allocate IPs
+	if err := p.deps.NetworkMgr.RegisterNetwork(networkToNetworkDef(&net)); err != nil {
+		p.deps.Logger.Warnw("failed to register network with IPAM", "network", net.Name, "error", err)
+	}
 
 	// Provision infrastructure (bridge, gateway IP, DHCP relay) if not already done
 	if !net.Spec.Provisioned {
