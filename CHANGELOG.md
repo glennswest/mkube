@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-05
+- **fix:** Config sync in `make deploy` — `make deploy` previously only pushed the binary via container image, never updating config files on the device. Stale config caused g10/g11 DNS outage after bridge rename (device still had `bridge` instead of `bridge-g10`). Added `deploy-config` target that SCPs `rose1-config.yaml` + `boot-order.yaml` to the device on every deploy.
+- **feat:** iSCSI root_path for DHCP pools and BMH reservations — pool-level default root_path (baremetalservices iSCSI target) auto-set for data networks. Per-reservation root_path from BMH spec overrides pool default. Flows through dns_seed, dns_proxy, Network CRD, and BMH sync.
 - **feat:** DNS & DHCP proxy resources via kube API — all microdns resources (DNS records, DHCP pools, DHCP reservations, DHCP leases, DNS forwarders) now accessible via `mk get/apply/delete`. Namespace = network name (e.g. `mk get dr -n g10`). Short names: dr, dp, dhcpr, dl, df. microdns is source of truth — no NATS persistence. New `dns_proxy.go` with 24 handler functions and 5 table formatters. DNS client extended with full record support (all record types), DHCP lease listing, and single-resource GET methods.
 - **fix:** Dynamic IPAM registration for Network CRDs — networks created via API (not in config.yaml) were never registered with IPAM allocator, causing DNS pod creation to fail with "network not found". Added `Manager.RegisterNetwork()` for dynamic pool registration, wired into `handleCreateNetwork` and `LoadNetworksFromStore`.
 - **fix:** PVC key consistency for managed DNS — PVCs created by `deployManagedDNS` used wrong key format (no namespace), causing consistency check failures. Fixed to use `namespace/name` map key and `namespace.name` NATS key.

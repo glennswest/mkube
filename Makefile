@@ -2,7 +2,7 @@ BINARY    := mkube
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 ARCH      ?= arm64
-DEVICE    ?= rose1.g10.lo
+DEVICE    ?= 192.168.1.88
 REGISTRY  ?= registry.gt.lo:5000
 IMAGE     := $(REGISTRY)/$(BINARY):edge
 MKUBE_API ?= http://192.168.200.2:8082
@@ -49,14 +49,30 @@ tarball: build
 	@mkdir -p dist
 	@bash hack/make-tarball.sh dist/$(BINARY)-$(ARCH) deploy/config.yaml dist/$(BINARY)-$(ARCH).tar
 
-## Deploy via local registry — build container, push, mkube-update picks it up
-deploy: build
+## Deploy via local registry — build container, push, mkube-update picks it up.
+## Also syncs config + boot-order to the device so they stay current.
+deploy: build deploy-config
 	cp dist/$(BINARY)-$(ARCH) mkube
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
 	rm -f mkube
 	podman push --tls-verify=false $(IMAGE)
 	@echo "Pushed $(IMAGE) — mkube-update will auto-update"
 	@curl -sf -X POST $(MKUBE_API)/api/v1/images/redeploy && echo "Redeploy triggered" || echo "(mkube API not reachable, update will happen on next poll)"
+
+## Sync config and boot-order files to the device
+deploy-config:
+	@CONFIG="deploy/rose1-config.yaml"; \
+	if [ ! -f "$$CONFIG" ]; then CONFIG="deploy/config.yaml"; fi; \
+	echo "Syncing $$CONFIG to $(DEVICE)..."; \
+	scp -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+		"$$CONFIG" admin@$(DEVICE):/raid1/volumes/kube.gt.lo/config/config.yaml
+	@if [ -f deploy/boot-order.yaml ]; then \
+		scp -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+			deploy/boot-order.yaml admin@$(DEVICE):/raid1/volumes/kube.gt.lo/config/boot-order.yaml; \
+		echo "Config + boot-order synced"; \
+	else \
+		echo "Config synced (no boot-order.yaml)"; \
+	fi
 
 ## Deploy via tarball + SCP (bootstrap / fallback)
 deploy-tarball: tarball
