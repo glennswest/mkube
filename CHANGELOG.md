@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### 2026-03-05
+- **feat:** Direct microdns REST API for DHCP/forwarders — mkube now calls microdns REST API directly for DHCP pool creation, reservation upsert/delete, and DNS forward zone management. Replaces the old TOML pipeline (BMH change → Network CRD → TOML → ConfigMap → microdns reads TOML → migrates to DB). Network CRD keeps reservations as desired-state backup for re-seeding on DB loss.
+- **feat:** DNS client extended with DHCP pool CRUD, reservation upsert/delete, DNS forwarder ensure/delete, and health check methods (`pkg/dns/client.go`).
+- **feat:** New `dns_seed.go` — `seedDNSConfig()` seeds DHCP pools, reservations, and forward zones via REST API with retry-on-startup. `reconcileDNSConfig()` detects empty microdns databases and re-seeds from Network CRD state.
+- **refactor:** TOML generation simplified to minimal structural config only (`generateMinimalTOML`). DHCP pools/reservations and forward zones removed from TOML — seeded via REST API instead.
+- **refactor:** BMH sync (`syncBMHToNetwork`/`removeBMHFromNetwork`) now pushes reservation changes directly to microdns REST API in addition to Network CRD NATS state.
+- **refactor:** Managed DNS transitions use targeted REST API calls instead of full ConfigMap TOML rewrite.
 - **fix:** DNS ConfigMap overwritten every reconcile cycle (10s) by static config — `generateDefaultConfigMaps` from `rose1-config.yaml` clobbered Network CRD-derived ConfigMaps, causing stale DHCP reservations (e.g. server30) to reappear after every cleanup. Reconcile loop now overrides static ConfigMaps with Network CRD-generated TOML for migrated networks.
 - **fix:** Boot-time ConfigMap reconciliation — added `ReconcileNetworkConfigMaps()` after `LoadConfigMapsFromStore` to regenerate stale DNS ConfigMaps from current Network CRD state on startup.
 - **chore:** Replace server30 with server9 in `deploy/rose1-config.yaml` (g10: .30→.18, g11 hostname update). server9 replaces decommissioned server30.

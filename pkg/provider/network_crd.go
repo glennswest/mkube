@@ -166,7 +166,7 @@ func (p *MicroKubeProvider) ReconcileNetworkConfigMaps(ctx context.Context) {
 		if !hasDNS {
 			continue
 		}
-		toml := p.generateNetworkTOML(net)
+		toml := p.generateMinimalTOML(net)
 		cmKey := net.Name + "/dns-config"
 		cm, ok := p.configMaps[cmKey]
 		if !ok {
@@ -518,42 +518,61 @@ func (p *MicroKubeProvider) handleGetNetworkConfig(w http.ResponseWriter, r *htt
 		return
 	}
 
-	toml := p.generateNetworkTOML(net)
+	toml := p.generateMinimalTOML(net)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(toml))
 }
 
-// generateNetworkTOML produces a complete microdns TOML config from a Network CRD.
-func (p *MicroKubeProvider) generateNetworkTOML(net *Network) string {
-	// Collect remote DHCP sections: other networks that relay to this one
-	var remoteDHCP []string
-	for _, peer := range p.networks {
-		if peer.Name == net.Name {
-			continue
-		}
-		if peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
-			remoteDHCP = append(remoteDHCP, buildNetworkDHCPSection(peer))
-		}
-	}
-
-	// Forward zones: all peer networks
-	fwdZones := p.computeForwardZones(net.Name)
-
-	// Local DHCP section (no serverNetwork means served locally)
-	var dhcpSection string
-	if net.Spec.DHCP.Enabled && net.Spec.DHCP.ServerNetwork == "" {
-		dhcpSection = buildNetworkDHCPSection(net)
-	}
-	for _, section := range remoteDHCP {
-		dhcpSection += section
-	}
-
+// generateMinimalTOML produces a minimal microdns TOML config from a Network CRD.
+// It contains only structural config (instance, DNS auth/recursor, API, database,
+// logging). DHCP pools, reservations, and forward zones are seeded via REST API
+// by seedDNSConfig() — not baked into TOML.
+func (p *MicroKubeProvider) generateMinimalTOML(net *Network) string {
 	// RouterOS containers use "gateway" mode (DHCP via relay, no raw sockets).
 	dnsMode := "standalone"
 	if p.deps.Config.Backend == "" || p.deps.Config.Backend == "routeros" {
 		dnsMode = "gateway"
+	}
+
+	// DHCP enabled section: just the interface/server_ip/listen_ports
+	// so microdns knows to start the DHCP listener. Pools and reservations
+	// come via REST API.
+	var dhcpSection string
+	hasDHCP := net.Spec.DHCP.Enabled && net.Spec.DHCP.ServerNetwork == ""
+	if !hasDHCP {
+		// Check if any peer relays to this network
+		for _, peer := range p.networks {
+			if peer.Name != net.Name && peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
+				hasDHCP = true
+				break
+			}
+		}
+	}
+	if hasDHCP {
+		// Build reverse zone from CIDR for DNS registration
+		reverseZone := ""
+		if cidrParts := strings.Split(net.Spec.CIDR, "/"); len(cidrParts) == 2 {
+			octets := strings.Split(cidrParts[0], ".")
+			if len(octets) == 4 {
+				reverseZone = fmt.Sprintf("%s.%s.%s.in-addr.arpa", octets[2], octets[1], octets[0])
+			}
+		}
+		dhcpSection = fmt.Sprintf(`
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+server_ip = %q
+listen_ports = [67]
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = %q
+reverse_zone_v4 = %q
+reverse_zone_v6 = ""
+default_ttl = 300
+`, net.Spec.DNS.Server, net.Spec.DNS.Zone, reverseZone)
 	}
 
 	return fmt.Sprintf(`[instance]
@@ -570,7 +589,7 @@ enabled = true
 listen = "0.0.0.0:53"
 
 [dns.recursor.forward_zones]
-%s
+
 [api.rest]
 enabled = true
 listen = "0.0.0.0:8080"
@@ -581,84 +600,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, dnsMode, net.Spec.DNS.Zone, fwdZones, dhcpSection)
-}
-
-// computeForwardZones builds the TOML forward_zones map for a network,
-// listing all peer networks' DNS servers.
-func (p *MicroKubeProvider) computeForwardZones(excludeName string) string {
-	var b strings.Builder
-	for _, peer := range p.networks {
-		if peer.Name == excludeName || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "    %q = [\"%s:53\"]\n", peer.Spec.DNS.Zone, peer.Spec.DNS.Server)
-	}
-	return b.String()
-}
-
-// buildNetworkDHCPSection generates the TOML DHCP config block from a Network CRD.
-func buildNetworkDHCPSection(net *Network) string {
-	var dhcp strings.Builder
-	leaseTime := net.Spec.DHCP.LeaseTime
-	if leaseTime == 0 {
-		leaseTime = 3600
-	}
-
-	fmt.Fprintf(&dhcp, "\n[dhcp.v4]\nenabled = true\ninterface = \"eth0\"\nserver_ip = %q\nlisten_ports = [67]\n\n", net.Spec.DNS.Server)
-	fmt.Fprintf(&dhcp, "[[dhcp.v4.pools]]\n")
-	fmt.Fprintf(&dhcp, "range_start = %q\n", net.Spec.DHCP.RangeStart)
-	fmt.Fprintf(&dhcp, "range_end = %q\n", net.Spec.DHCP.RangeEnd)
-	fmt.Fprintf(&dhcp, "subnet = %q\n", net.Spec.CIDR)
-	fmt.Fprintf(&dhcp, "gateway = %q\n", net.Spec.Gateway)
-	fmt.Fprintf(&dhcp, "dns = [%q]\n", net.Spec.DNS.Server)
-	fmt.Fprintf(&dhcp, "domain = %q\n", net.Spec.DNS.Zone)
-	fmt.Fprintf(&dhcp, "lease_time_secs = %d\n", leaseTime)
-	if net.Spec.DHCP.NextServer != "" {
-		fmt.Fprintf(&dhcp, "next_server = %q\n", net.Spec.DHCP.NextServer)
-	}
-	if net.Spec.DHCP.BootFile != "" {
-		fmt.Fprintf(&dhcp, "boot_file = %q\n", net.Spec.DHCP.BootFile)
-		if net.Spec.DHCP.NextServer != "" {
-			fmt.Fprintf(&dhcp, "ipxe_boot_url = \"http://%s:8080/boot.ipxe\"\n", net.Spec.DHCP.NextServer)
-		}
-	}
-	if net.Spec.DHCP.BootFileEFI != "" {
-		fmt.Fprintf(&dhcp, "boot_file_efi = %q\n", net.Spec.DHCP.BootFileEFI)
-	}
-	for _, r := range net.Spec.DHCP.Reservations {
-		fmt.Fprintf(&dhcp, "\n[[dhcp.v4.reservations]]\n")
-		fmt.Fprintf(&dhcp, "mac = %q\n", r.MAC)
-		fmt.Fprintf(&dhcp, "ip = %q\n", r.IP)
-		if r.Hostname != "" {
-			fmt.Fprintf(&dhcp, "hostname = %q\n", r.Hostname)
-		}
-		if r.NextServer != "" {
-			fmt.Fprintf(&dhcp, "next_server = %q\n", r.NextServer)
-		}
-		if r.BootFile != "" {
-			fmt.Fprintf(&dhcp, "boot_file = %q\n", r.BootFile)
-		}
-		if r.BootFileEFI != "" {
-			fmt.Fprintf(&dhcp, "boot_file_efi = %q\n", r.BootFileEFI)
-		}
-	}
-
-	// Build reverse zone from CIDR: 192.168.11.0/24 -> 11.168.192.in-addr.arpa
-	reverseZone := ""
-	if cidrParts := strings.Split(net.Spec.CIDR, "/"); len(cidrParts) == 2 {
-		octets := strings.Split(cidrParts[0], ".")
-		if len(octets) == 4 {
-			reverseZone = fmt.Sprintf("%s.%s.%s.in-addr.arpa", octets[2], octets[1], octets[0])
-		}
-	}
-	fmt.Fprintf(&dhcp, "\n[dhcp.dns_registration]\n")
-	fmt.Fprintf(&dhcp, "enabled = true\n")
-	fmt.Fprintf(&dhcp, "forward_zone = %q\n", net.Spec.DNS.Zone)
-	fmt.Fprintf(&dhcp, "reverse_zone_v4 = %q\n", reverseZone)
-	fmt.Fprintf(&dhcp, "reverse_zone_v6 = \"\"\n")
-	fmt.Fprintf(&dhcp, "default_ttl = 300\n")
-	return dhcp.String()
+%s`, net.Name, dnsMode, net.Spec.DNS.Zone, dhcpSection)
 }
 
 // ─── Status Enrichment ──────────────────────────────────────────────────────
@@ -843,7 +785,7 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 	}
 
 	// 1. Generate and persist ConfigMap
-	toml := p.generateNetworkTOML(net)
+	toml := p.generateMinimalTOML(net)
 	cm := corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{Name: "dns-config", Namespace: net.Name},
@@ -951,6 +893,9 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 		}
 	}
 
+	// 6. Async seed DHCP pools, reservations, and forwarders via REST API
+	go p.seedDNSConfig(ctx, net)
+
 	log.Infow("deployed managed DNS pod",
 		"zone", net.Spec.DNS.Zone,
 		"server", net.Spec.DNS.Server,
@@ -1015,11 +960,26 @@ func (p *MicroKubeProvider) handleManagedDNSTransition(ctx context.Context, wasM
 		}
 	}
 
-	// Always update the DNS ConfigMap if it exists and DNS is configured.
-	// This ensures DHCP/PXE config changes in the Network CRD propagate
-	// to the running DNS container regardless of the managed flag.
+	// Push reservation and forwarder changes via REST API (no TOML rewrite needed).
+	// ConfigMap only updated if structural config changed.
 	if hasDNS {
-		toml := p.generateNetworkTOML(net)
+		endpoint := p.networkDNSEndpoint(net)
+		if endpoint != "" {
+			// Sync reservations: upsert all from Network CRD
+			dnsClient := p.deps.NetworkMgr.DNSClient()
+			if err := dnsClient.HealthCheck(ctx, endpoint); err == nil {
+				for _, r := range net.Spec.DHCP.Reservations {
+					res := networkReservationToDNS(r)
+					if err := dnsClient.UpsertDHCPReservation(ctx, endpoint, res); err != nil {
+						p.deps.Logger.Warnw("failed to sync reservation on network update",
+							"network", net.Name, "mac", r.MAC, "error", err)
+					}
+				}
+			}
+		}
+
+		// Update ConfigMap only if structural TOML changed
+		toml := p.generateMinimalTOML(net)
 		cmKey := net.Name + "/dns-config"
 		if cm, ok := p.configMaps[cmKey]; ok {
 			if cm.Data["microdns.toml"] != toml {
@@ -1029,7 +989,7 @@ func (p *MicroKubeProvider) handleManagedDNSTransition(ctx context.Context, wasM
 					_, _ = p.deps.Store.ConfigMaps.PutJSON(ctx, storeKey, cm)
 				}
 				p.syncConfigMapsToDisk(ctx)
-				p.deps.Logger.Infow("updated DNS ConfigMap", "network", net.Name)
+				p.deps.Logger.Infow("updated DNS ConfigMap (structural change)", "network", net.Name)
 			}
 		}
 	}

@@ -24,7 +24,9 @@ func TestGenerateDefaultConfigMaps_DNSRecursor(t *testing.T) {
 		t.Fatalf("expected 4 configmaps, got %d", len(cms))
 	}
 
-	// Verify DNS ConfigMaps
+	// Verify DNS ConfigMaps contain minimal structural config.
+	// Forward zones and DHCP pools/reservations are now seeded via REST API,
+	// not baked into the TOML.
 	for i, net := range cfg.Networks {
 		cm := cms[i+1] // skip console
 		if cm.Namespace != net.Name {
@@ -40,27 +42,22 @@ func TestGenerateDefaultConfigMaps_DNSRecursor(t *testing.T) {
 		if !strings.Contains(toml, "enabled = true") {
 			t.Errorf("cm[%d] missing recursor enabled", i)
 		}
-		// Extract just the forward_zones section for checking
+		// TOML should have empty forward_zones section (seeded via REST API)
+		if !strings.Contains(toml, "[dns.recursor.forward_zones]") {
+			t.Errorf("cm[%d] missing forward_zones section header", i)
+		}
+		// Forward zones should NOT contain any peer zones (REST API seeds them)
 		fwdIdx := strings.Index(toml, "[dns.recursor.forward_zones]")
 		apiIdx := strings.Index(toml, "[api.rest]")
-		fwdSection := ""
 		if fwdIdx >= 0 && apiIdx > fwdIdx {
-			fwdSection = toml[fwdIdx:apiIdx]
-		}
-		// Should NOT contain its own zone as a forward zone
-		if strings.Contains(fwdSection, `"`+net.DNS.Zone+`"`) {
-			t.Errorf("cm[%d] should not forward to own zone %s", i, net.DNS.Zone)
-		}
-		// Should contain all peer zones in forward section
-		for _, peer := range cfg.Networks {
-			if peer.Name == net.Name {
-				continue
-			}
-			if !strings.Contains(fwdSection, `"`+peer.DNS.Zone+`"`) {
-				t.Errorf("cm[%d] missing forward zone for %s", i, peer.DNS.Zone)
-			}
-			if !strings.Contains(fwdSection, peer.DNS.Server+":53") {
-				t.Errorf("cm[%d] missing server %s for zone %s", i, peer.DNS.Server, peer.DNS.Zone)
+			fwdSection := toml[fwdIdx:apiIdx]
+			for _, peer := range cfg.Networks {
+				if peer.Name == net.Name {
+					continue
+				}
+				if strings.Contains(fwdSection, peer.DNS.Server+":53") {
+					t.Errorf("cm[%d] should not contain forward zone for %s (seeded via REST API)", i, peer.DNS.Zone)
+				}
 			}
 		}
 	}

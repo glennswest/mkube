@@ -14,6 +14,8 @@ import (
 // generateDefaultConfigMaps creates built-in ConfigMaps derived from the
 // running mkube configuration. These are loaded at startup and can be
 // overridden by user-supplied ConfigMaps from the boot manifest.
+// DNS ConfigMaps now contain only minimal structural TOML — DHCP pools,
+// reservations, and forward zones are seeded via microdns REST API.
 func generateDefaultConfigMaps(cfg *config.Config) []*corev1.ConfigMap {
 	gateway := cfg.DefaultNetwork().Gateway
 
@@ -49,55 +51,54 @@ registry:
 		},
 	}
 
-	// Collect DHCP configs that target a different network's DNS container
-	// (relay topology: serverNetwork is set). These are appended to the
-	// target network's ConfigMap instead of the source network's.
-	remoteDHCP := map[string][]string{} // targetNetwork -> []dhcpSections
-	for _, net := range cfg.Networks {
-		if !net.DNS.DHCP.Enabled || net.DNS.DHCP.ServerNetwork == "" {
-			continue
-		}
-		remoteDHCP[net.DNS.DHCP.ServerNetwork] = append(
-			remoteDHCP[net.DNS.DHCP.ServerNetwork],
-			buildDHCPSection(net),
-		)
-	}
-
-	// Auto-generate DNS recursor ConfigMaps for each network with DNS.
-	// Each instance gets forward zones pointing to all peer DNS servers
-	// so cross-subnet and external resolution works automatically.
+	// Auto-generate minimal DNS ConfigMaps for each network with DNS.
+	// These contain only structural config (instance, auth, recursor, API, database).
+	// DHCP pools/reservations and forward zones are seeded via REST API.
 	for _, net := range cfg.Networks {
 		if net.DNS.Zone == "" || net.DNS.Server == "" {
 			continue
 		}
 
-		var fwdZones strings.Builder
-		for _, peer := range cfg.Networks {
-			if peer.Name == net.Name || peer.DNS.Zone == "" || peer.DNS.Server == "" {
-				continue
-			}
-			fmt.Fprintf(&fwdZones, "    %q = [\"%s:53\"]\n", peer.DNS.Zone, peer.DNS.Server)
-		}
-
-		// DHCP section: either local (no serverNetwork) or remote (from another network targeting this one)
-		var dhcpSection string
-		if net.DNS.DHCP.Enabled && net.DNS.DHCP.ServerNetwork == "" {
-			dhcpSection = buildDHCPSection(net)
-		}
-		for _, section := range remoteDHCP[net.Name] {
-			dhcpSection += section
-		}
-
-		// TODO: Pass NATS URL to microdns via environment variable on the
-		// container (boot-order.yaml) rather than baking it into the TOML.
-		// The TOML should only contain DNS/DHCP config. Infrastructure
-		// plumbing like NATS URLs must come from the container environment
-		// so the config stays portable across different sites/networks.
-
 		// RouterOS containers use "gateway" mode (DHCP via relay, no raw sockets).
 		dnsMode := "standalone"
 		if cfg.Backend == "" || cfg.Backend == "routeros" {
 			dnsMode = "gateway"
+		}
+
+		// Determine if DHCP listener is needed
+		hasDHCP := net.DNS.DHCP.Enabled && net.DNS.DHCP.ServerNetwork == ""
+		if !hasDHCP {
+			for _, peer := range cfg.Networks {
+				if peer.Name != net.Name && peer.DNS.DHCP.Enabled && peer.DNS.DHCP.ServerNetwork == net.Name {
+					hasDHCP = true
+					break
+				}
+			}
+		}
+
+		var dhcpSection string
+		if hasDHCP {
+			reverseZone := ""
+			if cidrParts := strings.Split(net.CIDR, "/"); len(cidrParts) == 2 {
+				octets := strings.Split(cidrParts[0], ".")
+				if len(octets) == 4 {
+					reverseZone = fmt.Sprintf("%s.%s.%s.in-addr.arpa", octets[2], octets[1], octets[0])
+				}
+			}
+			dhcpSection = fmt.Sprintf(`
+[dhcp.v4]
+enabled = true
+interface = "eth0"
+server_ip = %q
+listen_ports = [67]
+
+[dhcp.dns_registration]
+enabled = true
+forward_zone = %q
+reverse_zone_v4 = %q
+reverse_zone_v6 = ""
+default_ttl = 300
+`, net.DNS.Server, net.DNS.Zone, reverseZone)
 		}
 
 		toml := fmt.Sprintf(`[instance]
@@ -114,7 +115,7 @@ enabled = true
 listen = "0.0.0.0:53"
 
 [dns.recursor.forward_zones]
-%s
+
 [api.rest]
 enabled = true
 listen = "0.0.0.0:8080"
@@ -125,7 +126,7 @@ path = "./data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s`, net.Name, dnsMode, net.DNS.Zone, fwdZones.String(), dhcpSection)
+%s`, net.Name, dnsMode, net.DNS.Zone, dhcpSection)
 
 		cms = append(cms, &corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
@@ -144,74 +145,32 @@ format = "text"
 
 // networkHasDHCP returns true if the named network serves DHCP — either
 // locally (DHCP enabled with no serverNetwork) or because another network
-// targets it via serverNetwork.
+// targets it via serverNetwork. Checks both config.yaml networks and
+// Network CRDs.
 func (p *MicroKubeProvider) networkHasDHCP(name string) bool {
+	// Check config.yaml networks
 	for _, net := range p.deps.Config.Networks {
 		if !net.DNS.DHCP.Enabled {
 			continue
 		}
-		// Local DHCP on this network
 		if net.Name == name && net.DNS.DHCP.ServerNetwork == "" {
 			return true
 		}
-		// Remote DHCP targeting this network
 		if net.DNS.DHCP.ServerNetwork == name {
 			return true
 		}
 	}
+	// Check Network CRDs
+	for _, net := range p.networks {
+		if !net.Spec.DHCP.Enabled {
+			continue
+		}
+		if net.Name == name && net.Spec.DHCP.ServerNetwork == "" {
+			return true
+		}
+		if net.Spec.DHCP.ServerNetwork == name {
+			return true
+		}
+	}
 	return false
-}
-
-// buildDHCPSection generates the TOML DHCP config block for a network.
-func buildDHCPSection(net config.NetworkDef) string {
-	var dhcp strings.Builder
-	leaseTime := net.DNS.DHCP.LeaseTime
-	if leaseTime == 0 {
-		leaseTime = 3600
-	}
-	fmt.Fprintf(&dhcp, "\n[dhcp.v4]\nenabled = true\ninterface = \"eth0\"\nserver_ip = %q\nlisten_ports = [67]\n\n", net.DNS.Server)
-	fmt.Fprintf(&dhcp, "[[dhcp.v4.pools]]\n")
-	fmt.Fprintf(&dhcp, "range_start = %q\n", net.DNS.DHCP.RangeStart)
-	fmt.Fprintf(&dhcp, "range_end = %q\n", net.DNS.DHCP.RangeEnd)
-	fmt.Fprintf(&dhcp, "subnet = %q\n", net.CIDR)
-	fmt.Fprintf(&dhcp, "gateway = %q\n", net.Gateway)
-	fmt.Fprintf(&dhcp, "dns = [%q]\n", net.DNS.Server)
-	fmt.Fprintf(&dhcp, "domain = %q\n", net.DNS.Zone)
-	fmt.Fprintf(&dhcp, "lease_time_secs = %d\n", leaseTime)
-	if net.DNS.DHCP.NextServer != "" {
-		fmt.Fprintf(&dhcp, "next_server = %q\n", net.DNS.DHCP.NextServer)
-	}
-	if net.DNS.DHCP.BootFile != "" {
-		fmt.Fprintf(&dhcp, "boot_file = %q\n", net.DNS.DHCP.BootFile)
-		// Auto-derive iPXE boot URL from the PXE server
-		if net.DNS.DHCP.NextServer != "" {
-			fmt.Fprintf(&dhcp, "ipxe_boot_url = \"http://%s:8080/boot.ipxe\"\n", net.DNS.DHCP.NextServer)
-		}
-	}
-	if net.DNS.DHCP.BootFileEFI != "" {
-		fmt.Fprintf(&dhcp, "boot_file_efi = %q\n", net.DNS.DHCP.BootFileEFI)
-	}
-	for _, r := range net.DNS.DHCP.Reservations {
-		fmt.Fprintf(&dhcp, "\n[[dhcp.v4.reservations]]\n")
-		fmt.Fprintf(&dhcp, "mac = %q\n", r.MAC)
-		fmt.Fprintf(&dhcp, "ip = %q\n", r.IP)
-		if r.Hostname != "" {
-			fmt.Fprintf(&dhcp, "hostname = %q\n", r.Hostname)
-		}
-	}
-	// Build reverse zone from CIDR: 192.168.11.0/24 -> 11.168.192.in-addr.arpa
-	reverseZone := ""
-	if cidrParts := strings.Split(net.CIDR, "/"); len(cidrParts) == 2 {
-		octets := strings.Split(cidrParts[0], ".")
-		if len(octets) == 4 {
-			reverseZone = fmt.Sprintf("%s.%s.%s.in-addr.arpa", octets[2], octets[1], octets[0])
-		}
-	}
-	fmt.Fprintf(&dhcp, "\n[dhcp.dns_registration]\n")
-	fmt.Fprintf(&dhcp, "enabled = true\n")
-	fmt.Fprintf(&dhcp, "forward_zone = %q\n", net.DNS.Zone)
-	fmt.Fprintf(&dhcp, "reverse_zone_v4 = %q\n", reverseZone)
-	fmt.Fprintf(&dhcp, "reverse_zone_v6 = \"\"\n")
-	fmt.Fprintf(&dhcp, "default_ttl = 300\n")
-	return dhcp.String()
 }

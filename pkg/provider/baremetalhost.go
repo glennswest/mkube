@@ -599,6 +599,7 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 }
 
 // upsertNetworkReservation inserts or updates a DHCP reservation on a Network CRD by MAC.
+// Also pushes the reservation directly to the microdns REST API for immediate effect.
 func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networkName string, res NetworkDHCPReservation, bmhName string) {
 	log := p.deps.Logger
 
@@ -628,6 +629,16 @@ func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networ
 		}
 	}
 
+	// Push directly to microdns REST API for immediate effect
+	endpoint := p.networkDNSEndpoint(net)
+	if endpoint != "" {
+		dnsRes := networkReservationToDNS(res)
+		if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(ctx, endpoint, dnsRes); err != nil {
+			log.Warnw("failed to upsert DHCP reservation via REST API",
+				"bmh", bmhName, "network", net.Name, "mac", res.MAC, "error", err)
+		}
+	}
+
 	log.Infow("synced BMH to network DHCP reservation",
 		"bmh", bmhName, "network", net.Name, "mac", res.MAC, "ip", res.IP, "upsert", !found)
 }
@@ -642,6 +653,7 @@ func firstNonEmpty(vals ...string) string {
 }
 
 // removeBMHFromNetwork removes a DHCP reservation by MAC from a Network CRD.
+// Also removes it from the microdns REST API for immediate effect.
 func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, networkName string) {
 	log := p.deps.Logger
 
@@ -679,7 +691,28 @@ func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, netwo
 		}
 	}
 
+	// Remove from microdns REST API for immediate effect
+	endpoint := p.networkDNSEndpoint(net)
+	if endpoint != "" {
+		if err := p.deps.NetworkMgr.DNSClient().DeleteDHCPReservation(ctx, endpoint, mac); err != nil {
+			log.Warnw("failed to delete DHCP reservation via REST API",
+				"network", net.Name, "mac", mac, "error", err)
+		}
+	}
+
 	log.Infow("removed BMH DHCP reservation from network", "network", net.Name, "mac", mac)
+}
+
+// networkDNSEndpoint returns the microdns REST API endpoint for a network,
+// or empty string if no endpoint is available.
+func (p *MicroKubeProvider) networkDNSEndpoint(net *Network) string {
+	if net.Spec.DNS.Endpoint != "" {
+		return net.Spec.DNS.Endpoint
+	}
+	if net.Spec.DNS.Server != "" {
+		return "http://" + net.Spec.DNS.Server + ":8080"
+	}
+	return ""
 }
 
 // enrichBMHListConcurrent enriches all BMH items concurrently with a 3s overall timeout.

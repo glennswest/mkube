@@ -1466,7 +1466,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 		cmKey := net.Name + "/dns-config"
 		if cm, ok := p.configMaps[cmKey]; ok {
-			cm.Data["microdns.toml"] = p.generateNetworkTOML(net)
+			cm.Data["microdns.toml"] = p.generateMinimalTOML(net)
 		}
 	}
 
@@ -1764,6 +1764,11 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	stepStart = time.Now()
 	p.deps.NetworkMgr.InitDNSZones(ctx)
 	log.Infow("RECONCILE: step 6 init DNS zones", "ms", time.Since(stepStart).Milliseconds())
+
+	// 6b. Reconcile DHCP pools/reservations/forwarders via microdns REST API
+	stepStart = time.Now()
+	p.reconcileDNSConfig(ctx)
+	log.Infow("RECONCILE: step 6b reconcile DNS config", "ms", time.Since(stepStart).Milliseconds())
 
 	// 7. Re-register DNS aliases for all tracked pods so they survive DNS container restarts
 	stepStart = time.Now()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -417,6 +418,329 @@ func (c *Client) CleanStaleRecords(ctx context.Context, endpoint, zoneID, hostna
 	}
 	if deleted {
 		c.invalidateCache(endpoint, zoneID)
+	}
+	return nil
+}
+
+// ─── DHCP Pool Types & Methods ──────────────────────────────────────────────
+
+// DHCPPool represents a DHCP pool in a microdns instance.
+type DHCPPool struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	RangeStart    string   `json:"range_start"`
+	RangeEnd      string   `json:"range_end"`
+	Subnet        string   `json:"subnet"`
+	Gateway       string   `json:"gateway"`
+	DNSServers    []string `json:"dns_servers"`
+	Domain        string   `json:"domain"`
+	LeaseTimeSecs int      `json:"lease_time_secs"`
+	NextServer    string   `json:"next_server,omitempty"`
+	BootFile      string   `json:"boot_file,omitempty"`
+	BootFileEFI   string   `json:"boot_file_efi,omitempty"`
+	IPXEBootURL   string   `json:"ipxe_boot_url,omitempty"`
+}
+
+// ListDHCPPools returns all DHCP pools from a microdns instance.
+func (c *Client) ListDHCPPools(ctx context.Context, endpoint string) ([]DHCPPool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/dhcp/pools", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building pool list request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("listing DHCP pools from %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading pool list response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("listing DHCP pools: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var pools []DHCPPool
+	if err := json.Unmarshal(body, &pools); err != nil {
+		return nil, fmt.Errorf("decoding DHCP pools: %w", err)
+	}
+	return pools, nil
+}
+
+// CreateDHCPPool creates a DHCP pool on a microdns instance.
+func (c *Client) CreateDHCPPool(ctx context.Context, endpoint string, pool DHCPPool) (*DHCPPool, error) {
+	payload, _ := json.Marshal(pool)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/api/v1/dhcp/pools", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("building pool create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("creating DHCP pool at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading pool create response: %w", err)
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("creating DHCP pool: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var created DHCPPool
+	if err := json.Unmarshal(body, &created); err != nil {
+		return nil, fmt.Errorf("decoding created pool: %w", err)
+	}
+
+	c.log.Infow("DHCP pool created", "name", created.Name, "subnet", created.Subnet, "endpoint", endpoint)
+	return &created, nil
+}
+
+// DeleteDHCPPool removes a DHCP pool by ID.
+func (c *Client) DeleteDHCPPool(ctx context.Context, endpoint, poolID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint+"/api/v1/dhcp/pools/"+poolID, nil)
+	if err != nil {
+		return fmt.Errorf("building pool delete request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("deleting DHCP pool %s: %w", poolID, err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("deleting DHCP pool %s: HTTP %d", poolID, resp.StatusCode)
+	}
+	return nil
+}
+
+// ─── DHCP Reservation Types & Methods ───────────────────────────────────────
+
+// DHCPReservation represents a static DHCP reservation in a microdns instance.
+type DHCPReservation struct {
+	MAC         string `json:"mac"`
+	IP          string `json:"ip"`
+	Hostname    string `json:"hostname,omitempty"`
+	NextServer  string `json:"next_server,omitempty"`
+	BootFile    string `json:"boot_file,omitempty"`
+	BootFileEFI string `json:"boot_file_efi,omitempty"`
+	IPXEBootURL string `json:"ipxe_boot_url,omitempty"`
+}
+
+// ListDHCPReservations returns all DHCP reservations from a microdns instance.
+func (c *Client) ListDHCPReservations(ctx context.Context, endpoint string) ([]DHCPReservation, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/dhcp/reservations", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building reservation list request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("listing DHCP reservations from %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading reservation list response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("listing DHCP reservations: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var reservations []DHCPReservation
+	if err := json.Unmarshal(body, &reservations); err != nil {
+		return nil, fmt.Errorf("decoding DHCP reservations: %w", err)
+	}
+	return reservations, nil
+}
+
+// UpsertDHCPReservation creates or updates a DHCP reservation by MAC.
+// If the MAC already exists (409 Conflict on POST), it PATCHes the existing entry.
+func (c *Client) UpsertDHCPReservation(ctx context.Context, endpoint string, res DHCPReservation) error {
+	payload, _ := json.Marshal(res)
+
+	// Try POST first
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/api/v1/dhcp/reservations", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("building reservation create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("creating DHCP reservation at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+		c.log.Infow("DHCP reservation created", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
+		return nil
+	}
+
+	if resp.StatusCode == http.StatusConflict {
+		// MAC exists, PATCH instead
+		mac := strings.ToLower(res.MAC)
+		patchReq, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+			endpoint+"/api/v1/dhcp/reservations/"+mac, bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("building reservation patch request: %w", err)
+		}
+		patchReq.Header.Set("Content-Type", "application/json")
+
+		patchResp, err := c.http.Do(patchReq)
+		if err != nil {
+			return fmt.Errorf("patching DHCP reservation %s: %w", mac, err)
+		}
+		defer patchResp.Body.Close()
+		body, _ := io.ReadAll(patchResp.Body)
+
+		if patchResp.StatusCode != http.StatusOK {
+			return fmt.Errorf("patching DHCP reservation: HTTP %d: %s", patchResp.StatusCode, string(body))
+		}
+		c.log.Infow("DHCP reservation updated", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
+		return nil
+	}
+
+	return fmt.Errorf("creating DHCP reservation: HTTP %d", resp.StatusCode)
+}
+
+// DeleteDHCPReservation removes a DHCP reservation by MAC address.
+func (c *Client) DeleteDHCPReservation(ctx context.Context, endpoint, mac string) error {
+	mac = strings.ToLower(mac)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		endpoint+"/api/v1/dhcp/reservations/"+mac, nil)
+	if err != nil {
+		return fmt.Errorf("building reservation delete request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("deleting DHCP reservation %s: %w", mac, err)
+	}
+	resp.Body.Close()
+
+	// 404 is OK — reservation already gone
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("deleting DHCP reservation %s: HTTP %d", mac, resp.StatusCode)
+	}
+	c.log.Infow("DHCP reservation deleted", "mac", mac, "endpoint", endpoint)
+	return nil
+}
+
+// ─── DNS Forwarder Types & Methods ──────────────────────────────────────────
+
+// DNSForwarder represents a forward zone in a microdns instance.
+type DNSForwarder struct {
+	Zone    string   `json:"zone"`
+	Servers []string `json:"servers"`
+}
+
+// ListDNSForwarders returns all DNS forwarders from a microdns instance.
+func (c *Client) ListDNSForwarders(ctx context.Context, endpoint string) ([]DNSForwarder, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/dns/forwarders", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building forwarder list request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("listing DNS forwarders from %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading forwarder list response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("listing DNS forwarders: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var forwarders []DNSForwarder
+	if err := json.Unmarshal(body, &forwarders); err != nil {
+		return nil, fmt.Errorf("decoding DNS forwarders: %w", err)
+	}
+	return forwarders, nil
+}
+
+// EnsureDNSForwarder creates a DNS forwarder if it doesn't exist.
+// Returns nil on success or if the forwarder already exists (409).
+func (c *Client) EnsureDNSForwarder(ctx context.Context, endpoint string, fwd DNSForwarder) error {
+	payload, _ := json.Marshal(fwd)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/api/v1/dns/forwarders", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("building forwarder create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("creating DNS forwarder at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// 201 Created or 409 Conflict (already exists) are both success
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusConflict {
+		if resp.StatusCode != http.StatusConflict {
+			c.log.Infow("DNS forwarder created", "zone", fwd.Zone, "servers", fwd.Servers, "endpoint", endpoint)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("creating DNS forwarder: HTTP %d: %s", resp.StatusCode, string(body))
+}
+
+// DeleteDNSForwarder removes a DNS forwarder by zone name.
+func (c *Client) DeleteDNSForwarder(ctx context.Context, endpoint, zone string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		endpoint+"/api/v1/dns/forwarders/"+zone, nil)
+	if err != nil {
+		return fmt.Errorf("building forwarder delete request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("deleting DNS forwarder %s: %w", zone, err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("deleting DNS forwarder %s: HTTP %d", zone, resp.StatusCode)
+	}
+	return nil
+}
+
+// ─── Health Check ───────────────────────────────────────────────────────────
+
+// HealthCheck probes a microdns REST API health endpoint.
+// Returns nil if the instance is healthy, error otherwise.
+func (c *Client) HealthCheck(ctx context.Context, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/zones", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
