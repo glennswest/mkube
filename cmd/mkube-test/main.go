@@ -359,13 +359,8 @@ spec:
 			continue
 		}
 
-		// Update hostname — delete and recreate (microdns proxy has no PATCH)
-		delOut, delErr := mk("delete", "dhcpr", macDash, "-n", ns)
-		if delErr != nil {
-			fmt.Printf("  cycle %3d/%d: create=%dms UPDATE-DELETE FAILED: %s\n", i, n, createMs, truncate(delOut, 100))
-			cycleFailed = true
-		} else {
-			updateYAML := fmt.Sprintf(`apiVersion: v1
+		// Update hostname via mk apply (PATCH)
+		updateYAML := fmt.Sprintf(`apiVersion: v1
 kind: DHCPReservation
 metadata:
   name: %s
@@ -375,14 +370,13 @@ spec:
   ip: "%s"
   hostname: "%s-updated"
 `, macDash, ns, mac, ip, hostname)
-			upOut, upErr := mkApply(updateYAML)
-			if upErr != nil {
-				fmt.Printf("  cycle %3d/%d: create=%dms UPDATE-RECREATE FAILED: %s\n", i, n, createMs, truncate(upOut, 100))
-				cycleFailed = true
-			}
+		upOut, upErr := mkApply(updateYAML)
+		if upErr != nil {
+			fmt.Printf("  cycle %3d/%d: create=%dms UPDATE FAILED: %s\n", i, n, createMs, truncate(upOut, 100))
+			cycleFailed = true
 		}
 
-		// Final delete
+		// Delete
 		deleteStart := time.Now()
 		_, err = mk("delete", "dhcpr", macDash, "-n", ns)
 		if err != nil {
@@ -464,13 +458,8 @@ spec:
 			continue
 		}
 
-		// Update IP — delete and recreate (microdns proxy has no PATCH)
-		_, delErr := mk("delete", "dr", recordID, "-n", ns)
-		if delErr != nil {
-			fmt.Printf("  cycle %3d/%d: UPDATE-DELETE FAILED\n", i, n)
-			cycleFailed = true
-		} else {
-			updateYAML := fmt.Sprintf(`apiVersion: v1
+		// Update IP via mk apply (PATCH — use record UUID as name)
+		updateYAML := fmt.Sprintf(`apiVersion: v1
 kind: DNSRecord
 metadata:
   name: "%s"
@@ -480,28 +469,19 @@ spec:
   type: A
   data: "%s"
   ttl: 120
-`, hostname, ns, hostname, ip2)
+`, recordID, ns, hostname, ip2)
 
-			upOut, upErr := mkApply(updateYAML)
-			if upErr != nil {
-				fmt.Printf("  cycle %3d/%d: UPDATE-RECREATE FAILED: %s\n", i, n, truncate(upOut, 100))
-				cycleFailed = true
-			} else {
-				// Re-fetch the new record ID for deletion
-				obj2, err2 := mkGetJSON("get", "dr", "-n", ns)
-				if err2 == nil {
-					recordID = findDNSRecordByHostname(obj2, hostname)
-				}
-			}
+		upOut, upErr := mkApply(updateYAML)
+		if upErr != nil {
+			fmt.Printf("  cycle %3d/%d: UPDATE FAILED: %s\n", i, n, truncate(upOut, 100))
+			cycleFailed = true
 		}
 
-		// Final delete by ID (if we have one)
-		if recordID != "" {
-			_, err = mk("delete", "dr", recordID, "-n", ns)
-			if err != nil {
-				fmt.Printf("  cycle %3d/%d: DELETE FAILED\n", i, n)
-				continue
-			}
+		// Delete by ID
+		_, err = mk("delete", "dr", recordID, "-n", ns)
+		if err != nil {
+			fmt.Printf("  cycle %3d/%d: DELETE FAILED\n", i, n)
+			continue
 		}
 
 		if cycleFailed {
