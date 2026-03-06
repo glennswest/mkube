@@ -515,6 +515,9 @@ func runSharedServices(
 		p.LoadConfigMapsFromStore(ctx)
 		p.LoadISCSICdromsFromStore(ctx)
 		p.LoadBootConfigsFromStore(ctx)
+		p.LoadHostReservationsFromStore(ctx)
+		p.LoadJobRunnersFromStore(ctx)
+		p.LoadJobsFromStore(ctx)
 	}
 	go p.RunDHCPWatcher(ctx)
 	go p.RunJobScheduler(ctx)
