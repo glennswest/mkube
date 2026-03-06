@@ -195,7 +195,26 @@ func (c *Client) RemoveMountsByList(ctx context.Context, listName string) error 
 // ─── Network Operations ─────────────────────────────────────────────────────
 
 // CreateVeth creates a virtual ethernet interface for a container.
+// Idempotent: if the veth already exists with matching config, returns nil.
+// If it exists with different address/gateway, updates it in place.
 func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) error {
+	veths, err := c.ListVeths(ctx)
+	if err != nil {
+		return fmt.Errorf("listing veths for idempotent create %q: %w", name, err)
+	}
+	for _, v := range veths {
+		if v.Name == name {
+			if v.Address == address && v.Gateway == gateway {
+				return nil // already exists with correct config
+			}
+			// exists with different config — update in place
+			return c.restPOST(ctx, "/interface/veth/set", map[string]string{
+				".id":     v.ID,
+				"address": address,
+				"gateway": gateway,
+			}, nil)
+		}
+	}
 	return c.restPOST(ctx, "/interface/veth/add", map[string]string{
 		"name":    name,
 		"address": address,
@@ -219,7 +238,25 @@ func (c *Client) RemoveVeth(ctx context.Context, name string) error {
 }
 
 // AddBridgePort adds a veth to a bridge.
+// Idempotent: if the interface is already on the correct bridge, returns nil.
+// If on a different bridge, removes and re-adds.
 func (c *Client) AddBridgePort(ctx context.Context, bridge, iface string) error {
+	ports, err := c.ListBridgePorts(ctx)
+	if err != nil {
+		return fmt.Errorf("listing bridge ports for idempotent add %q: %w", iface, err)
+	}
+	for _, p := range ports {
+		if p.Interface == iface {
+			if p.Bridge == bridge {
+				return nil // already on correct bridge
+			}
+			// on wrong bridge — remove first
+			if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
+				return fmt.Errorf("removing %q from bridge %q: %w", iface, p.Bridge, err)
+			}
+			break
+		}
+	}
 	return c.restPOST(ctx, "/interface/bridge/port/add", map[string]string{
 		"bridge":    bridge,
 		"interface": iface,

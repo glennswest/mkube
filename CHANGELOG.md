@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-06
+- **fix:** Idempotent veth/bridge-port creation in RouterOS client — `CreateVeth` now checks for existing veth before creating (no-op if matching, update-in-place if different address/gateway). `AddBridgePort` checks for existing port assignment (no-op if correct bridge, remove+re-add if wrong bridge). Prevents pod stuck in CreateFailed loop when RouterOS keeps orphaned veths after container deletion.
 - **feat:** Job scheduling system for bare metal hosts — HostReservation CRD (namespaced, claims BMH for pool), JobRunner CRD (cluster-scoped, runner template with boot config, idle timeout, reclaim policy, overflow), Job CRD (namespaced, unit of work with script, env, priority, timeout, artifacts), JobQueue computed view (priority-sorted pending jobs). Full CRUD + PATCH + Watch + table format + consistency checks + NATS persistence + export/import for all 3 CRDs.
 - **feat:** Job scheduler goroutine — 10s tick loop: schedules pending jobs by priority to available hosts, sets BMH bootConfigRef + powers on, monitors provisioning/running/heartbeat timeouts, handles idle runner power-off via reclaim policy.
 - **feat:** Agent REST endpoints — source-IP authenticated: GET /api/v1/agent/work (poll for assigned job), POST /api/v1/agent/heartbeat (30s keepalive), POST /api/v1/agent/logs (stream log lines), POST /api/v1/agent/complete (report exit code). Job lifecycle: Pending→Scheduling→Provisioning→Running→Completed|Failed|TimedOut|Cancelled.

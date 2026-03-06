@@ -156,11 +156,17 @@ func TestRemoveContainer(t *testing.T) {
 func TestCreateVeth(t *testing.T) {
 	var body map[string]string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/interface/veth/add" {
+		switch r.URL.Path {
+		case "/interface/veth":
+			// ListVeths — return empty list so CreateVeth proceeds to add
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+		case "/interface/veth/add":
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		w.WriteHeader(http.StatusOK)
 	})
 
 	client, server := newTestClient(t, handler)
@@ -174,6 +180,62 @@ func TestCreateVeth(t *testing.T) {
 	}
 	if body["address"] != "172.20.0.5/16" {
 		t.Errorf("expected address '172.20.0.5/16', got %q", body["address"])
+	}
+}
+
+func TestCreateVethIdempotent(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/interface/veth":
+			// Return existing veth with matching config
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]NetworkInterface{
+				{ID: "*1", Name: "veth0", Address: "172.20.0.5/16", Gateway: "172.20.0.1"},
+			})
+		case "/interface/veth/add":
+			t.Error("should not call add when veth already exists")
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	})
+
+	client, server := newTestClient(t, handler)
+	defer server.Close()
+
+	if err := client.CreateVeth(context.Background(), "veth0", "172.20.0.5/16", "172.20.0.1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreateVethUpdate(t *testing.T) {
+	var setBody map[string]string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/interface/veth":
+			// Return existing veth with different address
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]NetworkInterface{
+				{ID: "*1", Name: "veth0", Address: "172.20.0.99/16", Gateway: "172.20.0.1"},
+			})
+		case "/interface/veth/set":
+			_ = json.NewDecoder(r.Body).Decode(&setBody)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	})
+
+	client, server := newTestClient(t, handler)
+	defer server.Close()
+
+	if err := client.CreateVeth(context.Background(), "veth0", "172.20.0.5/16", "172.20.0.1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if setBody[".id"] != "*1" {
+		t.Errorf("expected .id '*1', got %q", setBody[".id"])
+	}
+	if setBody["address"] != "172.20.0.5/16" {
+		t.Errorf("expected address '172.20.0.5/16', got %q", setBody["address"])
 	}
 }
 

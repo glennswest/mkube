@@ -68,6 +68,15 @@ func mockRouterOS(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// GET /rest/interface/bridge/port — list bridge ports
+	mux.HandleFunc("/rest/interface/bridge/port", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]string{})
+	})
+
 	// POST /rest/interface/bridge/port/add — add bridge port
 	mux.HandleFunc("/rest/interface/bridge/port/add", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
