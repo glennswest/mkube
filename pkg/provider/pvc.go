@@ -17,6 +17,8 @@ import (
 
 // resolvePVCVolume checks if a pod volume mount is backed by a PVC.
 // Returns the host path for the PVC volume and true if found, or empty string and false.
+// If the pod spec references a PVC that doesn't exist yet, auto-creates it to prevent
+// data loss from falling through to ephemeral volumes.
 func (p *MicroKubeProvider) resolvePVCVolume(pod *corev1.Pod, volumeName string) (string, bool) {
 	for _, v := range pod.Spec.Volumes {
 		if v.Name != volumeName {
@@ -25,10 +27,37 @@ func (p *MicroKubeProvider) resolvePVCVolume(pod *corev1.Pod, volumeName string)
 		if v.PersistentVolumeClaim == nil {
 			return "", false
 		}
-		key := pod.Namespace + "/" + v.PersistentVolumeClaim.ClaimName
+		claimName := v.PersistentVolumeClaim.ClaimName
+		key := pod.Namespace + "/" + claimName
 		pvc, ok := p.pvcs[key]
 		if !ok {
-			return "", false
+			// Auto-create missing PVC to prevent data loss.
+			// This handles boot-order pods that reference PVCs before they're
+			// explicitly created by deployManagedDNS or the API.
+			p.deps.Logger.Warnw("auto-creating missing PVC referenced by pod",
+				"pod", pod.Namespace+"/"+pod.Name,
+				"volume", volumeName,
+				"claimName", claimName)
+			newPVC := &corev1.PersistentVolumeClaim{
+				TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              claimName,
+					Namespace:         pod.Namespace,
+					CreationTimestamp: metav1.Now(),
+				},
+				Status: corev1.PersistentVolumeClaimStatus{
+					Phase: corev1.ClaimBound,
+				},
+			}
+			p.pvcs[key] = newPVC
+			// Persist to NATS if store is available
+			if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
+				storeKey := pod.Namespace + "." + claimName
+				if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(context.Background(), storeKey, newPVC); err != nil {
+					p.deps.Logger.Warnw("failed to persist auto-created PVC", "key", storeKey, "error", err)
+				}
+			}
+			pvc = newPVC
 		}
 		return p.pvcHostPath(pvc), true
 	}
@@ -444,6 +473,56 @@ func pvcListToTable(pvcs []corev1.PersistentVolumeClaim) *metav1.Table {
 	}
 
 	return table
+}
+
+// fixOrphanedVolumeMounts detects volumeMounts without a matching volume definition
+// and auto-adds a PVC volume reference. Returns true if the pod was modified.
+// This fixes pods created from boot-order.yaml that had "data" volumeMounts
+// but no corresponding PVC volume definition, causing data loss on recreation.
+func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context.Context) bool {
+	if len(pod.Spec.Containers) == 0 {
+		return false
+	}
+
+	// Build set of existing volume names
+	volumeNames := make(map[string]bool, len(pod.Spec.Volumes))
+	for _, v := range pod.Spec.Volumes {
+		volumeNames[v.Name] = true
+	}
+
+	modified := false
+	for _, c := range pod.Spec.Containers {
+		for _, vm := range c.VolumeMounts {
+			if volumeNames[vm.Name] {
+				continue
+			}
+			// Orphaned volumeMount — the "data" volume for DNS pods
+			// needs a PVC to persist redb across pod recreation.
+			if vm.Name == "data" && vm.MountPath == "/data" {
+				claimName := pod.Namespace + "-dns-data"
+				p.deps.Logger.Infow("fixing orphaned volumeMount: adding PVC volume",
+					"pod", pod.Namespace+"/"+pod.Name,
+					"volume", vm.Name,
+					"claimName", claimName)
+				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: claimName,
+						},
+					},
+				})
+				volumeNames["data"] = true
+				modified = true
+			} else {
+				p.deps.Logger.Warnw("orphaned volumeMount has no matching volume definition",
+					"pod", pod.Namespace+"/"+pod.Name,
+					"volumeMount", vm.Name,
+					"mountPath", vm.MountPath)
+			}
+		}
+	}
+	return modified
 }
 
 // formatAccessModes returns a short string representation of access modes.

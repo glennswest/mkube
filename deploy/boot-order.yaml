@@ -86,6 +86,9 @@ spec:
     - name: config
       configMap:
         name: dns-config
+    - name: data
+      persistentVolumeClaim:
+        claimName: g10-dns-data
   containers:
     - name: microdns
       image: 192.168.200.3:5000/microdns:edge
@@ -130,6 +133,9 @@ spec:
     - name: config
       configMap:
         name: dns-config
+    - name: data
+      persistentVolumeClaim:
+        claimName: g11-dns-data
   containers:
     - name: microdns
       image: 192.168.200.3:5000/microdns:edge
@@ -174,6 +180,9 @@ spec:
     - name: config
       configMap:
         name: dns-config
+    - name: data
+      persistentVolumeClaim:
+        claimName: gt-dns-data
   containers:
     - name: microdns
       image: 192.168.200.3:5000/microdns:edge

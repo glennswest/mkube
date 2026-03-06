@@ -1990,6 +1990,14 @@ func (p *MicroKubeProvider) loadFromStore(ctx context.Context) ([]*corev1.Pod, [
 			p.deps.Logger.Warnw("failed to read pod from store", "key", key, "error", err)
 			continue
 		}
+		// Migration: fix DNS pods with orphaned volumeMounts (mount exists but no volume definition).
+		// This was caused by boot-order.yaml missing PVC volume definitions for DNS data volumes.
+		if p.fixOrphanedVolumeMounts(&pod, ctx) {
+			storeKey := pod.Namespace + "." + pod.Name
+			if _, err := p.deps.Store.Pods.PutJSON(ctx, storeKey, &pod); err != nil {
+				p.deps.Logger.Warnw("failed to persist pod volume fix", "key", storeKey, "error", err)
+			}
+		}
 		pods = append(pods, &pod)
 	}
 
