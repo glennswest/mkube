@@ -15,8 +15,7 @@ import (
 var (
 	mkCmd           = flag.String("mk", "oc", "oc/mk command (default: oc)")
 	kubeconfig      = flag.String("kubeconfig", os.ExpandEnv("$HOME/.kube/mkube.config"), "kubeconfig path")
-	networkName     = flag.String("network", "gtest", "test network for container tests")
-	dnsNetwork      = flag.String("dns-network", "gt", "existing network for DNS/DHCP tests (must have running microdns)")
+	networkName     = flag.String("network", "gtest", "test network (all tests run here)")
 	containerImage  = flag.String("image", "192.168.200.3:5000/microdns:edge", "container image for pod tests")
 	containerCycles = flag.Int("container-cycles", 5, "number of container start/stop cycles")
 	dhcpCycles      = flag.Int("dhcp-cycles", 100, "number of DHCP reservation CRUD cycles")
@@ -65,8 +64,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== mkube Integration Test ===")
-	fmt.Printf("Container network: %s\n", *networkName)
-	fmt.Printf("DNS/DHCP network:  %s\n", *dnsNetwork)
+	fmt.Printf("Network: %s\n", *networkName)
 	fmt.Printf("Command: %s\n\n", *mkCmd)
 
 	// Verify mk command works
@@ -104,10 +102,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "FATAL: failed to create test network: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("Network %s created. Waiting 15s for DNS pod to start...\n", *networkName)
-		time.Sleep(15 * time.Second)
+		fmt.Printf("Network %s created. Waiting for DNS pod...\n", *networkName)
 
-		// Verify DNS pod is running
+		// Poll for DNS pod to be Running (up to 120s)
+		if err := waitForPod(*networkName, "dns", "Running", 120*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: DNS pod not ready: %v\n", err)
+			out, _ := mk("get", "pods", "-n", *networkName)
+			fmt.Fprintf(os.Stderr, "Pods: %s\n", out)
+			os.Exit(1)
+		}
 		out, _ := mk("get", "pods", "-n", *networkName)
 		fmt.Printf("Test network pods:\n%s\n", out)
 	}
@@ -327,7 +330,7 @@ spec:
 
 func runDHCPSuite() bool {
 	n := *dhcpCycles
-	ns := *dnsNetwork
+	ns := *networkName
 	fmt.Printf("--- Suite 2: DHCP Reservations (%d cycles on %s) ---\n", n, ns)
 
 	createSt := &stats{}
@@ -422,7 +425,7 @@ spec:
 
 func runDNSSuite() bool {
 	n := *dnsCycles
-	ns := *dnsNetwork
+	ns := *networkName
 	fmt.Printf("--- Suite 3: DNS Records (%d cycles on %s) ---\n", n, ns)
 
 	crudSt := &stats{}
@@ -489,9 +492,9 @@ spec:
 		}
 
 		// Delete by ID
-		_, err = mk("delete", "dr", recordID, "-n", ns)
-		if err != nil {
-			fmt.Printf("  cycle %3d/%d: DELETE FAILED\n", i, n)
+		delOut, delErr := mk("delete", "dr", recordID, "-n", ns)
+		if delErr != nil {
+			fmt.Printf("  cycle %3d/%d: DELETE FAILED: %s\n", i, n, truncate(delOut, 200))
 			continue
 		}
 
@@ -537,7 +540,7 @@ func findDNSRecordByHostname(obj map[string]interface{}, hostname string) string
 // ─── Suite 4: DHCP Pool CRUD ────────────────────────────────────────────────
 
 func runPoolSuite() bool {
-	ns := *dnsNetwork
+	ns := *networkName
 	fmt.Printf("--- Suite 4: DHCP Pool CRUD (on %s) ---\n", ns)
 
 	// List pools
@@ -641,7 +644,7 @@ func truncate(s string, maxLen int) string {
 func runDNSStressSuite() bool {
 	rounds := *dnsStressRounds
 	count := *dnsStressCount
-	ns := *dnsNetwork
+	ns := *networkName
 	fmt.Printf("--- Suite 5: DNS Stress Test (%d rounds x %d records on %s) ---\n", rounds, count, ns)
 
 	// Get baseline memory
