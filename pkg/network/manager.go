@@ -590,6 +590,9 @@ func (m *Manager) UnregisterNetwork(name string) {
 		}
 	}
 
+	// Remove all ports (veths) belonging to this network so IPAM entries
+	// don't persist and block re-creation of the same network.
+	m.state.removePortsBySwitch(name)
 	m.state.removeSwitch(name)
 
 	m.log.Infow("unregistered dynamic network", "name", name)

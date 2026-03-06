@@ -111,3 +111,13 @@ func (s *stateStore) removePort(name string) {
 	defer s.mu.Unlock()
 	delete(s.data.Ports, name)
 }
+
+func (s *stateStore) removePortsBySwitch(switchName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, port := range s.data.Ports {
+		if port.Switch == switchName {
+			delete(s.data.Ports, name)
+		}
+	}
+}
