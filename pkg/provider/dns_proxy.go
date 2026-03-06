@@ -333,6 +333,50 @@ func (p *MicroKubeProvider) handleUpdateDNSRecord(w http.ResponseWriter, r *http
 	podWriteJSON(w, http.StatusOK, result)
 }
 
+func (p *MicroKubeProvider) handlePatchDNSRecord(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name") // record UUID
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
+	if !ok {
+		return
+	}
+	zoneID, ok := p.resolveZoneID(w, r, endpoint, net)
+	if !ok {
+		return
+	}
+
+	// GET current record from microdns
+	existing, err := p.deps.NetworkMgr.DNSClient().GetFullRecord(r.Context(), endpoint, zoneID, name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("DNS record %q not found: %v", name, err), http.StatusNotFound)
+		return
+	}
+
+	// Start from existing, overlay patch fields
+	merged := fullRecordToResource(*existing, ns)
+	if err := json.NewDecoder(r.Body).Decode(&merged); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	payload := map[string]interface{}{
+		"ttl":  merged.Spec.TTL,
+		"data": map[string]interface{}{"type": merged.Spec.Type, "data": merged.Spec.Data},
+	}
+	if merged.Spec.Enabled != nil {
+		payload["enabled"] = *merged.Spec.Enabled
+	}
+
+	rec, err := p.deps.NetworkMgr.DNSClient().UpdateFullRecord(r.Context(), endpoint, zoneID, name, payload)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("patching DNS record: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	result := fullRecordToResource(*rec, ns)
+	podWriteJSON(w, http.StatusOK, result)
+}
+
 func (p *MicroKubeProvider) handleDeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name") // record UUID
@@ -506,6 +550,53 @@ func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.
 	podWriteJSON(w, http.StatusOK, result)
 }
 
+func (p *MicroKubeProvider) handlePatchDHCPPool(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	if !ok {
+		return
+	}
+
+	existing, err := p.deps.NetworkMgr.DNSClient().GetDHCPPool(r.Context(), endpoint, name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("DHCP pool %q not found: %v", name, err), http.StatusNotFound)
+		return
+	}
+
+	// Start from existing, overlay patch fields
+	merged := dhcpPoolToResource(*existing, ns)
+	if err := json.NewDecoder(r.Body).Decode(&merged); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	pool := dns.DHCPPool{
+		Name:          merged.Spec.Name,
+		RangeStart:    merged.Spec.RangeStart,
+		RangeEnd:      merged.Spec.RangeEnd,
+		Subnet:        merged.Spec.Subnet,
+		Gateway:       merged.Spec.Gateway,
+		DNSServers:    merged.Spec.DNSServers,
+		Domain:        merged.Spec.Domain,
+		LeaseTimeSecs: merged.Spec.LeaseTimeSecs,
+		NextServer:    merged.Spec.NextServer,
+		BootFile:      merged.Spec.BootFile,
+		BootFileEFI:   merged.Spec.BootFileEFI,
+		IPXEBootURL:   merged.Spec.IPXEBootURL,
+		RootPath:      merged.Spec.RootPath,
+	}
+
+	updated, err := p.deps.NetworkMgr.DNSClient().UpdateDHCPPool(r.Context(), endpoint, name, pool)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("patching DHCP pool: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	result := dhcpPoolToResource(*updated, ns)
+	podWriteJSON(w, http.StatusOK, result)
+}
+
 func (p *MicroKubeProvider) handleDeleteDHCPPool(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
@@ -664,6 +755,47 @@ func (p *MicroKubeProvider) handleUpdateDHCPReservation(w http.ResponseWriter, r
 
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
 		http.Error(w, fmt.Sprintf("updating DHCP reservation: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	result := dhcpReservationToResource(reservation, ns)
+	podWriteJSON(w, http.StatusOK, result)
+}
+
+func (p *MicroKubeProvider) handlePatchDHCPReservation(w http.ResponseWriter, r *http.Request) {
+	ns := r.PathValue("namespace")
+	name := r.PathValue("name")
+	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	if !ok {
+		return
+	}
+
+	mac := macToColons(name)
+	existing, err := p.deps.NetworkMgr.DNSClient().GetDHCPReservation(r.Context(), endpoint, mac)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("DHCP reservation %q not found: %v", name, err), http.StatusNotFound)
+		return
+	}
+
+	// Start from existing, overlay patch fields
+	merged := dhcpReservationToResource(*existing, ns)
+	if err := json.NewDecoder(r.Body).Decode(&merged); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	reservation := dns.DHCPReservation{
+		MAC:         merged.Spec.MAC,
+		IP:          merged.Spec.IP,
+		Hostname:    merged.Spec.Hostname,
+		NextServer:  merged.Spec.NextServer,
+		BootFile:    merged.Spec.BootFile,
+		BootFileEFI: merged.Spec.BootFileEFI,
+		IPXEBootURL: merged.Spec.IPXEBootURL,
+		RootPath:    merged.Spec.RootPath,
+	}
+	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
+		http.Error(w, fmt.Sprintf("patching DHCP reservation: %v", err), http.StatusBadGateway)
 		return
 	}
 

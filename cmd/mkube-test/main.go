@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,9 +21,12 @@ var (
 	containerCycles = flag.Int("container-cycles", 5, "number of container start/stop cycles")
 	dhcpCycles      = flag.Int("dhcp-cycles", 100, "number of DHCP reservation CRUD cycles")
 	dnsCycles       = flag.Int("dns-cycles", 100, "number of DNS record CRUD cycles")
+	dnsStressRounds = flag.Int("dns-stress-rounds", 100, "number of DNS stress test rounds")
+	dnsStressCount  = flag.Int("dns-stress-count", 100, "number of A records per DNS stress round")
+	mkubeAPI        = flag.String("api", "http://192.168.200.2:8082", "mkube API base URL")
 	skipSetup       = flag.Bool("skip-setup", false, "skip test network creation")
 	skipTeardown    = flag.Bool("skip-teardown", false, "skip test network deletion at end")
-	suite           = flag.String("suite", "all", "run specific suite: all, containers, dhcp, dns, pool")
+	suite           = flag.String("suite", "all", "run specific suite: all, containers, dhcp, dns, pool, dns-stress")
 )
 
 type stats struct {
@@ -130,6 +135,12 @@ func main() {
 
 	if runAll || *suite == "pool" {
 		if !runPoolSuite() {
+			allPassed = false
+		}
+	}
+
+	if runAll || *suite == "dns-stress" {
+		if !runDNSStressSuite() {
 			allPassed = false
 		}
 	}
@@ -621,4 +632,211 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// ─── Suite 5: DNS Stress Test ───────────────────────────────────────────────
+// Creates N A records, verifies all via lookup, deletes all. Repeats M rounds.
+// Monitors system memory between rounds to detect leaks.
+
+func runDNSStressSuite() bool {
+	rounds := *dnsStressRounds
+	count := *dnsStressCount
+	ns := *dnsNetwork
+	fmt.Printf("--- Suite 5: DNS Stress Test (%d rounds x %d records on %s) ---\n", rounds, count, ns)
+
+	// Get baseline memory
+	baseMem := getSystemMemory()
+	if baseMem != nil {
+		fmt.Printf("  Baseline: %s\n", baseMem)
+	}
+
+	roundSt := &stats{}
+	passed := 0
+
+	for round := 1; round <= rounds; round++ {
+		roundStart := time.Now()
+		roundFailed := false
+		prefix := fmt.Sprintf("stress-r%d", round)
+
+		// Phase 1: Create N A records
+		createStart := time.Now()
+		for i := 1; i <= count; i++ {
+			hostname := fmt.Sprintf("%s-h%d", prefix, i)
+			ip := fmt.Sprintf("10.99.%d.%d", (i/254)+10, 1+(i%254))
+			recYAML := fmt.Sprintf(`apiVersion: v1
+kind: DNSRecord
+metadata:
+  name: "%s"
+  namespace: %s
+spec:
+  hostname: "%s"
+  type: A
+  data: "%s"
+  ttl: 60
+`, hostname, ns, hostname, ip)
+			out, err := mkApply(recYAML)
+			if err != nil {
+				fmt.Printf("  round %3d/%d: CREATE %d FAILED: %s\n", round, rounds, i, truncate(out, 100))
+				roundFailed = true
+				break
+			}
+		}
+		createMs := time.Since(createStart).Milliseconds()
+		if roundFailed {
+			cleanupStressRecords(ns, prefix, count)
+			continue
+		}
+
+		// Phase 2: Verify all N records exist via oc get
+		verifyStart := time.Now()
+		obj, err := mkGetJSON("get", "dr", "-n", ns)
+		if err != nil {
+			fmt.Printf("  round %3d/%d: LIST FAILED: %v\n", round, rounds, err)
+			cleanupStressRecords(ns, prefix, count)
+			continue
+		}
+		foundCount := 0
+		for i := 1; i <= count; i++ {
+			hostname := fmt.Sprintf("%s-h%d", prefix, i)
+			if findDNSRecordByHostname(obj, hostname) != "" {
+				foundCount++
+			}
+		}
+		verifyMs := time.Since(verifyStart).Milliseconds()
+		if foundCount != count {
+			fmt.Printf("  round %3d/%d: VERIFY FAILED: found %d/%d records\n", round, rounds, foundCount, count)
+			roundFailed = true
+		}
+
+		// Phase 3: Delete all N records
+		deleteStart := time.Now()
+		cleanupStressRecords(ns, prefix, count)
+		deleteMs := time.Since(deleteStart).Milliseconds()
+
+		roundMs := time.Since(roundStart).Milliseconds()
+
+		if roundFailed {
+			continue
+		}
+
+		roundSt.record(roundMs)
+		passed++
+
+		if round%10 == 0 || round == rounds || round <= 3 {
+			fmt.Printf("  round %3d/%d: create=%dms verify=%dms delete=%dms total=%dms PASS\n",
+				round, rounds, createMs, verifyMs, deleteMs, roundMs)
+		}
+
+		// Check memory every 10 rounds
+		if round%10 == 0 {
+			mem := getSystemMemory()
+			if mem != nil {
+				fmt.Printf("    memory: %s\n", mem)
+			}
+		}
+	}
+
+	// Final memory check and leak detection
+	finalMem := getSystemMemory()
+	if finalMem != nil && baseMem != nil {
+		drift := baseMem.FreeMB - finalMem.FreeMB
+		fmt.Printf("  Memory: baseline %s\n", baseMem)
+		fmt.Printf("  Memory: final    %s\n", finalMem)
+		if drift > 50 {
+			fmt.Printf("  WARNING: memory drift %dMB — possible leak\n", drift)
+		} else {
+			fmt.Printf("  Memory drift: %dMB (OK)\n", drift)
+		}
+	}
+
+	fmt.Printf("  Summary: %d/%d rounds passed\n", passed, rounds)
+	if roundSt.count > 0 {
+		fmt.Printf("    round: %s\n", roundSt.summary())
+	}
+	fmt.Println()
+	return passed == rounds
+}
+
+func cleanupStressRecords(ns, prefix string, count int) {
+	// List all records and delete matching ones
+	obj, err := mkGetJSON("get", "dr", "-n", ns)
+	if err != nil {
+		return
+	}
+	items, _ := obj["items"].([]interface{})
+	for _, item := range items {
+		rec, _ := item.(map[string]interface{})
+		spec, _ := rec["spec"].(map[string]interface{})
+		meta, _ := rec["metadata"].(map[string]interface{})
+		if spec == nil || meta == nil {
+			continue
+		}
+		h, _ := spec["hostname"].(string)
+		if strings.HasPrefix(h, prefix+"-h") {
+			name, _ := meta["name"].(string)
+			if name != "" {
+				mk("delete", "dr", name, "-n", ns)
+			}
+		}
+	}
+}
+
+// ─── System Memory Helpers ──────────────────────────────────────────────────
+
+type memInfo struct {
+	FreeMB  int64
+	TotalMB int64
+}
+
+func (m *memInfo) String() string {
+	if m == nil {
+		return "unavailable"
+	}
+	usedMB := m.TotalMB - m.FreeMB
+	return fmt.Sprintf("free=%dMB used=%dMB total=%dMB", m.FreeMB, usedMB, m.TotalMB)
+}
+
+func getSystemMemory() *memInfo {
+	resp, err := http.Get(*mkubeAPI + "/api/v1/nodes")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+	items, _ := result["items"].([]interface{})
+	if len(items) == 0 {
+		return nil
+	}
+	node, _ := items[0].(map[string]interface{})
+	status, _ := node["status"].(map[string]interface{})
+	if status == nil {
+		return nil
+	}
+	capacity, _ := status["capacity"].(map[string]interface{})
+	allocatable, _ := status["allocatable"].(map[string]interface{})
+	if capacity == nil || allocatable == nil {
+		return nil
+	}
+	totalStr, _ := capacity["memory"].(string)
+	freeStr, _ := allocatable["memory"].(string)
+
+	return &memInfo{
+		FreeMB:  parseMemMB(freeStr),
+		TotalMB: parseMemMB(totalStr),
+	}
+}
+
+func parseMemMB(s string) int64 {
+	// Node API returns bytes as plain number string
+	s = strings.TrimSpace(s)
+	var val int64
+	fmt.Sscanf(s, "%d", &val)
+	return val / (1024 * 1024)
 }
