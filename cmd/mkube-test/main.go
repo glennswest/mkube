@@ -111,6 +111,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Pods: %s\n", out)
 			os.Exit(1)
 		}
+
+		// Wait for microdns API to be healthy (pod Running doesn't mean
+		// the application is ready to serve requests)
+		if err := waitForDNSHealth(*networkName, 60*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: DNS API not healthy: %v\n", err)
+			os.Exit(1)
+		}
+
 		out, _ := mk("get", "pods", "-n", *networkName)
 		fmt.Printf("Test network pods:\n%s\n", out)
 	}
@@ -625,6 +633,32 @@ func waitForPodGone(ns, name string, timeout time.Duration) error {
 			_, err := mk("get", "pod", name, "-n", ns)
 			if err != nil {
 				return nil // gone
+			}
+		}
+	}
+}
+
+// waitForDNSHealth polls the DNS zone endpoint via mkube API until it responds.
+// This verifies microdns is actually serving, not just that the container is Running.
+func waitForDNSHealth(network string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	url := *mkubeAPI + "/api/v1/namespaces/" + network + "/dnsrecords"
+	for {
+		select {
+		case <-deadline:
+			return fmt.Errorf("timeout waiting for DNS API on network %s", network)
+		case <-ticker.C:
+			client := &http.Client{Timeout: 3 * time.Second}
+			resp, err := client.Get(url)
+			if err != nil {
+				continue
+			}
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
 			}
 		}
 	}
