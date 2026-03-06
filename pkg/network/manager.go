@@ -201,20 +201,8 @@ func (m *Manager) InitDNSZones(ctx context.Context) {
 			}
 		}
 
-		// Register DNS records for DHCP reservations with hostnames
-		for _, res := range ns.def.DNS.DHCP.Reservations {
-			if res.Hostname == "" || res.IP == "" {
-				continue
-			}
-			if _, found := existing[res.Hostname+":"+res.IP]; found {
-				continue
-			}
-			if err := m.dns.RegisterHost(ctx, ns.def.DNS.Endpoint, zoneID, res.Hostname, res.IP, 300); err != nil {
-				m.log.Warnw("failed to register DHCP reservation DNS record", "network", name, "name", res.Hostname, "ip", res.IP, "error", err)
-			} else {
-				m.log.Infow("DHCP reservation DNS record registered", "network", name, "name", res.Hostname, "ip", res.IP)
-			}
-		}
+		// DHCP reservation DNS records are managed by BMH sync + microdns REST API.
+		// Static config reservations are obsolete — microdns is the source of truth.
 
 		// Register infrastructure records (gateway + DNS server)
 		for _, infra := range []struct{ name, ip string }{

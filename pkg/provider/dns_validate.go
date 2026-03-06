@@ -95,36 +95,8 @@ func (p *MicroKubeProvider) runDNSValidation(ctx context.Context) DNSValidationR
 			}
 		}
 
-		// 2. DHCP reservation records
-		for _, res := range netDef.DNS.DHCP.Reservations {
-			if res.Hostname == "" || res.IP == "" {
-				continue
-			}
-			checkName := fmt.Sprintf("zone/%s/reservation/%s", netName, res.Hostname)
-			ips, exists := actualRecords[res.Hostname]
-			if !exists {
-				report.Checks = append(report.Checks, CheckItem{
-					Name:    checkName,
-					Status:  "fail",
-					Message: "missing",
-					Details: fmt.Sprintf("expected A=%s", res.IP),
-				})
-				continue
-			}
-			if containsStr(ips, res.IP) {
-				report.Checks = append(report.Checks, CheckItem{
-					Name:    checkName,
-					Status:  "pass",
-					Message: fmt.Sprintf("A=%s", res.IP),
-				})
-			} else {
-				report.Checks = append(report.Checks, CheckItem{
-					Name:    checkName,
-					Status:  "fail",
-					Message: fmt.Sprintf("wrong IP: have %v, want %s", ips, res.IP),
-				})
-			}
-		}
+		// DHCP reservation DNS records managed by microdns (source of truth).
+		// Static config reservations are obsolete — not validated here.
 
 		// 3. Static records
 		for _, sr := range netDef.DNS.StaticRecords {

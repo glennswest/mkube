@@ -317,12 +317,8 @@ func (p *MicroKubeProvider) checkDNS(ctx context.Context) []CheckItem {
 			}
 		}
 
-		// Add DHCP reservation DNS records
-		for _, res := range netDef.DNS.DHCP.Reservations {
-			if res.Hostname != "" && res.IP != "" {
-				expectedRecords[res.Hostname] = expectedDNS{ip: res.IP}
-			}
-		}
+		// DHCP reservation DNS records are managed by microdns (source of truth).
+		// Static config reservations are obsolete — not checked here.
 
 		// Add infrastructure records (gateway + DNS server)
 		if netDef.Gateway != "" {
@@ -1036,11 +1032,6 @@ func (p *MicroKubeProvider) cleanStaleDNSRecords(ctx context.Context) (int, erro
 		for _, rec := range netDef.DNS.StaticRecords {
 			if rec.Name != "" && rec.IP != "" {
 				expected[rec.Name] = expectedDNS{ip: rec.IP}
-			}
-		}
-		for _, res := range netDef.DNS.DHCP.Reservations {
-			if res.Hostname != "" && res.IP != "" {
-				expected[res.Hostname] = expectedDNS{ip: res.IP}
 			}
 		}
 		if netDef.Gateway != "" {
