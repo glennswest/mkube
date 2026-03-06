@@ -51,6 +51,7 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 | `mkube-update` | Watches registry for new images, updates mkube and other containers | RouterOS container (ARM64) |
 | `mkube-registry` | Standalone OCI registry with TLS, push webhooks to mkube | RouterOS container (ARM64) |
 | `mkube-installer` | One-shot bootstrap CLI — creates registry, seeds images, starts mkube-update | Local Mac/Linux |
+| `mkube-agent` | Job execution agent — pulls work, runs scripts, streams logs, reports completion | CoreOS bare metal (x86_64) |
 
 ### Container IPs (gt network)
 
@@ -123,6 +124,17 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - Deployment replica count verification
 - IPAM allocation re-sync
 
+### Job Scheduling
+- Run transient workloads on bare metal hosts managed via BMH
+- **HostReservation** — claims a BMH for a named pool (prevents double-booking)
+- **JobRunner** — defines pool behavior: boot config, idle timeout, reclaim policy, max concurrency, overflow
+- **Job** — unit of work: bash script, env vars, priority, timeout, artifact collection
+- **JobQueue** — computed read-only view of pending jobs sorted by priority
+- Scheduler goroutine (10s tick) matches jobs to available hosts, powers on via BMH, monitors timeouts
+- **mkube-agent** — static Go binary runs on the booted host, polls for work, executes script, streams logs, sends heartbeats, reports exit code
+- Lifecycle: Pending → Scheduling → Provisioning → Running → Completed | Failed | TimedOut | Cancelled
+- Idle hosts auto-powered-off after configurable timeout (reclaim policy)
+
 ### Additional Features
 - DHCP relay support with microdns integration
 - PXE/UEFI boot support (`bootFileEfi` for iPXE)
@@ -161,7 +173,7 @@ make deploy
 ### Build Only
 
 ```bash
-# All binaries (mkube, mkube-update, mkube-registry, installer)
+# All binaries (mkube, mkube-update, mkube-registry, installer, agent)
 make build-all
 
 # Individual binaries
@@ -169,6 +181,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/mkube/
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/mkube-update/
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/registry/
 CGO_ENABLED=0 go build ./cmd/installer/
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/mkube-agent/
 ```
 
 ## API Reference
@@ -251,6 +264,53 @@ Use the helper script for create+upload+cleanup in one step:
 scripts/setup-iscsi-cdrom.sh <name> <iso-file> [description]
 ```
 
+### HostReservations (namespaced)
+```
+GET    /api/v1/hostreservations                                   # List all
+GET    /api/v1/namespaces/{ns}/hostreservations                   # List in namespace
+GET    /api/v1/namespaces/{ns}/hostreservations/{name}            # Get
+POST   /api/v1/namespaces/{ns}/hostreservations                   # Create
+PUT    /api/v1/namespaces/{ns}/hostreservations/{name}            # Update
+PATCH  /api/v1/namespaces/{ns}/hostreservations/{name}            # Patch (merge)
+DELETE /api/v1/namespaces/{ns}/hostreservations/{name}            # Delete (409 if active job)
+```
+
+### JobRunners (cluster-scoped)
+```
+GET    /api/v1/jobrunners                              # List all
+GET    /api/v1/jobrunners/{name}                       # Get (enriched with live status)
+POST   /api/v1/jobrunners                              # Create
+PUT    /api/v1/jobrunners/{name}                       # Update
+PATCH  /api/v1/jobrunners/{name}                       # Patch (merge)
+DELETE /api/v1/jobrunners/{name}                       # Delete (409 if active jobs)
+```
+
+### Jobs (namespaced)
+```
+GET    /api/v1/jobs                                    # List all
+GET    /api/v1/namespaces/{ns}/jobs                    # List in namespace
+GET    /api/v1/namespaces/{ns}/jobs/{name}             # Get
+POST   /api/v1/namespaces/{ns}/jobs                    # Create (starts as Pending)
+PUT    /api/v1/namespaces/{ns}/jobs/{name}             # Update
+PATCH  /api/v1/namespaces/{ns}/jobs/{name}             # Patch (merge)
+DELETE /api/v1/namespaces/{ns}/jobs/{name}             # Delete (409 if running)
+POST   /api/v1/namespaces/{ns}/jobs/{name}/cancel      # Cancel a running job
+GET    /api/v1/namespaces/{ns}/jobs/{name}/logs        # Get job output logs
+```
+
+### JobQueue (computed view)
+```
+GET    /api/v1/jobqueue                                # Pending jobs sorted by priority
+```
+
+### Agent Endpoints (source-IP authenticated)
+```
+GET    /api/v1/agent/work                              # Agent polls for assigned job
+POST   /api/v1/agent/heartbeat                         # Agent heartbeat (30s interval)
+POST   /api/v1/agent/logs                              # Agent streams log lines
+POST   /api/v1/agent/complete                          # Agent reports exit code
+```
+
 ### ConfigMaps
 ```
 GET    /api/v1/namespaces/{ns}/configmaps              # List in namespace
@@ -303,7 +363,11 @@ All resources support `oc` (or `kubectl`) with `--server=http://192.168.200.2:80
 | configmaps | | yes | ConfigMap |
 | deployments | deploy | yes | Deployment |
 | events | | yes | Event |
+| hostreservations | hres | yes | HostReservation |
 | iscsi-cdroms | icd | no | ISCSICdrom |
+| jobrunners | jr | no | JobRunner |
+| jobs | job | yes | Job |
+| jobqueue | jq | no | Job (computed) |
 | namespaces | | no | Namespace |
 | networks | net | no | Network |
 | nodes | | no | Node |
@@ -346,6 +410,219 @@ mk delete bmh server1 -n default
 # API discovery
 mk api-resources                  # List all available resource types
 ```
+
+## Job Scheduling
+
+Run transient workloads (builds, tests, provisioning scripts) on bare metal hosts. The scheduler automatically powers on hosts, boots CoreOS via PXE/ignition, runs your script, streams logs, and powers off when idle.
+
+### Concepts
+
+| Resource | Scope | Purpose |
+|----------|-------|---------|
+| **HostReservation** | Namespaced | Claims a BMH for a pool — prevents double-booking |
+| **JobRunner** | Cluster | Pool template — boot config, idle timeout, concurrency limit, reclaim policy |
+| **Job** | Namespaced | Unit of work — bash script + env + priority + timeout |
+| **JobQueue** | Computed | Read-only view of pending jobs sorted by priority |
+
+### Setup
+
+One-time setup to enable job scheduling on a host. Apply the provided manifest or create resources individually:
+
+```bash
+# Option A: Apply the bundled setup manifest (creates all 3 resources)
+mk apply -f deploy/job-scheduling-setup.yaml
+
+# Option B: Create resources individually
+```
+
+**1. Create a BootConfig with mkube-agent ignition:**
+
+```yaml
+apiVersion: v1
+kind: BootConfig
+metadata:
+  name: coreos-agent
+spec:
+  format: ignition
+  description: CoreOS with mkube-agent for job execution
+  data:
+    config.ign: |
+      {
+        "ignition": {"version": "3.4.0"},
+        "storage": {
+          "directories": [{"path": "/data", "mode": 493}],
+          "files": [
+            {
+              "path": "/usr/local/bin/mkube-agent",
+              "mode": 493,
+              "contents": {
+                "source": "http://192.168.200.2:8082/api/v1/bootconfigs/coreos-agent/files/mkube-agent"
+              }
+            },
+            {
+              "path": "/etc/mkube-agent.env",
+              "mode": 420,
+              "contents": {"inline": "MKUBE_API=http://192.168.200.2:8082"}
+            }
+          ]
+        },
+        "systemd": {
+          "units": [{
+            "name": "mkube-agent.service",
+            "enabled": true,
+            "contents": "[Unit]\nDescription=mkube job agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironmentFile=/etc/mkube-agent.env\nExecStart=/usr/local/bin/mkube-agent\nWorkingDirectory=/data\n\n[Install]\nWantedBy=multi-user.target\n"
+          }]
+        }
+      }
+```
+
+**2. Create a JobRunner (defines the pool):**
+
+```yaml
+apiVersion: v1
+kind: JobRunner
+metadata:
+  name: build-runner
+spec:
+  pool: build                  # pool name — jobs target this
+  bootConfigRef: coreos-agent  # ignition config for booting hosts
+  idleTimeout: 300             # power off after 5 min idle
+  reclaimPolicy: PowerOff      # PowerOff (default) or Retain
+  maxConcurrent: 1             # max simultaneous jobs (0 = unlimited)
+```
+
+**3. Reserve a host for the pool:**
+
+```yaml
+apiVersion: v1
+kind: HostReservation
+metadata:
+  name: server1
+  namespace: default
+spec:
+  bmhRef: server1    # must match an existing BareMetalHost name
+  pool: build        # must match a JobRunner pool
+  owner: ci
+  purpose: Build and test jobs
+```
+
+### Submitting Jobs
+
+```yaml
+apiVersion: v1
+kind: Job
+metadata:
+  name: my-build
+  namespace: default
+spec:
+  pool: build           # target pool (must have a JobRunner)
+  priority: 10          # higher = scheduled first (default 0)
+  script: |
+    #!/bin/bash
+    set -euo pipefail
+    echo "Building on $(hostname) at $(date)"
+    uname -a
+    # your build commands here
+  env:
+    REPO: https://github.com/example/project
+    BRANCH: main
+  timeout: 3600         # max 1 hour (0 = no limit)
+```
+
+```bash
+mk apply -f job.yaml
+```
+
+### Monitoring
+
+```bash
+# Runner status (hosts, active/completed/failed counts)
+mk get jr
+# NAME           POOL    BOOT-CONFIG    HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
+# build-runner   build   coreos-agent   1       1        5           0        300s           2d
+
+# Host reservations (which hosts, active jobs)
+mk get hres
+# NAME      POOL    BMH       OWNER   STATUS   ACTIVE-JOB            AGE
+# server1   build   server1   ci      Active   default/my-build      2d
+
+# All jobs (status, host, duration, exit code)
+mk get job
+# NAME       NAMESPACE   POOL    PRIORITY   STATUS      HOST      DURATION   EXIT   AGE
+# my-build   default     build   10         Running     server1   3m22s      -      5m
+# old-build  default     build   0          Completed   server1   12m4s      0      1d
+
+# Pending job queue (priority sorted)
+mk get jq
+# #   NAME        NAMESPACE   POOL    PRIORITY   AGE
+# 1   urgent-job  default     build   100        10s
+# 2   next-job    default     build   5          2m
+# 3   low-job     default     build   0          5m
+
+# Job logs
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build/logs
+```
+
+### Job Lifecycle
+
+```
+                    ┌─────────┐
+                    │ Pending │  (queued, waiting for host)
+                    └────┬────┘
+                         │  scheduler assigns host + powers on BMH
+                    ┌────▼──────┐
+                    │ Scheduling│
+                    └────┬──────┘
+                         │  BMH bootConfigRef set, online=true
+                    ┌────▼────────┐
+                    │ Provisioning│  (host PXE booting, agent starting)
+                    └────┬────────┘
+                         │  agent calls GET /api/v1/agent/work
+                    ┌────▼───┐
+                    │ Running │  (script executing, logs streaming)
+                    └────┬───┘
+                         │
+              ┌──────────┼──────────┐
+         ┌────▼─────┐ ┌──▼───┐ ┌───▼─────┐
+         │ Completed│ │Failed│ │ TimedOut │
+         │ (exit 0) │ │      │ │         │
+         └──────────┘ └──────┘ └─────────┘
+```
+
+**Timeout enforcement:**
+- **Provisioning timeout** — 10 minutes for the host to PXE boot and agent to connect
+- **Running timeout** — configurable per job via `spec.timeout` (seconds)
+- **Heartbeat timeout** — 90 seconds since last agent heartbeat (detects agent crashes)
+
+### Cancelling Jobs
+
+```bash
+# Cancel a running/pending job
+curl -s -X POST http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build/cancel
+```
+
+### Building mkube-agent
+
+```bash
+# Build the agent binary (static linux/amd64)
+make build-agent    # → dist/mkube-agent (5.7 MB)
+
+# Or build everything including the agent
+make build-all
+```
+
+The agent binary needs to be served to booting hosts. The BootConfig ignition downloads it from mkube during PXE boot.
+
+### Reclaim Policy
+
+| Policy | Behavior |
+|--------|----------|
+| `PowerOff` (default) | After the last job completes and `idleTimeout` expires, all reserved hosts in the pool are powered off |
+| `Retain` | Hosts stay powered on — useful for pools with frequent jobs |
+
+### Overflow
+
+Set `allowOverflow: true` on the JobRunner to let the scheduler use any unreserved BMH when reserved hosts are busy. Overflow hosts are used only when all pool-reserved hosts have active jobs.
 
 ## Custom Annotations
 
@@ -396,6 +673,7 @@ See `deploy/config.yaml` for all options. Key settings:
 cmd/
   mkube/            Main controller binary
   mkube-update/     Image update watcher
+  mkube-agent/      Job execution agent (runs on CoreOS bare metal)
   registry/         Standalone OCI registry
   installer/        Bootstrap CLI tool (runs on Mac)
 pkg/
@@ -416,6 +694,7 @@ deploy/
   config.yaml       Default configuration
   rose1-config.yaml rose1-specific config
   boot-order.yaml   Bootstrap pod manifest (NATS + DNS)
+  job-scheduling-setup.yaml  Job scheduling setup for server1
   site-pods/        Site-specific pod manifests
 hack/
   build.sh          Build and export rootfs tarball
