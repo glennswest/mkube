@@ -375,6 +375,64 @@ func (c *Client) RemoveDirectory(ctx context.Context, path string) error {
 	return c.RemoveFile(ctx, path)
 }
 
+// EnsureDirectory ensures a directory exists on the RouterOS filesystem.
+// RouterOS auto-creates intermediate directories when a file is uploaded.
+// We upload a tiny marker file to force directory creation, then verify.
+func (c *Client) EnsureDirectory(ctx context.Context, path string) error {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil
+	}
+
+	// Check if directory already exists
+	exists, err := c.FileExists(ctx, path)
+	if err == nil && exists {
+		return nil
+	}
+
+	// Upload a zero-byte marker file to force directory creation.
+	// RouterOS creates parent directories automatically.
+	markerPath := path + "/.keep"
+	if uploadErr := c.UploadFile(ctx, markerPath, bytes.NewReader(nil)); uploadErr != nil {
+		return fmt.Errorf("creating directory %s: %w", path, uploadErr)
+	}
+	return nil
+}
+
+// FileExists checks whether a file or directory exists on the RouterOS filesystem.
+func (c *Client) FileExists(ctx context.Context, path string) (bool, error) {
+	path = strings.TrimPrefix(path, "/")
+	files, err := c.ListFiles(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	return len(files) > 0, nil
+}
+
+// ListDirectory returns the names of entries under a directory on RouterOS.
+func (c *Client) ListDirectory(ctx context.Context, path string) ([]string, error) {
+	path = strings.TrimPrefix(path, "/")
+	prefix := path + "/"
+
+	var allFiles []map[string]interface{}
+	if err := c.restGET(ctx, "/file", &allFiles); err != nil {
+		return nil, fmt.Errorf("listing directory %s: %w", path, err)
+	}
+
+	var entries []string
+	for _, f := range allFiles {
+		name, _ := f["name"].(string)
+		if strings.HasPrefix(name, prefix) {
+			// Only direct children (no nested subdirectory entries)
+			rest := strings.TrimPrefix(name, prefix)
+			if !strings.Contains(rest, "/") && rest != "" {
+				entries = append(entries, rest)
+			}
+		}
+	}
+	return entries, nil
+}
+
 // ─── Bridge Operations ──────────────────────────────────────────────────────
 
 // BridgePort represents a bridge port assignment.

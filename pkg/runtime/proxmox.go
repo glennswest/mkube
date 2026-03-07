@@ -273,6 +273,38 @@ func (p *ProxmoxRuntime) RemoveDirectory(_ context.Context, path string) error {
 	return os.RemoveAll(path)
 }
 
+// ─── Filesystem Operations ──────────────────────────────────────────────────
+
+func (p *ProxmoxRuntime) EnsureDirectory(_ context.Context, path string) error {
+	return os.MkdirAll(path, 0o755)
+}
+
+func (p *ProxmoxRuntime) FileExists(_ context.Context, path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (p *ProxmoxRuntime) ListDirectory(_ context.Context, path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
 // CreateMount stages a mount for the next CreateContainer call.
 // Proxmox requires all mounts to be specified at container creation time.
 func (p *ProxmoxRuntime) CreateMount(_ context.Context, name, src, dst string) error {

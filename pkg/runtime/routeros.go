@@ -121,6 +121,20 @@ func (r *RouterOSRuntime) RemoveMountsByList(ctx context.Context, listName strin
 	return r.client.RemoveMountsByList(ctx, listName)
 }
 
+// ─── Filesystem Operations ──────────────────────────────────────────────────
+
+func (r *RouterOSRuntime) EnsureDirectory(ctx context.Context, path string) error {
+	return r.client.EnsureDirectory(ctx, path)
+}
+
+func (r *RouterOSRuntime) FileExists(ctx context.Context, path string) (bool, error) {
+	return r.client.FileExists(ctx, path)
+}
+
+func (r *RouterOSRuntime) ListDirectory(ctx context.Context, path string) ([]string, error) {
+	return r.client.ListDirectory(ctx, path)
+}
+
 // ─── iSCSI Operations (via ROSE /disk) ──────────────────────────────────────
 
 func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {

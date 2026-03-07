@@ -98,11 +98,14 @@ func (m *mockRuntime) GetLogs(context.Context, string) ([]runtime.LogEntry, erro
 func (m *mockRuntime) GetSystemResource(context.Context) (*runtime.SystemResource, error) {
 	return nil, nil
 }
-func (m *mockRuntime) UploadFile(context.Context, string, io.Reader) error       { return nil }
-func (m *mockRuntime) RemoveFile(context.Context, string) error                  { return nil }
-func (m *mockRuntime) RemoveDirectory(context.Context, string) error             { return nil }
-func (m *mockRuntime) CreateMount(context.Context, string, string, string) error { return nil }
-func (m *mockRuntime) RemoveMountsByList(context.Context, string) error          { return nil }
+func (m *mockRuntime) UploadFile(context.Context, string, io.Reader) error         { return nil }
+func (m *mockRuntime) RemoveFile(context.Context, string) error                    { return nil }
+func (m *mockRuntime) RemoveDirectory(context.Context, string) error               { return nil }
+func (m *mockRuntime) EnsureDirectory(context.Context, string) error               { return nil }
+func (m *mockRuntime) FileExists(context.Context, string) (bool, error)            { return true, nil }
+func (m *mockRuntime) ListDirectory(context.Context, string) ([]string, error)     { return nil, nil }
+func (m *mockRuntime) CreateMount(context.Context, string, string, string) error   { return nil }
+func (m *mockRuntime) RemoveMountsByList(context.Context, string) error            { return nil }
 func (m *mockRuntime) Backend() string                                           { return "stormbase" }
 func (m *mockRuntime) Close() error                                              { return nil }
 

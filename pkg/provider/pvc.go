@@ -19,7 +19,8 @@ import (
 // Returns the host path for the PVC volume and true if found, or empty string and false.
 // If the pod spec references a PVC that doesn't exist yet, auto-creates it to prevent
 // data loss from falling through to ephemeral volumes.
-func (p *MicroKubeProvider) resolvePVCVolume(pod *corev1.Pod, volumeName string) (string, bool) {
+// Also ensures the PVC directory exists on disk via the container runtime.
+func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Pod, volumeName string) (string, bool) {
 	for _, v := range pod.Spec.Volumes {
 		if v.Name != volumeName {
 			continue
@@ -53,13 +54,19 @@ func (p *MicroKubeProvider) resolvePVCVolume(pod *corev1.Pod, volumeName string)
 			// Persist to NATS if store is available
 			if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
 				storeKey := pod.Namespace + "." + claimName
-				if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(context.Background(), storeKey, newPVC); err != nil {
+				if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, storeKey, newPVC); err != nil {
 					p.deps.Logger.Warnw("failed to persist auto-created PVC", "key", storeKey, "error", err)
 				}
 			}
 			pvc = newPVC
 		}
-		return p.pvcHostPath(pvc), true
+		hostPath := p.pvcHostPath(pvc)
+		// Ensure the PVC directory exists on disk
+		if err := p.deps.Runtime.EnsureDirectory(ctx, hostPath); err != nil {
+			p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
+				"path", hostPath, "pvc", key, "error", err)
+		}
+		return hostPath, true
 	}
 	return "", false
 }
@@ -148,6 +155,14 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 	}
 
 	p.pvcs[key] = &pvc
+
+	// Ensure the PVC directory exists on disk
+	hostPath := p.pvcHostPath(&pvc)
+	if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
+		p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
+			"path", hostPath, "pvc", key, "error", err)
+	}
+
 	podWriteJSON(w, http.StatusCreated, &pvc)
 }
 

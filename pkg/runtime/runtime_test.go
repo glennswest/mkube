@@ -87,8 +87,13 @@ func (m *mockRuntime) GetSystemResource(_ context.Context) (*runtime.SystemResou
 func (m *mockRuntime) UploadFile(_ context.Context, _ string, _ io.Reader) error { return nil }
 func (m *mockRuntime) RemoveFile(_ context.Context, _ string) error              { return nil }
 func (m *mockRuntime) RemoveDirectory(_ context.Context, _ string) error         { return nil }
-func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error       { return nil }
-func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error      { return nil }
+func (m *mockRuntime) EnsureDirectory(_ context.Context, _ string) error         { return nil }
+func (m *mockRuntime) FileExists(_ context.Context, _ string) (bool, error)      { return true, nil }
+func (m *mockRuntime) ListDirectory(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error  { return nil }
+func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error { return nil }
 func (m *mockRuntime) Backend() string                                           { return m.backend }
 func (m *mockRuntime) Close() error                                              { return nil }
 

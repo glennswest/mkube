@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-07
+- **feat:** PVC survivability — EnsureDirectory/FileExists/ListDirectory added to ContainerRuntime interface. PVC directories auto-created on disk when resolving or creating PVCs. Consistency checker verifies PVC directories exist, auto-creates missing ones (self-healing), warns on empty directories for active pods. Prevents silent data loss when PVC mount source doesn't exist on RouterOS filesystem.
 - **feat:** Auto-generated liveness probes from container ports — `extractProbes()` now auto-generates TCP liveness (30s period, threshold 3) and readiness (10s period) probes from declared container ports when no explicit probes exist. This means any pod with `containerPort` declarations (e.g. bmh-operator port 80) automatically gets process-death detection via the lifecycle watchdog. No more blind trust of RouterOS "running" status.
 - **feat:** Pod liveness port probing in consistency checker — new `podLiveness` section in consistency report. Probes all declared TCP ports on running containers. Catches zombie containers where RouterOS says "running" but process is dead.
 - **feat:** Generalized pod health monitoring — `checkInfraHealth` now probes ALL pods with declared TCP ports (not just DNS). Tracks consecutive port failures per container. After 3 failures (30s), automatically restarts the container with `ContainerUnresponsive` event.

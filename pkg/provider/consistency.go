@@ -681,13 +681,24 @@ func buildDNSQuery(zone string) []byte {
 	return append(header, question...)
 }
 
-// checkPVCs verifies PVC consistency between memory and NATS, and checks pod references.
+// checkPVCs verifies PVC consistency between memory, NATS, and on-disk state.
 func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
-	// Check each PVC in memory has a matching NATS entry
-	if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
-		for key, pvc := range p.pvcs {
+	// Build set of PVCs actively used by running pods
+	activePVCs := make(map[string]bool) // pvc key -> true
+	for _, pod := range p.pods {
+		for _, v := range pod.Spec.Volumes {
+			if v.PersistentVolumeClaim != nil {
+				activePVCs[pod.Namespace+"/"+v.PersistentVolumeClaim.ClaimName] = true
+			}
+		}
+	}
+
+	// Check each PVC in memory has a matching NATS entry and disk directory
+	for key, pvc := range p.pvcs {
+		// 1. NATS sync check
+		if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
 			storeKey := pvc.Namespace + "." + pvc.Name
 			_, _, err := p.deps.Store.PersistentVolumeClaims.Get(ctx, storeKey)
 			if err != nil {
@@ -701,6 +712,69 @@ func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 					Name:    fmt.Sprintf("pvc/%s", key),
 					Status:  "pass",
 					Message: "PVC synced with NATS store",
+				})
+			}
+		}
+
+		// 2. Disk directory check
+		hostPath := p.pvcHostPath(pvc)
+		exists, err := p.deps.Runtime.FileExists(ctx, hostPath)
+		if err != nil {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("pvc-disk/%s", key),
+				Status:  "warn",
+				Message: fmt.Sprintf("cannot check PVC directory: %v", err),
+				Details: fmt.Sprintf("path=%s", hostPath),
+			})
+		} else if !exists {
+			// Directory missing — auto-create (self-healing)
+			if mkErr := p.deps.Runtime.EnsureDirectory(ctx, hostPath); mkErr != nil {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("pvc-disk/%s", key),
+					Status:  "fail",
+					Message: "PVC directory missing and auto-create failed",
+					Details: fmt.Sprintf("path=%s error=%v", hostPath, mkErr),
+				})
+			} else {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("pvc-disk/%s", key),
+					Status:  "warn",
+					Message: "PVC directory was missing, auto-created",
+					Details: fmt.Sprintf("path=%s", hostPath),
+				})
+			}
+		} else {
+			// Directory exists — check if it has data (for active PVCs)
+			if activePVCs[key] {
+				entries, listErr := p.deps.Runtime.ListDirectory(ctx, hostPath)
+				if listErr != nil {
+					items = append(items, CheckItem{
+						Name:    fmt.Sprintf("pvc-disk/%s", key),
+						Status:  "warn",
+						Message: fmt.Sprintf("PVC directory exists but cannot list: %v", listErr),
+						Details: fmt.Sprintf("path=%s", hostPath),
+					})
+				} else if len(entries) == 0 {
+					items = append(items, CheckItem{
+						Name:    fmt.Sprintf("pvc-disk/%s", key),
+						Status:  "warn",
+						Message: "PVC directory exists but is empty (data may be lost or first boot)",
+						Details: fmt.Sprintf("path=%s", hostPath),
+					})
+				} else {
+					items = append(items, CheckItem{
+						Name:    fmt.Sprintf("pvc-disk/%s", key),
+						Status:  "pass",
+						Message: fmt.Sprintf("PVC directory exists with %d entries", len(entries)),
+						Details: fmt.Sprintf("path=%s", hostPath),
+					})
+				}
+			} else {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("pvc-disk/%s", key),
+					Status:  "pass",
+					Message: "PVC directory exists on disk",
+					Details: fmt.Sprintf("path=%s", hostPath),
 				})
 			}
 		}

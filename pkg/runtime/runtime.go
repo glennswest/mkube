@@ -30,6 +30,11 @@ type ContainerRuntime interface {
 	RemoveFile(ctx context.Context, path string) error
 	RemoveDirectory(ctx context.Context, path string) error
 
+	// Filesystem operations for PVC directory management
+	EnsureDirectory(ctx context.Context, path string) error
+	FileExists(ctx context.Context, path string) (bool, error)
+	ListDirectory(ctx context.Context, path string) ([]string, error)
+
 	// Mount operations (RouterOS-specific, no-op on other backends)
 	CreateMount(ctx context.Context, name, src, dst string) error
 	RemoveMountsByList(ctx context.Context, listName string) error

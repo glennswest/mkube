@@ -332,7 +332,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			// 1. PVC-backed volume — persistent, bypasses ProvisionVolume/GC
 			// 2. ConfigMap-backed volume — write data files
 			// 3. Ephemeral (default) — ProvisionVolume, subject to GC
-			if pvcPath, ok := p.resolvePVCVolume(pod, vm.Name); ok {
+			if pvcPath, ok := p.resolvePVCVolume(ctx, pod, vm.Name); ok {
 				hostPath = pvcPath
 				log.Infow("using PVC volume", "volume", vm.Name, "path", hostPath)
 			} else if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
@@ -963,7 +963,7 @@ func (p *MicroKubeProvider) createContainerMounts(
 	for _, vm := range container.VolumeMounts {
 		var hostPath string
 
-		if pvcPath, ok := p.resolvePVCVolume(pod, vm.Name); ok {
+		if pvcPath, ok := p.resolvePVCVolume(ctx, pod, vm.Name); ok {
 			hostPath = pvcPath
 		} else if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
 			var provErr error
