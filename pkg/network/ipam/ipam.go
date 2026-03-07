@@ -107,6 +107,9 @@ func (a *Allocator) AllocateStatic(poolName, key string, ip net.IP) error {
 	}
 	for k, existing := range pool.Allocated {
 		if existing.Equal(ip) {
+			if k == key {
+				return nil // idempotent: same key already holds this IP
+			}
 			return fmt.Errorf("IP %s already allocated to %s", ip, k)
 		}
 	}

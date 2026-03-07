@@ -183,6 +183,7 @@ go test ./...
 - microdns DHCP pool allocator DB-only fix: `Dhcpv4Server::new()` built pools from TOML config (always empty — mkube pushes pools via REST to DB). Fixed: new() loads pools from DB via `list_dhcp_pools()`. sync_pool() rebuilds full pool list from DB every 60s. Removed `from_db()` constructor, TOML reservations, config fallback. `/dhcp/status` endpoint also reads from DB. Verified: server7 gets DHCP lease on g10.
 - Job CRDs lost on restart: LoadHostReservationsFromStore, LoadJobRunnersFromStore, LoadJobsFromStore were missing from the immediate NATS boot path in main.go (lines 507-518). Only SetStore (deferred path) had them, but NATS usually connects immediately so deferred path never runs. Data persisted to NATS correctly but was never loaded into memory on boot.
 - Idempotent veth/bridge-port creation: CreateVeth checks for existing veth (no-op if matching, update-in-place if different). AddBridgePort checks for existing port (no-op if correct bridge, remove+re-add if wrong). Prevents CreateFailed loop from orphaned veths.
+- IPAM static allocation idempotency: AllocateStatic returns nil when the same key already holds the requested IP. Fixes g10 DNS pod stuck in CreateFailed loop — orphaned veth kept IPAM allocation alive, blocking pod recreation with its own IP.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:
