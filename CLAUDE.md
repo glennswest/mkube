@@ -184,6 +184,8 @@ go test ./...
 - Job CRDs lost on restart: LoadHostReservationsFromStore, LoadJobRunnersFromStore, LoadJobsFromStore were missing from the immediate NATS boot path in main.go (lines 507-518). Only SetStore (deferred path) had them, but NATS usually connects immediately so deferred path never runs. Data persisted to NATS correctly but was never loaded into memory on boot.
 - Idempotent veth/bridge-port creation: CreateVeth checks for existing veth (no-op if matching, update-in-place if different). AddBridgePort checks for existing port (no-op if correct bridge, remove+re-add if wrong). Prevents CreateFailed loop from orphaned veths.
 - IPAM static allocation idempotency: AllocateStatic returns nil when the same key already holds the requested IP. Fixes g10 DNS pod stuck in CreateFailed loop — orphaned veth kept IPAM allocation alive, blocking pod recreation with its own IP.
+- MicroDNS smoke test: Automated end-to-end validation after every seedDNSConfig. Checks DHCP pools/reservations via REST, creates canary DNS A record (_smoketest), verifies resolution on port 53 with UDP answer parsing, cleans up. Results in sync.Map, exposed in consistency report. On-demand API: POST /api/v1/networks/{name}/smoketest.
+- Aggressive DNS failure detection: checkInfraHealth tracks consecutive failures per network. After 3 failures (30s), forces pod recreation. Immediate repairDNSLiveness on first failure instead of waiting for consistency check cycle.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-03-07
+- **feat:** MicroDNS smoke test — automated end-to-end validation after every `seedDNSConfig`. Checks DHCP pool/reservation presence via REST API, creates canary DNS A record, verifies it resolves on port 53 with answer validation, then cleans up. Results stored in `sync.Map`, exposed in consistency report as `smokeTests` section.
+- **feat:** On-demand smoke test API — `POST /api/v1/networks/{name}/smoketest` triggers synchronous smoke test with 30s timeout, returns pass/fail result.
+- **feat:** Aggressive DNS container failure detection — `checkInfraHealth` now tracks consecutive failures per network. After 3 consecutive 10s-tick failures (30s), forces pod recreation instead of waiting for consistency check cycle. Immediate `repairDNSLiveness` on first failure. Critical events recorded for forced recreation.
+
 ### 2026-03-06
 - **fix:** Self-healing for stuck pods — reconciler tracks consecutive CreateFailed counts per pod. After 2 failures, force-releases stale IPAM + veth state before retrying. Prevents DNS (or any pod) from being stuck down for minutes due to orphaned network state.
 - **fix:** IPAM static allocation idempotency — `AllocateStatic` now returns nil (no-op) when the same key already holds the requested IP, instead of erroring with "already allocated". Root cause of g10 DNS pod stuck in infinite CreateFailed loop: orphaned veth kept IPAM allocation alive across restarts, blocking pod recreation with its own IP.
