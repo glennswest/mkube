@@ -59,7 +59,12 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 	// 3. Upsert all DHCP reservations (local + relayed networks)
 	p.seedDHCPReservations(ctx, dnsClient, endpoint, net)
 
-	// 4. Create DNS forward zones for all peer networks
+	// 4. Create DNS A records from DHCP reservation hostnames.
+	// BMCs and statically-addressed hosts don't DHCP, so their hostnames
+	// are never auto-registered via lease. We create A records explicitly.
+	p.seedReservationDNSRecords(ctx, dnsClient, endpoint, net)
+
+	// 5. Create DNS forward zones for all peer networks
 	p.seedDNSForwarders(ctx, dnsClient, endpoint, net)
 
 	log.Infow("DNS config seeded successfully", "endpoint", endpoint)
@@ -159,6 +164,72 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		BootFileEFI: r.BootFileEFI,
 		RootPath:    r.RootPath,
 	}
+}
+
+// seedReservationDNSRecords creates DNS A records for all DHCP reservations
+// that have a hostname. This ensures BMC addresses and statically-assigned hosts
+// are resolvable via DNS, even though they never issue DHCP requests.
+func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, client *dns.Client, endpoint string, net *Network) {
+	log := p.deps.Logger
+
+	// Collect all reservations: local + relayed networks
+	type resEntry struct {
+		hostname string
+		ip       string
+		zone     string
+	}
+	var entries []resEntry
+
+	for _, r := range net.Spec.DHCP.Reservations {
+		if r.Hostname != "" && r.IP != "" {
+			entries = append(entries, resEntry{r.Hostname, r.IP, net.Spec.DNS.Zone})
+		}
+	}
+
+	for _, peer := range p.networks {
+		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
+			continue
+		}
+		for _, r := range peer.Spec.DHCP.Reservations {
+			if r.Hostname != "" && r.IP != "" {
+				entries = append(entries, resEntry{r.Hostname, r.IP, peer.Spec.DNS.Zone})
+			}
+		}
+	}
+
+	if len(entries) == 0 {
+		return
+	}
+
+	// Resolve zone IDs via EnsureZone (creates zone if missing)
+	zoneIDs := make(map[string]string)
+	for _, e := range entries {
+		if _, ok := zoneIDs[e.zone]; ok || e.zone == "" {
+			continue
+		}
+		zoneID, err := client.EnsureZone(ctx, endpoint, e.zone)
+		if err != nil {
+			log.Warnw("failed to ensure zone for reservation DNS",
+				"zone", e.zone, "error", err)
+			continue
+		}
+		zoneIDs[e.zone] = zoneID
+	}
+
+	for _, e := range entries {
+		zoneID, ok := zoneIDs[e.zone]
+		if !ok {
+			continue
+		}
+		// RegisterHost is idempotent — no-op if record already exists
+		if err := client.RegisterHost(ctx, endpoint, zoneID, e.hostname, e.ip, 300); err != nil {
+			log.Warnw("failed to create DNS A record from reservation",
+				"hostname", e.hostname, "ip", e.ip, "zone", e.zone, "error", err)
+		}
+	}
+
+	log.Infow("seeded DNS A records from DHCP reservations",
+		"endpoint", endpoint, "count", len(entries))
 }
 
 // seedDNSForwarders creates DNS forward zones for all peer networks.
