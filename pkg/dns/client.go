@@ -559,14 +559,17 @@ func (c *Client) DeleteDHCPPool(ctx context.Context, endpoint, poolID string) er
 
 // DHCPReservation represents a static DHCP reservation in a microdns instance.
 type DHCPReservation struct {
-	MAC         string `json:"mac"`
-	IP          string `json:"ip"`
-	Hostname    string `json:"hostname,omitempty"`
-	NextServer  string `json:"next_server,omitempty"`
-	BootFile    string `json:"boot_file,omitempty"`
-	BootFileEFI string `json:"boot_file_efi,omitempty"`
-	IPXEBootURL string `json:"ipxe_boot_url,omitempty"`
-	RootPath    string `json:"root_path,omitempty"`
+	MAC         string   `json:"mac"`
+	IP          string   `json:"ip"`
+	Hostname    string   `json:"hostname,omitempty"`
+	Gateway     string   `json:"gateway,omitempty"`
+	DNSServers  []string `json:"dns_servers,omitempty"`
+	Domain      string   `json:"domain,omitempty"`
+	NextServer  string   `json:"next_server,omitempty"`
+	BootFile    string   `json:"boot_file,omitempty"`
+	BootFileEFI string   `json:"boot_file_efi,omitempty"`
+	IPXEBootURL string   `json:"ipxe_boot_url,omitempty"`
+	RootPath    string   `json:"root_path,omitempty"`
 }
 
 // ListDHCPReservations returns all DHCP reservations from a microdns instance.

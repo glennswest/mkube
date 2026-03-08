@@ -87,13 +87,16 @@ type NetworkDHCPSpec struct {
 
 // NetworkDHCPReservation is a static DHCP lease for a known MAC address.
 type NetworkDHCPReservation struct {
-	MAC         string `json:"mac"`
-	IP          string `json:"ip"`
-	Hostname    string `json:"hostname,omitempty"`
-	NextServer  string `json:"nextServer,omitempty"`  // per-host PXE next-server
-	BootFile    string `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
-	BootFileEFI string `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
-	RootPath    string `json:"rootPath,omitempty"`     // iSCSI root path (option 17)
+	MAC         string   `json:"mac"`
+	IP          string   `json:"ip"`
+	Hostname    string   `json:"hostname,omitempty"`
+	Gateway     string   `json:"gateway,omitempty"`     // per-host gateway (defaults from network)
+	DNSServers  []string `json:"dnsServers,omitempty"`  // per-host DNS servers (defaults from network)
+	Domain      string   `json:"domain,omitempty"`      // per-host domain (defaults from network)
+	NextServer  string   `json:"nextServer,omitempty"`  // per-host PXE next-server
+	BootFile    string   `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
+	BootFileEFI string   `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
+	RootPath    string   `json:"rootPath,omitempty"`     // iSCSI root path (option 17)
 }
 
 // NetworkIPAMSpec defines IPAM allocation range for a network.

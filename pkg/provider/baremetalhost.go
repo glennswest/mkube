@@ -532,6 +532,8 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 
 // upsertNetworkReservation inserts or updates a DHCP reservation on a Network CRD by MAC.
 // Also pushes the reservation directly to the microdns REST API for immediate effect.
+// Populates gateway, DNS servers, and domain from the Network CRD when not already set,
+// so every reservation is self-contained and doesn't depend on pool fallback.
 func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networkName string, res NetworkDHCPReservation, bmhName string) {
 	log := p.deps.Logger
 
@@ -539,6 +541,19 @@ func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networ
 	if !ok {
 		log.Warnw("BMH references unknown network", "bmh", bmhName, "network", networkName)
 		return
+	}
+
+	// Populate network defaults so reservations are self-contained.
+	// Clients with reserved IPs outside the pool range would otherwise
+	// get no gateway/DNS and have no route to other networks.
+	if res.Gateway == "" && net.Spec.Gateway != "" {
+		res.Gateway = net.Spec.Gateway
+	}
+	if len(res.DNSServers) == 0 && net.Spec.DNS.Server != "" {
+		res.DNSServers = []string{net.Spec.DNS.Server}
+	}
+	if res.Domain == "" && net.Spec.DNS.Zone != "" {
+		res.Domain = net.Spec.DNS.Zone
 	}
 
 	normalizedMAC := strings.ToLower(res.MAC)
