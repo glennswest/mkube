@@ -195,6 +195,24 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 	}
 }
 
+// reconcileManagedDNSPods checks all managed networks and recreates DNS pods
+// that are missing (e.g. deleted manually or lost during restart).
+func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
+	for _, net := range p.networks {
+		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
+			continue
+		}
+		storeKey := net.Name + ".dns"
+		if _, ok := p.pods[storeKey]; ok {
+			continue // pod tracked in memory
+		}
+		p.deps.Logger.Infow("managed network missing DNS pod, recreating", "network", net.Name)
+		if err := p.deployManagedDNS(ctx, net); err != nil {
+			p.deps.Logger.Warnw("failed to recreate managed DNS pod", "network", net.Name, "error", err)
+		}
+	}
+}
+
 // ReconcileNetworkConfigMaps regenerates DNS ConfigMaps from the current
 // Network CRD state. Call after loading both networks and configmaps from
 // store to fix stale ConfigMaps that diverged (e.g. reservations changed

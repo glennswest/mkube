@@ -1893,6 +1893,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	p.deps.NetworkMgr.InitDNSZones(ctx)
 	log.Infow("RECONCILE: step 6 init DNS zones", "ms", time.Since(stepStart).Milliseconds())
 
+	// 6a2. Ensure managed networks have DNS pods (auto-recreate if deleted)
+	p.reconcileManagedDNSPods(ctx)
+
 	// 6b. Reconcile DHCP pools/reservations/forwarders via microdns REST API
 	stepStart = time.Now()
 	p.reconcileDNSConfig(ctx)
