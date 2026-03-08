@@ -139,7 +139,7 @@ enabled = true
 listen = "0.0.0.0:8080"
 
 [database]
-path = "./data/microdns.redb"
+path = "/data/microdns.redb"
 
 [logging]
 level = "info"
