@@ -202,8 +202,8 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
 			continue
 		}
-		storeKey := net.Name + ".dns"
-		if _, ok := p.pods[storeKey]; ok {
+		podMapKey := net.Name + "/dns"
+		if _, ok := p.pods[podMapKey]; ok {
 			continue // pod tracked in memory
 		}
 		p.deps.Logger.Infow("managed network missing DNS pod, recreating", "network", net.Name)
