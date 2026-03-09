@@ -127,96 +127,44 @@ func loadRegistryTransport(caFile, defaultPath string, log *zap.SugaredLogger) h
 }
 
 // EnsureImage makes sure the given OCI image reference is available as a
-// tarball on the RouterOS filesystem. Steps:
-//  1. Check local cache
-//  2. If not cached: pull from registry, convert to tarball, upload to RouterOS
-//  3. Return the tarball path on RouterOS
+// tarball on the RouterOS filesystem. Always pulls fresh from registry.
+// Within a single mkube session, the same image won't be pulled twice
+// (session dedup). On restart, all images are re-pulled to avoid serving
+// corrupted tarballs from disk cache.
 func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Normalize image ref to primary registry address before computing tarball name.
-	// This ensures consistent tarball naming regardless of which registry alias
-	// (e.g. 192.168.200.2:5000 vs 192.168.200.3:5000) appears in the pod spec.
 	imageRef = m.rewriteLocalhost(imageRef)
 
 	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
 	tarballPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
 
-	// Always check registry digest — registry is the source of truth.
-	// If the cached digest matches, skip the re-pull.
+	// Session dedup: if we already pulled this image in this mkube session,
+	// verify the tarball still exists on disk and reuse it.
 	if cached, ok := m.images[imageRef]; ok {
-		if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && cached.Digest != "" && currentDigest == cached.Digest {
-			// Verify the tarball file actually exists on disk before trusting cache.
-			// GC, manual deletion, or failed writes can leave the cache pointing
-			// to a non-existent file.
-			if m.tarballExists(tarballPath) {
-				cached.InUse++
-				m.log.Debugw("image cache hit (memory)", "ref", imageRef, "path", cached.TarballPath)
-				return cached.TarballPath, nil
-			}
-			m.log.Warnw("tarball file missing despite cache hit, re-pulling",
-				"ref", imageRef, "path", tarballPath)
+		if m.tarballExists(tarballPath) {
+			cached.InUse++
+			m.log.Debugw("image session hit", "ref", imageRef, "path", cached.TarballPath)
+			return cached.TarballPath, nil
 		}
-		// Digest changed or unavailable — delete stale tarball and re-pull.
-		m.log.Infow("image digest changed in registry, deleting stale tarball and re-pulling", "ref", imageRef)
-		_ = os.Remove(tarballPath)
-		_ = os.Remove(tarballPath + ".digest")
-	} else {
-		// No in-memory cache (restart case). Check disk .digest file before pulling.
-		// This avoids re-pulling images that are already cached from a previous boot.
-		digestFound := false
-		if diskDigest, err := os.ReadFile(tarballPath + ".digest"); err == nil {
-			storedDigest := strings.TrimSpace(string(diskDigest))
-			if storedDigest != "" {
-				if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && currentDigest == storedDigest {
-					// Tarball on disk matches registry — reuse it
-					hostPath := m.HostVisiblePath(tarballPath)
-					m.images[imageRef] = &CachedImage{
-						Ref:         imageRef,
-						TarballPath: hostPath,
-						Digest:      currentDigest,
-						PulledAt:    time.Now(),
-						InUse:       1,
-					}
-					m.log.Infow("image cache hit (disk)", "ref", imageRef, "path", hostPath, "digest", truncDigest(currentDigest))
-					return hostPath, nil
-				}
-			}
-			digestFound = true
-		}
-
-		// Alias fallback: if no digest file exists under the primary name,
-		// check if a tarball exists under an old registry alias name. This
-		// handles the case where the primary address changed (e.g. .2 → .3)
-		// but the cached tarball still uses the old name.
-		if !digestFound {
-			if aliasPath, aliasDigest := m.findAliasTarball(ctx, imageRef); aliasPath != "" {
-				hostPath := m.HostVisiblePath(aliasPath)
-				m.images[imageRef] = &CachedImage{
-					Ref:         imageRef,
-					TarballPath: hostPath,
-					Digest:      aliasDigest,
-					PulledAt:    time.Now(),
-					InUse:       1,
-				}
-				m.log.Infow("image cache hit (alias tarball)", "ref", imageRef, "path", hostPath, "digest", truncDigest(aliasDigest))
-				return hostPath, nil
-			}
-		}
+		m.log.Warnw("tarball file missing, re-pulling", "ref", imageRef, "path", tarballPath)
 	}
 
+	// Always pull fresh from registry — no disk cache.
 	m.log.Infow("pulling image", "ref", imageRef)
+
+	// Remove any stale tarball before pulling fresh
+	_ = os.Remove(tarballPath)
+	_ = os.Remove(tarballPath + ".digest")
 
 	if err := m.pullAndUpload(ctx, imageRef, tarballPath); err != nil {
 		return "", fmt.Errorf("pulling image %s: %w", imageRef, err)
 	}
 
-	// Get and store the registry digest for freshness checking
+	// Get the registry digest for freshness checking within this session
 	digest, _ := m.getRegistryDigest(ctx, imageRef)
-	if digest != "" {
-		_ = os.WriteFile(tarballPath+".digest", []byte(digest), 0o644)
-	}
 
 	hostPath := m.HostVisiblePath(tarballPath)
 
@@ -232,14 +180,14 @@ func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, err
 }
 
 // RefreshImage checks whether the registry has a newer version of the
-// image than what was last pulled. If the digest has changed it re-pulls
-// the image, rewrites the tarball, and returns changed=true. Callers
-// should recreate the container when changed is true.
+// image than what was last pulled in this session. If the digest has
+// changed (or no session record exists) it re-pulls the image, rewrites
+// the tarball, and returns changed=true. On first call after restart,
+// always re-pulls since no disk cache is used.
 func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPath string, changed bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Normalize image ref to primary registry address for consistent tarball naming.
 	imageRef = m.rewriteLocalhost(imageRef)
 
 	currentDigest, err := m.getRegistryDigest(ctx, imageRef)
@@ -250,32 +198,18 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
 	localTarball := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
 
-	// Read the stored digest from last pull (persisted across restarts)
-	storedDigest := ""
-	if cached, ok := m.images[imageRef]; ok {
-		storedDigest = cached.Digest
-	} else if data, err := os.ReadFile(localTarball + ".digest"); err == nil {
-		storedDigest = strings.TrimSpace(string(data))
-	}
-
-	if storedDigest == currentDigest {
-		// Image is fresh — populate cache if not already and return
+	// Only compare against in-memory digest from this session — no disk cache.
+	if cached, ok := m.images[imageRef]; ok && cached.Digest == currentDigest {
 		hostPath := m.HostVisiblePath(localTarball)
-		if _, ok := m.images[imageRef]; !ok {
-			m.images[imageRef] = &CachedImage{
-				Ref:         imageRef,
-				TarballPath: hostPath,
-				Digest:      currentDigest,
-				PulledAt:    time.Now(),
-				InUse:       1,
-			}
-		}
 		return hostPath, false, nil
 	}
 
-	// Digest changed — delete stale tarball and re-pull from registry.
-	// Registry is the source of truth; tarballs are ephemeral cache.
-	m.log.Infow("stale image detected, deleting tarball and re-pulling",
+	// Digest changed or first check this session — re-pull.
+	storedDigest := ""
+	if cached, ok := m.images[imageRef]; ok {
+		storedDigest = cached.Digest
+	}
+	m.log.Infow("image refresh: pulling fresh",
 		"ref", imageRef,
 		"old_digest", truncDigest(storedDigest),
 		"new_digest", truncDigest(currentDigest))
@@ -285,10 +219,10 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 	if err := m.pullAndUpload(ctx, imageRef, localTarball); err != nil {
 		return "", false, fmt.Errorf("re-pulling image %s: %w", imageRef, err)
 	}
-	_ = os.WriteFile(localTarball+".digest", []byte(currentDigest), 0o644)
 
 	hostPath := m.HostVisiblePath(localTarball)
 
+	wasChanged := storedDigest != "" && storedDigest != currentDigest
 	m.images[imageRef] = &CachedImage{
 		Ref:         imageRef,
 		TarballPath: hostPath,
@@ -297,7 +231,7 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 		InUse:       1,
 	}
 
-	return hostPath, true, nil
+	return hostPath, wasChanged, nil
 }
 
 // getRegistryDigest queries the registry for the current manifest digest.
@@ -505,59 +439,6 @@ func (m *Manager) rewriteLocalhost(imageRef string) string {
 	return imageRef
 }
 
-// findAliasTarball checks if a tarball exists under an old registry alias name.
-// When the primary registry address changes (e.g. .2:5000 → .3:5000), cached
-// tarballs named after the old address become invisible. This scans all known
-// aliases and returns the existing tarball path and its digest if found.
-func (m *Manager) findAliasTarball(ctx context.Context, imageRef string) (string, string) {
-	if len(m.registryCfg.LocalAddresses) < 2 || !m.isLocalRegistry(imageRef) {
-		return "", ""
-	}
-
-	primary := m.registryCfg.LocalAddresses[0]
-	// Extract the image path (everything after the registry address)
-	imagePath := strings.TrimPrefix(imageRef, primary+"/")
-	if imagePath == imageRef {
-		return "", "" // imageRef doesn't start with primary (shouldn't happen after normalization)
-	}
-
-	for _, alias := range m.registryCfg.LocalAddresses[1:] {
-		aliasRef := alias + "/" + imagePath
-		aliasName := dockersave.SanitizeImageRef(aliasRef) + ".tar"
-		aliasPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, aliasName)
-
-		if aliasDigest, err := os.ReadFile(aliasPath + ".digest"); err == nil {
-			storedDigest := strings.TrimSpace(string(aliasDigest))
-			if storedDigest == "" {
-				continue
-			}
-			// Verify the alias tarball's digest matches the current registry
-			if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && currentDigest == storedDigest {
-				m.log.Infow("found tarball under alias name",
-					"ref", imageRef, "alias", aliasRef, "path", aliasPath, "digest", truncDigest(storedDigest))
-				return aliasPath, storedDigest
-			}
-		}
-	}
-
-	// Also check "localhost/" prefix tarballs
-	localhostRef := "localhost/" + imagePath
-	localhostName := dockersave.SanitizeImageRef(localhostRef) + ".tar"
-	localhostPath := fmt.Sprintf("%s/%s", m.cfg.TarballCache, localhostName)
-	if localhostDigest, err := os.ReadFile(localhostPath + ".digest"); err == nil {
-		storedDigest := strings.TrimSpace(string(localhostDigest))
-		if storedDigest != "" {
-			if currentDigest, err := m.getRegistryDigest(ctx, imageRef); err == nil && currentDigest == storedDigest {
-				m.log.Infow("found tarball under localhost name",
-					"ref", imageRef, "path", localhostPath, "digest", truncDigest(storedDigest))
-				return localhostPath, storedDigest
-			}
-		}
-	}
-
-	return "", ""
-}
-
 // isLocalRegistry returns true if the image ref points to the embedded registry
 // (localhost or any configured local address).
 func (m *Manager) isLocalRegistry(imageRef string) bool {
@@ -577,37 +458,31 @@ func (m *Manager) isLocalRegistry(imageRef string) bool {
 	return false
 }
 
-// ClearImageDigest removes the cached digest for an image so the next
-// RefreshImage call will detect a change and re-pull.
+// ClearImageDigest removes the session entry for an image so the next
+// RefreshImage call will re-pull.
 func (m *Manager) ClearImageDigest(imageRef string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if cached, ok := m.images[imageRef]; ok {
-		cached.Digest = ""
-	}
+	delete(m.images, imageRef)
 
-	// Also remove the .digest file and stale tarball on disk.
-	// Registry is the source of truth — tarballs are rebuilt on demand.
+	// Remove stale tarball on disk.
 	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
 	tarballFile := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
-	digestFile := tarballFile + ".digest"
-	_ = os.Remove(digestFile)
+	_ = os.Remove(tarballFile + ".digest")
 	_ = os.Remove(tarballFile)
 }
 
-// ClearImageDigestByRepo removes cached entries for all images matching
+// ClearImageDigestByRepo removes session entries for all images matching
 // a given repository name (e.g. "microdns"). This is used when a push
-// event is received from the registry to ensure stale tarballs are invalidated.
-// Deletes the entire in-memory entry (not just the digest) so that
-// RefreshImage is forced to re-pull from scratch.
+// event is received from the registry to force re-pull on next reconcile.
 func (m *Manager) ClearImageDigestByRepo(repo string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for ref := range m.images {
 		if strings.Contains(ref, "/"+repo+":") || strings.HasPrefix(ref, repo+":") {
-			m.log.Infow("clearing cached image for repo push", "ref", ref, "repo", repo)
+			m.log.Infow("clearing session entry for repo push", "ref", ref, "repo", repo)
 			delete(m.images, ref)
 			tarballName := dockersave.SanitizeImageRef(ref) + ".tar"
 			tarballFile := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)

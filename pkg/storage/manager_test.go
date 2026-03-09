@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -36,14 +38,22 @@ func TestSanitizeImageRef(t *testing.T) {
 	}
 }
 
-func TestEnsureImageCacheHit(t *testing.T) {
+func TestEnsureImageSessionDedup(t *testing.T) {
+	// Session dedup: if the image was already pulled this session and the
+	// tarball exists on disk, EnsureImage should reuse it without re-pulling.
+	tmpDir := t.TempDir()
+	tarball := filepath.Join(tmpDir, "nginx-latest.tar")
+	if err := os.WriteFile(tarball, []byte("fake-tarball"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	mgr := &Manager{
-		cfg: config.StorageConfig{TarballCache: "/cache"},
+		cfg: config.StorageConfig{TarballCache: tmpDir},
 		log: testLogger(),
 		images: map[string]*CachedImage{
 			"nginx:latest": {
 				Ref:         "nginx:latest",
-				TarballPath: "/cache/nginx-latest.tar",
+				TarballPath: tarball,
 				InUse:       1,
 			},
 		},
@@ -54,8 +64,8 @@ func TestEnsureImageCacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if path != "/cache/nginx-latest.tar" {
-		t.Errorf("expected cached path, got %q", path)
+	if path != tarball {
+		t.Errorf("expected session hit path %q, got %q", tarball, path)
 	}
 	if mgr.images["nginx:latest"].InUse != 2 {
 		t.Errorf("expected InUse=2, got %d", mgr.images["nginx:latest"].InUse)

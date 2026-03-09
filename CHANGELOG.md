@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-09
+- **fix:** Remove image tarball disk cache — always pull fresh from registry on startup. Corrupted tarballs from previous sessions were being served because `.digest` files matched the registry digest even though the tarball content was bad. Session dedup still prevents redundant pulls within a single mkube run. Removed: `.digest` file persistence, alias tarball fallback, disk cache hit path.
 - **feat:** Registry `/v2/<repo>/tags/list` endpoint — implements OCI Distribution Spec tag listing. Walks manifest directory to enumerate tags. Filters out digest refs (sha256-*), returns only human-readable tags. Previously returned 404 for all tags/list requests, making `crane ls` and similar tools fail.
 
 ### 2026-03-08
