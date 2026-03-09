@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -322,6 +324,78 @@ func (p *MicroKubeProvider) handleServeBootConfig(w http.ResponseWriter, r *http
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, content)
+}
+
+// bootConfigFilesDir is the on-disk directory for binary file attachments.
+const bootConfigFilesDir = "/data/bootconfig-files"
+
+// handleServeBootConfigFile serves a named file attached to a BootConfig.
+// First checks the Data map (text), then falls back to on-disk binary files.
+// GET /api/v1/bootconfigs/{name}/files/{filename}
+func (p *MicroKubeProvider) handleServeBootConfigFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	filename := r.PathValue("filename")
+
+	bc, ok := p.bootConfigs[name]
+	if !ok {
+		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	// Check Data map first (text content like config.ign)
+	if content, ok := bc.Spec.Data[filename]; ok {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, content)
+		return
+	}
+
+	// Fall back to on-disk binary file
+	filePath := filepath.Join(bootConfigFilesDir, name, filename)
+	if _, err := os.Stat(filePath); err != nil {
+		http.Error(w, fmt.Sprintf("file %q not found in BootConfig %q", filename, name), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeFile(w, r, filePath)
+}
+
+// handleUploadBootConfigFile uploads a binary file attachment to a BootConfig.
+// POST /api/v1/bootconfigs/{name}/files/{filename}
+func (p *MicroKubeProvider) handleUploadBootConfigFile(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	filename := r.PathValue("filename")
+
+	if _, ok := p.bootConfigs[name]; !ok {
+		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	dir := filepath.Join(bootConfigFilesDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("creating file directory: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	filePath := filepath.Join(dir, filename)
+	f, err := os.Create(filePath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("creating file: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	n, err := io.Copy(f, r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("writing file: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	p.deps.Logger.Infow("uploaded boot config file", "bootconfig", name, "file", filename, "bytes", n)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","bootconfig":%q,"file":%q,"bytes":%d}`, name, filename, n)
 }
 
 // ─── Source IP Lookup ────────────────────────────────────────────────────────
