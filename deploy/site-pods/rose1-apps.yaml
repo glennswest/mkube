@@ -30,7 +30,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: ipmiserial
-      image: ghcr.io/glennswest/ipmiserial:edge
+      image: registry.gt.lo:5000/ipmiserial:edge
       livenessProbe:
         httpGet:
           path: /
