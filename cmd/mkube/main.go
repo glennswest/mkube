@@ -520,8 +520,7 @@ func runSharedServices(
 		p.LoadJobsFromStore(ctx)
 	}
 	go p.RunDHCPWatcher(ctx)
-	// Job scheduler disabled — not currently in use
-	// go p.RunJobScheduler(ctx)
+	go p.RunJobScheduler(ctx)
 	p.StartInfraHealthWatchers(ctx)
 	p.StartISOScanner(ctx, 30*time.Second)
 
