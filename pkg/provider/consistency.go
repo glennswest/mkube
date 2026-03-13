@@ -1085,9 +1085,9 @@ func (p *MicroKubeProvider) cleanOrphanedIPAM(ctx context.Context) (int, error) 
 	return cleaned, nil
 }
 
-// cleanStaleDNSRecords removes A records that don't match any expected hostname
-// from all desired pods, static records, DHCP reservations, or infrastructure.
-// Also cleans extra IPs for expected hostnames (e.g. old IPs from pod recreations).
+// cleanStaleDNSRecords removes A records with wrong IPs for expected hostnames
+// (e.g. old IPs from pod recreations). Records with hostnames not in the
+// expected set are left untouched — they may be user-created via REST API.
 func (p *MicroKubeProvider) cleanStaleDNSRecords(ctx context.Context) (int, error) {
 	dnsClient := p.deps.NetworkMgr.DNSClient()
 	if dnsClient == nil {
@@ -1138,15 +1138,10 @@ func (p *MicroKubeProvider) cleanStaleDNSRecords(ctx context.Context) (int, erro
 
 			exp, isExpected := expected[r.Name]
 			if !isExpected {
-				// Hostname not expected at all — delete the record
-				p.deps.Logger.Infow("deleting stale DNS record",
-					"network", netName, "hostname", r.Name, "ip", r.Data.Data, "id", r.ID)
-				if err := dnsClient.DeleteRecord(ctx, netDef.DNS.Endpoint, zoneID, r.ID); err != nil {
-					p.deps.Logger.Warnw("failed to delete stale DNS record",
-						"hostname", r.Name, "ip", r.Data.Data, "error", err)
-				} else {
-					cleaned++
-				}
+				// Hostname not in mkube's expected set — leave it alone.
+				// User-created records (via REST API or mk apply) are not
+				// managed by mkube and must not be deleted.
+				continue
 			} else if r.Data.Data != exp.ip {
 				// Hostname expected but this record has wrong IP — stale from old allocation
 				p.deps.Logger.Infow("deleting stale DNS record (wrong IP)",
