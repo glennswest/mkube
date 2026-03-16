@@ -284,6 +284,16 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			errMsg := err.Error()
 			if strings.Contains(errMsg, "already have interface") || strings.Contains(errMsg, "already allocated to") {
 				log.Warnw("cleaning up orphaned veth", "veth", vethName, "reason", errMsg)
+
+				// If a staging veth (__stg) holds the IP, release it first.
+				// This happens when a blue-green update leaked the staging veth.
+				if strings.Contains(errMsg, "__stg") {
+					stgVeth := truncate(vethName, 58) + "__stg"
+					stgName := truncate(name, 58) + "__stg"
+					log.Warnw("releasing leaked staging veth", "stgVeth", stgVeth)
+					p.cleanupStagingResources(ctx, stagingInfo{stgName: stgName, stgVeth: stgVeth})
+				}
+
 				if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); releaseErr != nil {
 					// ReleaseInterface may fail if a container still holds the veth.
 					// Find and forcibly remove the container holding it.
@@ -751,10 +761,20 @@ func (p *MicroKubeProvider) stagingExtractAndVerify(
 		return fmt.Errorf("allocating staging veth %s: %w", stg.stgVeth, err)
 	}
 
+	// Ensure staging resources are fully cleaned up on ANY error path.
+	// Previous code only released the veth on early errors (mount/create fail)
+	// but leaked it on late errors (extraction timeout, start fail, verify fail).
+	var succeeded bool
+	defer func() {
+		if !succeeded {
+			log.Warnw("blue-green: cleaning up staging resources after failure", "staging", stg.stgName)
+			p.cleanupStagingResources(ctx, stg)
+		}
+	}()
+
 	// Create staging mounts (same volumes as production)
 	mountListName, err := p.createContainerMounts(ctx, pod, stg.stgName, stg.container, log)
 	if err != nil {
-		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.stgVeth)
 		return fmt.Errorf("creating staging mounts for %s: %w", stg.stgName, err)
 	}
 
@@ -777,7 +797,6 @@ func (p *MicroKubeProvider) stagingExtractAndVerify(
 	}
 
 	if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
-		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.stgVeth)
 		return fmt.Errorf("creating staging container %s: %w", stg.stgName, err)
 	}
 
@@ -813,6 +832,7 @@ func (p *MicroKubeProvider) stagingExtractAndVerify(
 	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.stgVeth)
 	_ = os.RemoveAll(fmt.Sprintf("/data/configmaps/%s", stg.stgName))
 
+	succeeded = true
 	return nil
 }
 
@@ -1621,6 +1641,29 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		globalStats.RecordRestart(false, name, comment)
 		p.stopAndRemoveContainer(ctx, name, ct.ID)
 		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
+
+		// Release this container's veth + staging veth so IPAM is freed before recreation.
+		// Find the container index to derive the correct veth name.
+		for j, c := range ownerPod.Spec.Containers {
+			if sanitizeName(ownerPod, c.Name) == name {
+				prodVeth := vethName(ownerPod, j)
+				if err := p.deps.NetworkMgr.ReleaseInterface(ctx, prodVeth); err != nil {
+					log.Warnw("RECOVERY: error releasing production veth", "veth", prodVeth, "error", err)
+				}
+				// Clean leftover staging resources from failed blue-green updates
+				stgVeth := truncate(prodVeth, 58) + "__stg"
+				stgName := truncate(name, 58) + "__stg"
+				p.cleanupStagingResources(ctx, stagingInfo{stgName: stgName, stgVeth: stgVeth})
+
+				// Clean root-dir to prevent RouterOS "root-dir overlap" on recreation
+				rootDir := fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name)
+				if err := p.deps.Runtime.RemoveDirectory(ctx, rootDir); err != nil {
+					log.Debugw("RECOVERY: root-dir cleanup", "rootDir", rootDir, "error", err)
+				}
+				break
+			}
+		}
+
 		delete(actualByName, name)
 		// Untrack the pod so step 3 sees it as missing
 		delete(p.pods, podKey(ownerPod))

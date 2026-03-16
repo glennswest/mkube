@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-03-16
+- **fix:** Staging veth/IPAM leak in blue-green updates — `stagingExtractAndVerify` leaked staging veth and IPAM allocation when late-stage steps failed (extraction timeout, start failure, verify failure). Added `defer` cleanup that calls `cleanupStagingResources` on any error path. Previously only early errors (mount/create fail) released the veth.
+- **fix:** RecoveryRecreate didn't release network resources — when a stopped container was destroyed for recreation, the production veth and IPAM allocation were never released. CreatePod then failed with "IP already allocated" and "root-dir overlap" errors, causing an infinite crash loop. Now releases the specific container's veth, cleans staging leftovers, and removes root-dir before recreation.
+- **fix:** CreatePod now detects leaked staging veths — when allocation fails with "already allocated to __stg", the leaked staging veth is cleaned up before retrying. Defense-in-depth for any remaining staging leak paths.
+
 ### 2026-03-13
 - **fix:** Stop deleting user-created DNS records in consistency checker. `cleanStaleDNSRecords` was nuking any A record whose hostname wasn't in mkube's expected set (pods, BMH, static records, infrastructure). User-created records via REST API or `mk apply` (e.g. bay1.g9.lo) were deleted within seconds. Now only cleans wrong-IP records for known hostnames — unknown hostnames are left untouched.
 
