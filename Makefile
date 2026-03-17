@@ -7,6 +7,7 @@ REGISTRY  ?= registry.gt.lo:5000
 IMAGE     := $(REGISTRY)/$(BINARY):edge
 MKUBE_API ?= http://192.168.200.2:8082
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
+STORMD    := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
 
 .PHONY: build build-local tarball deploy deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-agent build-all \
@@ -60,8 +61,9 @@ tarball: build
 ## Use `make deploy-config` separately when config/boot-order files change.
 deploy: build
 	cp dist/$(BINARY)-$(ARCH) mkube
+	cp $(STORMD) stormd
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
-	rm -f mkube
+	rm -f mkube stormd
 	podman push --tls-verify=false $(IMAGE)
 	@echo "Pushed $(IMAGE) — waiting for mkube-update to swap binary..."
 	@EXPECT_COMMIT=$(COMMIT); \

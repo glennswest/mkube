@@ -1,0 +1,29 @@
+# stormd supervisor config for mkube container
+# stormd is PID 1, mkube is a supervised child process
+
+[general]
+name = "kube.gt.lo"
+log_dir = "/var/stormd/logs"
+
+[api]
+bind = "0.0.0.0:8090"
+
+[ssh]
+enabled = true
+bind = "0.0.0.0:2222"
+host_key = "/var/stormd/host_key"
+password = "stormd"
+
+[stormlog.terminal]
+rows = 50
+cols = 200
+scrollback = 10000
+
+[[process]]
+name = "mkube"
+command = "/mkube"
+args = ["--config", "/etc/mkube/config.yaml"]
+on_failure = "restart"
+restart_delay_secs = 10
+max_restarts = 100
+restart_window_secs = 3600

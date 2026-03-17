@@ -1,7 +1,9 @@
 FROM scratch
+COPY stormd /stormd
 COPY mkube /mkube
 COPY deploy/config.yaml /etc/mkube/config.yaml
+COPY deploy/stormd-config.toml /etc/stormd/config.toml
 VOLUME ["/data"]
-EXPOSE 8082/tcp
-ENTRYPOINT ["/mkube"]
-CMD ["--config", "/etc/mkube/config.yaml"]
+EXPOSE 8082/tcp 8090/tcp 2222/tcp
+ENTRYPOINT ["/stormd"]
+CMD ["--config", "/etc/stormd/config.toml"]
