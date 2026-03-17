@@ -382,6 +382,17 @@ func (u *Updater) prePullTarball(ctx context.Context, imageRef string) (containe
 	containerPath = filepath.Join(u.cfg.TarballDir, safeName)
 	rosPath = u.cfg.TarballROSPath + "/" + safeName
 
+	// Preserve previous tarball for rollback
+	prevPath := strings.TrimSuffix(containerPath, ".tar") + "-prev.tar"
+	if _, statErr := os.Stat(containerPath); statErr == nil {
+		_ = os.Remove(prevPath) // remove any stale prev
+		if renameErr := os.Rename(containerPath, prevPath); renameErr != nil {
+			log.Warnw("failed to preserve previous tarball", "error", renameErr)
+		} else {
+			log.Infow("preserved previous tarball for rollback", "path", prevPath)
+		}
+	}
+
 	log.Infow("saving RouterOS-compatible tarball", "path", containerPath, "rosPath", rosPath)
 	if err := saveRouterOSTarball(img, repoTag, containerPath); err != nil {
 		os.Remove(containerPath)
@@ -613,7 +624,7 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	if err != nil {
 		return fmt.Errorf("pre-pulling tarball: %w", err)
 	}
-	defer os.Remove(containerPath) // clean up after use
+	// Tarball cleanup is handled after health verification — not deferred
 
 	// Step 2: Get current container config
 	ct, err := u.rosGetContainer(ctx, name)
@@ -701,8 +712,192 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 		return err
 	}
 
-	log.Info("container replaced successfully via tarball")
+	// Step 8: Post-replace health verification
+	healthDuration := 15 * time.Second
+	prevContainerPath := strings.TrimSuffix(containerPath, ".tar") + "-prev.tar"
+	prevROSPath := strings.TrimSuffix(rosPath, ".tar") + "-prev.tar"
+
+	if err := u.verifyHealth(ctx, name, healthDuration); err != nil {
+		log.Errorw("new image failed health check", "error", err)
+
+		// Retry restart up to 3 times
+		recovered := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			log.Infow("restart attempt after health failure", "attempt", attempt, "max", 3)
+			if restartErr := u.restartContainer(ctx, name); restartErr != nil {
+				log.Warnw("restart failed", "attempt", attempt, "error", restartErr)
+				continue
+			}
+			if u.verifyHealth(ctx, name, healthDuration) == nil {
+				log.Infow("container recovered after restart", "attempt", attempt)
+				recovered = true
+				break
+			}
+		}
+
+		if !recovered {
+			// Check if we have a previous tarball to rollback to
+			if _, statErr := os.Stat(prevContainerPath); statErr == nil {
+				log.Warn("all restart attempts failed, rolling back to previous image")
+				if rollbackErr := u.rollbackContainer(ctx, name, ct, prevROSPath, healthDuration); rollbackErr != nil {
+					os.Remove(containerPath)
+					os.Remove(prevContainerPath)
+					return fmt.Errorf("CRITICAL: new image failed and rollback failed: %w", rollbackErr)
+				}
+				os.Remove(containerPath)
+				os.Remove(prevContainerPath)
+				return fmt.Errorf("new image failed health check, rolled back to previous image")
+			}
+			os.Remove(containerPath)
+			return fmt.Errorf("new image failed health check, no previous image available for rollback")
+		}
+	}
+
+	// Healthy — clean up tarballs
+	os.Remove(containerPath)
+	os.Remove(prevContainerPath)
+	log.Info("container replaced and verified healthy")
 	return nil
+}
+
+// verifyHealth polls the container status for the given duration. If the
+// container stops (crashes) during this window, it returns an error. If it
+// stays running for the full duration, it returns nil.
+func (u *Updater) verifyHealth(ctx context.Context, name string, duration time.Duration) error {
+	log := u.log.With("container", name)
+	log.Infow("verifying container health", "duration", duration)
+
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+
+		ct, err := u.rosGetContainer(ctx, name)
+		if err != nil {
+			return fmt.Errorf("health check: container disappeared: %w", err)
+		}
+		if ct.isStopped() {
+			return fmt.Errorf("health check: container stopped (crashed) during verification")
+		}
+		if !ct.isRunning() {
+			return fmt.Errorf("health check: container in unexpected state")
+		}
+	}
+
+	log.Info("health check passed")
+	return nil
+}
+
+// restartContainer starts a stopped container and waits for it to be running.
+func (u *Updater) restartContainer(ctx context.Context, name string) error {
+	ct, err := u.rosGetContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("getting container for restart: %w", err)
+	}
+	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
+		return fmt.Errorf("starting container: %w", err)
+	}
+	return u.waitForRunning(ctx, name)
+}
+
+// rollbackContainer stops the current (failed) container, removes it, cleans
+// the root-dir, and recreates from the previous tarball. Verifies health after
+// rollback with up to 3 restart retries if the initial health check fails.
+func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *rosContainerFull, prevROSPath string, healthDuration time.Duration) error {
+	log := u.log.With("container", name)
+
+	// Stop and remove the failing container
+	ct, err := u.rosGetContainer(ctx, name)
+	if err != nil {
+		log.Warnw("rollback: could not find container to stop", "error", err)
+	} else {
+		if ct.isRunning() {
+			_ = u.rosPost(ctx, "/container/stop", map[string]string{".id": ct.ID})
+			_ = u.waitForStopped(ctx, name)
+		}
+		_ = u.rosPost(ctx, "/container/remove", map[string]string{".id": ct.ID})
+		time.Sleep(2 * time.Second)
+	}
+
+	// Clean root-dir
+	if origSpec.rootDir != "" {
+		u.rosRemoveDirectory(ctx, origSpec.rootDir)
+		time.Sleep(time.Second)
+	}
+
+	// Create from previous tarball
+	spec := map[string]string{
+		"name":          name,
+		"file":          prevROSPath,
+		"interface":     origSpec.iface,
+		"root-dir":      origSpec.rootDir,
+		"logging":       origSpec.logging,
+		"start-on-boot": origSpec.startOnBoot,
+	}
+	if origSpec.mountLists != "" {
+		spec["mountlists"] = origSpec.mountLists
+	}
+	if origSpec.cmd != "" {
+		spec["cmd"] = origSpec.cmd
+	}
+	if origSpec.entrypoint != "" {
+		spec["entrypoint"] = origSpec.entrypoint
+	}
+	if origSpec.hostname != "" {
+		spec["hostname"] = origSpec.hostname
+	}
+	if origSpec.dns != "" {
+		spec["dns"] = origSpec.dns
+	}
+	if origSpec.workDir != "" {
+		spec["workdir"] = origSpec.workDir
+	}
+
+	log.Infow("rollback: creating container from previous tarball", "rosPath", prevROSPath)
+	if err := u.rosPost(ctx, "/container/add", spec); err != nil {
+		return fmt.Errorf("rollback create failed: %w", err)
+	}
+
+	if err := u.waitForExtraction(ctx, name); err != nil {
+		return fmt.Errorf("rollback extraction failed: %w", err)
+	}
+
+	newCt, err := u.rosGetContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("rollback: getting container: %w", err)
+	}
+
+	log.Info("rollback: starting container")
+	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": newCt.ID}); err != nil {
+		return fmt.Errorf("rollback start failed: %w", err)
+	}
+
+	if err := u.waitForRunning(ctx, name); err != nil {
+		return fmt.Errorf("rollback: container did not start: %w", err)
+	}
+
+	// Verify health
+	if u.verifyHealth(ctx, name, healthDuration) == nil {
+		log.Info("rollback successful")
+		return nil
+	}
+
+	// Retry restarts on rollback
+	for attempt := 1; attempt <= 3; attempt++ {
+		log.Infow("rollback restart attempt", "attempt", attempt, "max", 3)
+		if restartErr := u.restartContainer(ctx, name); restartErr != nil {
+			continue
+		}
+		if u.verifyHealth(ctx, name, healthDuration) == nil {
+			log.Infow("rollback recovered after restart", "attempt", attempt)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("rollback also failed after 3 restart attempts")
 }
 
 // requestSelfUpdate calls the mkube update API to replace our own container.

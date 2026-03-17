@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-17
+- **feat:** Post-replace health verification + rollback for mkube-update. After replacing a container, mkube-update now monitors for 15s to detect startup crashes. On failure: 3 restart retries, then automatic rollback to the previous image tarball. Previous tarballs preserved via rename (`-prev.tar`) before each update. Covers CRITICAL case where both new and previous images fail. Digest reverted on rollback so next poll retries.
 - **feat:** BMH cloudid integration fields — `spec.template` (cloudid template ref, takes precedence over `spec.bootConfigRef`), `spec.ignition` (base Ignition v3 JSON for platform config), `spec.kickstart` (base kickstart text). Enables cloudid variable substitution and ignition merge for provisioning.
 - **feat:** BMH operator status fields — `status.state` (Idle/PoweringOn/Provisioning/Ready/PoweringOff/Error), `status.lastStateChange`, `status.operatorVersion`, `status.serialActive`, `status.ipmiReachable`. Written by bmh-operator via PATCH; mkube stores/serves them opaquely.
 - **feat:** JobRunner cloudid template support — `spec.template` field on JobRunnerSpec. Scheduler uses Template when set, falls back to BootConfigRef. Validation allows either. Table formatter shows `tpl:` prefix for template-based runners. Consistency checks validate both paths.
