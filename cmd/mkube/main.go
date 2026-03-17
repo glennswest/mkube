@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	goruntime "runtime"
 	"syscall"
 	"time"
 
@@ -88,6 +90,21 @@ func run(cmd *cobra.Command, args []string) error {
 	log := logger.Sugar()
 
 	log.Infow("starting mkube", "version", version)
+
+	// ── pprof debug server on :6060 ─────────────────────────────────
+	go func() {
+		log.Infow("pprof server starting", "addr", ":6060")
+		_ = http.ListenAndServe(":6060", nil) // default mux has pprof handlers
+	}()
+
+	// ── Goroutine monitor — log count every 10s ─────────────────────
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			log.Infow("goroutine count", "n", goruntime.NumGoroutine())
+		}
+	}()
 
 	// ── Configuration ───────────────────────────────────────────────
 	cfg, err := config.Load(cmd.Flags())
