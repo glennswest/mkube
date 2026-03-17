@@ -212,6 +212,34 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export iSCSI Disks
+	if s.ISCSIDisks != nil {
+		idKeys, err := s.ISCSIDisks.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing iSCSI disks: %w", err)
+		}
+		for _, key := range idKeys {
+			raw, _, err := s.ISCSIDisks.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "v1"
+			doc["kind"] = "ISCSIDisk"
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export PVCs
 	if s.PersistentVolumeClaims != nil {
 		pvcKeys, err := s.PersistentVolumeClaims.Keys(ctx, "")
@@ -393,6 +421,23 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 			for _, icd := range icds {
 				if _, err := s.ISCSICdroms.PutJSON(ctx, icd.Name, &icd); err != nil {
 					continue
+				}
+			}
+		}
+	}
+
+	// Import iSCSI Disks
+	if s.ISCSIDisks != nil {
+		idisks, err := parseGenericDocs(data, "ISCSIDisk")
+		if err == nil {
+			for _, doc := range idisks {
+				meta := doc["metadata"]
+				if m, ok := meta.(map[string]interface{}); ok {
+					name, _ := m["name"].(string)
+					if name != "" {
+						raw, _ := json.Marshal(doc)
+						_, _ = s.ISCSIDisks.Put(ctx, name, raw)
+					}
 				}
 			}
 		}

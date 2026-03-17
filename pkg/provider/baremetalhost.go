@@ -40,6 +40,7 @@ type BMHSpec struct {
 	BootFile       string     `json:"bootFile,omitempty"`       // PXE boot file (BIOS)
 	BootFileEFI    string     `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
 	BootConfigRef  string     `json:"bootConfigRef,omitempty"`  // reference to a BootConfig CRD name
+	Disk           string     `json:"disk,omitempty"`           // ISCSIDisk name for iSCSI root disk boot
 }
 
 type BMCDetails struct {
@@ -706,7 +707,9 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 		}
 
 		image := h.Spec.Image
-		if image == "" {
+		if h.Spec.Disk != "" {
+			image = "disk:" + h.Spec.Disk
+		} else if image == "" {
 			image = "localboot"
 		}
 

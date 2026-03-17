@@ -211,6 +211,19 @@ Base URL: `http://192.168.200.2:8082`
 | `GET` | `/api/v1/iscsi-cdroms/{name}/files` | Read file from ISO |
 | `POST` | `/api/v1/iscsi-cdroms/{name}/derive` | Derive new CDROM from existing |
 
+### iSCSI Disks (cluster-scoped)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/api/v1/iscsi-disks` | List all iSCSI disks |
+| `GET` | `/api/v1/iscsi-disks/{name}` | Get iSCSI disk |
+| `POST` | `/api/v1/iscsi-disks` | Create iSCSI disk (clones from source) |
+| `PATCH` | `/api/v1/iscsi-disks/{name}` | Patch iSCSI disk (host, description, grow size) |
+| `DELETE` | `/api/v1/iscsi-disks/{name}` | Delete iSCSI disk |
+| `POST` | `/api/v1/iscsi-disks/{name}/clone` | Clone disk to new instance |
+| `POST` | `/api/v1/iscsi-disks/{name}/resize` | Grow disk (grow only) |
+| `GET` | `/api/v1/iscsi-disks/capacity` | Disk usage stats |
+
 ### BootConfigs (cluster-scoped)
 
 | Method | Endpoint | Purpose |
@@ -308,6 +321,7 @@ mk get pvc -A                      # All PVCs
 mk get deployments -A              # All deployments
 mk get bootconfigs                 # Boot configs
 mk get iscsi-cdroms                # iSCSI CDROMs
+mk get iscsi-disks                 # iSCSI Disks (idisk)
 mk get jobrunners                  # Job runners
 mk get jobs -A                     # All jobs
 mk get hostreservations -A         # All host reservations
@@ -389,6 +403,7 @@ mk get hostreservations -A         # All host reservations
 - PVC survivability and disk health verification: EnsureDirectory/FileExists/ListDirectory added to ContainerRuntime interface (RouterOS via /file API, Proxmox/StormBase via os.*). PVC directories auto-created on resolve and explicit creation. Consistency checker verifies PVC directory existence on disk, auto-creates missing (self-healing), warns on empty directories for active pods. Prevents silent data loss from broken PVC mounts.
 - DHCP reservation self-containment: Reservations were missing gateway/DNS/domain fields. Servers with reserved IPs outside pool range had no default route, causing boot loops (server8 looped 7.5h). Root cause: `NetworkDHCPReservation` and `dns.DHCPReservation` structs had no gateway/dns_servers/domain fields. `upsertNetworkReservation` never populated them. Fixed: added Gateway/DNSServers/Domain to both structs, `upsertNetworkReservation` now populates from Network CRD defaults (gateway, DNS server, zone). All BMH reservations now carry full network context.
 - Staging veth/IPAM leak in blue-green updates: `stagingExtractAndVerify` leaked staging veth when late-stage steps failed (extraction timeout, start/verify failure). RecoveryRecreate flow didn't release production veths or clean root-dirs, causing infinite crash loops ("IP already allocated to __stg", "root-dir overlap"). Fixed: (1) defer cleanup in staging, (2) RecoveryRecreate releases specific container's veth + staging leftovers + root-dir, (3) CreatePod detects "__stg" in allocation errors and cleans leaked staging veths.
+- ISCSIDisk CRD (IMPLEMENTED): Cluster-scoped CRD for per-instance read/write iSCSI block devices. Creates sparse disk files under `/raid1/disks/`, clones from ISCSICdrom (ISO→disk) or existing ISCSIDisk sources. Background cloning with phase tracking (Pending→Cloning→Ready). RouterOS iSCSI target auto-registration with `disk-` prefix. Full CRUD + clone + resize + capacity API. BMH `spec.disk` field for iSCSI root disk boot (takes precedence over `spec.image`). Watch, table format, consistency checks, export/import. Reconciler recreates missing targets after RouterOS reboot.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:

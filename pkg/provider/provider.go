@@ -96,6 +96,7 @@ type MicroKubeProvider struct {
 	networks        map[string]*Network                     // name -> Network (cluster-scoped)
 	registries      map[string]*Registry                    // name -> Registry (cluster-scoped)
 	iscsiCdroms     map[string]*ISCSICdrom                  // name -> ISCSICdrom (cluster-scoped)
+	iscsiDisks      map[string]*ISCSIDisk                   // name -> ISCSIDisk (cluster-scoped)
 	bootConfigs      map[string]*BootConfig                  // name -> BootConfig (cluster-scoped)
 	hostReservations map[string]*HostReservation             // namespace/name -> HostReservation
 	jobRunners       map[string]*JobRunner                   // name -> JobRunner (cluster-scoped)
@@ -127,6 +128,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadConfigMapsFromStore(context.Background())
 	p.ReconcileNetworkConfigMaps(context.Background())
 	p.LoadISCSICdromsFromStore(context.Background())
+	p.LoadISCSIDisksFromStore(context.Background())
 	p.LoadBootConfigsFromStore(context.Background())
 	p.LoadHostReservationsFromStore(context.Background())
 	p.LoadJobRunnersFromStore(context.Background())
@@ -166,6 +168,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		networks:        make(map[string]*Network),
 		registries:      make(map[string]*Registry),
 		iscsiCdroms:     make(map[string]*ISCSICdrom),
+		iscsiDisks:      make(map[string]*ISCSIDisk),
 		bootConfigs:      make(map[string]*BootConfig),
 		hostReservations: make(map[string]*HostReservation),
 		jobRunners:       make(map[string]*JobRunner),

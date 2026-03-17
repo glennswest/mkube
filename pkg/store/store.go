@@ -32,6 +32,7 @@ type Store struct {
 	Networks               *Bucket
 	Registries             *Bucket
 	ISCSICdroms            *Bucket
+	ISCSIDisks             *Bucket
 	BootConfigs            *Bucket
 	HostReservations       *Bucket
 	JobRunners             *Bucket
@@ -68,6 +69,8 @@ func (s *Store) BucketByName(name string) *Bucket {
 		return s.Registries
 	case "ISCSICDROMS":
 		return s.ISCSICdroms
+	case "ISCSIDISKS":
+		return s.ISCSIDisks
 	case "BOOTCONFIGS":
 		return s.BootConfigs
 	case "HOSTRESERVATIONS":
@@ -200,6 +203,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.ISCSICdroms, err = s.initBucket(ctx, "ISCSICDROMS", s.replicas, 0)
+	if err != nil {
+		return err
+	}
+	s.ISCSIDisks, err = s.initBucket(ctx, "ISCSIDISKS", s.replicas, 0)
 	if err != nil {
 		return err
 	}

@@ -514,6 +514,7 @@ func runSharedServices(
 		p.MigrateRegistryConfig(ctx)
 		p.LoadConfigMapsFromStore(ctx)
 		p.LoadISCSICdromsFromStore(ctx)
+		p.LoadISCSIDisksFromStore(ctx)
 		p.LoadBootConfigsFromStore(ctx)
 		p.LoadHostReservationsFromStore(ctx)
 		p.LoadJobRunnersFromStore(ctx)

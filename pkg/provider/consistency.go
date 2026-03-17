@@ -40,6 +40,7 @@ type ConsistencyChecks struct {
 	BMHs        []CheckItem `json:"bmhs,omitempty"`
 	Registries  []CheckItem `json:"registries,omitempty"`
 	ISCSICdroms      []CheckItem `json:"iscsiCdroms,omitempty"`
+	ISCSIDisks       []CheckItem `json:"iscsiDisks,omitempty"`
 	BootConfigs      []CheckItem `json:"bootConfigs,omitempty"`
 	HostReservations []CheckItem `json:"hostReservations,omitempty"`
 	JobRunners       []CheckItem `json:"jobRunners,omitempty"`
@@ -111,6 +112,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.BMHs = p.checkBMHs()
 	report.Checks.Registries = p.checkRegistryCRDs(ctx)
 	report.Checks.ISCSICdroms = p.checkISCSICdromCRDs(ctx)
+	report.Checks.ISCSIDisks = p.checkISCSIDiskCRDs(ctx)
 	report.Checks.BootConfigs = p.checkBootConfigCRDs(ctx)
 	report.Checks.HostReservations = p.checkHostReservationCRDs(ctx)
 	report.Checks.JobRunners = p.checkJobRunnerCRDs(ctx)
@@ -131,6 +133,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.BMHs,
 		report.Checks.Registries,
 		report.Checks.ISCSICdroms,
+		report.Checks.ISCSIDisks,
 		report.Checks.BootConfigs,
 		report.Checks.HostReservations,
 		report.Checks.JobRunners,

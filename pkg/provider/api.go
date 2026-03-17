@@ -92,6 +92,16 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/iscsi-cdroms/{name}/files", p.handleISCSICdromReadFile)
 	mux.HandleFunc("POST /api/v1/iscsi-cdroms/{name}/derive", p.handleISCSICdromDerive)
 
+	// iSCSI Disks (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/iscsi-disks", p.handleListISCSIDisks)
+	mux.HandleFunc("GET /api/v1/iscsi-disks/capacity", p.handleISCSIDiskCapacity)
+	mux.HandleFunc("GET /api/v1/iscsi-disks/{name}", p.handleGetISCSIDisk)
+	mux.HandleFunc("POST /api/v1/iscsi-disks", p.handleCreateISCSIDisk)
+	mux.HandleFunc("PATCH /api/v1/iscsi-disks/{name}", p.handlePatchISCSIDisk)
+	mux.HandleFunc("DELETE /api/v1/iscsi-disks/{name}", p.handleDeleteISCSIDisk)
+	mux.HandleFunc("POST /api/v1/iscsi-disks/{name}/clone", p.handleCloneISCSIDisk)
+	mux.HandleFunc("POST /api/v1/iscsi-disks/{name}/resize", p.handleResizeISCSIDisk)
+
 	// BootConfigs (cluster-scoped)
 	mux.HandleFunc("GET /api/v1/bootconfigs", p.handleListBootConfigs)
 	mux.HandleFunc("GET /api/v1/bootconfigs/{name}", p.handleGetBootConfig)
@@ -814,6 +824,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Kind:       "ISCSICdrom",
 				ShortNames: []string{"icd"},
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
+				Name:       "iscsi-disks",
+				Namespaced: false,
+				Kind:       "ISCSIDisk",
+				ShortNames: []string{"idisk"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "patch", "delete"},
 			},
 			{
 				Name:       "bootconfigs",
