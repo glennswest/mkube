@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-17
+- **fix:** Stale binary after image push — three root causes fixed: (1) `RefreshImage` first-check-after-restart always returned `changed=false` because session memory was empty. Added `RefreshImageWithHint()` that compares registry digest against a persisted `vkube.io/image-digest` pod annotation. (2) Added `vkube.io/image-digest` annotation stamped on CreatePod/UpdatePod, persisted to NATS. (3) mkube-update used simple `/file/remove` on root-dir which fails silently on non-empty dirs. RouterOS skipped extraction and reused old binary. Replaced with recursive `rosRemoveDirectory()`.
 - **feat:** Event-driven architecture — kick channels for reconciler and scheduler. CRUD handlers (deployments, jobs, BMH, networks) now trigger immediate reconcile/schedule instead of waiting for 10s timer ticks. Buffered channels with non-blocking send ensure no goroutine stalls.
 - **feat:** NATS resource watchers for BMH, Deployment, Network, Job, and JobRunner buckets. External NATS changes (multi-node sync, direct KV writes) automatically update in-memory state and trigger reconcile/schedule. Each watcher has 5s reconnect on error.
 - **feat:** Event-driven NotifyPods with 30s fallback polling (was 5s). New `notifyPodChange` pushes immediate pod status updates on create/delete/update/recovery. Tighter container state polling: waitForStopped 2s→1s, waitForRunning 1s→500ms, stopAndRemove 1s→500ms.
