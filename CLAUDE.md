@@ -61,6 +61,7 @@ go test ./...
 | `pkg/runtime/` | Container runtime abstraction (RouterOS, StormBase, Proxmox adapters) |
 | `pkg/nats/` | Embedded NATS server (in-process JetStream) |
 | `pkg/cluster/` | Multi-node clustering (peer health, push sync, full resync) |
+| `pkg/diskimg/` | Pure Go disk image converters (VMDK, QCOW2, VHD → raw) |
 
 ### Backends
 | Backend | Config key | Runtime adapter | Network driver | Init function |
@@ -404,6 +405,7 @@ mk get hostreservations -A         # All host reservations
 - DHCP reservation self-containment: Reservations were missing gateway/DNS/domain fields. Servers with reserved IPs outside pool range had no default route, causing boot loops (server8 looped 7.5h). Root cause: `NetworkDHCPReservation` and `dns.DHCPReservation` structs had no gateway/dns_servers/domain fields. `upsertNetworkReservation` never populated them. Fixed: added Gateway/DNSServers/Domain to both structs, `upsertNetworkReservation` now populates from Network CRD defaults (gateway, DNS server, zone). All BMH reservations now carry full network context.
 - Staging veth/IPAM leak in blue-green updates: `stagingExtractAndVerify` leaked staging veth when late-stage steps failed (extraction timeout, start/verify failure). RecoveryRecreate flow didn't release production veths or clean root-dirs, causing infinite crash loops ("IP already allocated to __stg", "root-dir overlap"). Fixed: (1) defer cleanup in staging, (2) RecoveryRecreate releases specific container's veth + staging leftovers + root-dir, (3) CreatePod detects "__stg" in allocation errors and cleans leaked staging veths.
 - ISCSIDisk CRD (IMPLEMENTED): Cluster-scoped CRD for per-instance read/write iSCSI block devices. Creates sparse disk files under `/raid1/disks/`, clones from ISCSICdrom (ISO→disk) or existing ISCSIDisk sources. Background cloning with phase tracking (Pending→Cloning→Ready). RouterOS iSCSI target auto-registration with `disk-` prefix. Full CRUD + clone + resize + capacity API. BMH `spec.disk` field for iSCSI root disk boot (takes precedence over `spec.image`). Watch, table format, consistency checks, export/import. Reconciler recreates missing targets after RouterOS reboot.
+- Pure Go disk image library (`pkg/diskimg`): Replaces `qemu-img`, `gzip`, and `cp --sparse=auto` external tool dependencies with pure Go. VMDK reader (streamOptimized with grain markers + deflate, monolithicSparse with GD/GT tables, monolithicFlat descriptors), QCOW2 reader (v2/v3, L1/L2 tables, compressed clusters with deflate/zlib), VHD reader (fixed, dynamic with BAT). Sparse-aware file copy. Gzip decompression via `compress/gzip`. 8 unit tests. Required because mkube runs in a scratch container where no external tools exist.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:
