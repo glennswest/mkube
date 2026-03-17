@@ -115,6 +115,7 @@ type MicroKubeProvider struct {
 	createFailures     map[string]int               // pod key -> consecutive CreatePod failures
 	networkFailures    map[string]int               // pod key -> consecutive network health failures
 	consistencyRunning atomic.Bool                  // guards CheckConsistencyAsync against goroutine leaks
+	reseedRunning      atomic.Bool                  // guards triggerNetworkReseed against goroutine leaks
 	clusterMgr         *cluster.Manager             // nil if clustering is disabled
 	kickReconcile      chan struct{}                 // event-driven reconcile trigger (buffered 1)
 	kickScheduler      chan struct{}                 // event-driven scheduler trigger (buffered 1)

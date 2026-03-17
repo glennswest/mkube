@@ -302,15 +302,22 @@ func (p *MicroKubeProvider) runJobRunnerWatch(ctx context.Context) error {
 }
 
 // triggerNetworkReseed runs seedDNSConfig in the background for a managed network.
+// Uses an atomic guard to prevent unbounded goroutine growth when events arrive
+// faster than seeds complete.
 func (p *MicroKubeProvider) triggerNetworkReseed(networkName string) {
+	p.mu.RLock()
+	net, ok := p.networks[networkName]
+	p.mu.RUnlock()
+	if !ok || !net.Spec.Managed || net.Spec.ExternalDNS {
+		return
+	}
+	if !p.reseedRunning.CompareAndSwap(false, true) {
+		p.deps.Logger.Debugw("network reseed already in progress, skipping", "network", networkName)
+		return
+	}
 	go func() {
-		p.mu.RLock()
-		net, ok := p.networks[networkName]
-		p.mu.RUnlock()
-		if !ok || !net.Spec.Managed || net.Spec.ExternalDNS {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer p.reseedRunning.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		p.seedDNSConfig(ctx, net)
 	}()

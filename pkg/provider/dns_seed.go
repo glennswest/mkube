@@ -69,8 +69,11 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 
 	log.Infow("DNS config seeded successfully", "endpoint", endpoint)
 
-	// Run smoke test after seed to verify end-to-end functionality
-	go p.runDNSSmokeTest(context.Background(), net)
+	// Run smoke test inline — seedDNSConfig is already called from a goroutine.
+	// Using a background context so seed timeout doesn't kill the smoke test.
+	smokeCtx, smokeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer smokeCancel()
+	p.runDNSSmokeTest(smokeCtx, net)
 }
 
 // seedDHCPPool creates a DHCP pool for a source network on the target microdns instance.
