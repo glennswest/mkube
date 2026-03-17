@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ulikunitz/xz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
@@ -510,6 +512,48 @@ func (p *MicroKubeProvider) resolveISCSIDiskSource(source string) (string, strin
 
 // ─── Disk Operations ────────────────────────────────────────────────────────
 
+// sourceFormat identifies the image format of a source file.
+type sourceFormat struct {
+	compressed string // "xz", "gz", "" (none)
+	diskFormat string // "raw", "vmdk", "qcow2", "iso"
+}
+
+// detectSourceFormat determines the format from file extension.
+func detectSourceFormat(path string) sourceFormat {
+	lower := strings.ToLower(path)
+	sf := sourceFormat{diskFormat: "raw"}
+
+	// Check for compression layer
+	if strings.HasSuffix(lower, ".xz") {
+		sf.compressed = "xz"
+		lower = strings.TrimSuffix(lower, ".xz")
+	} else if strings.HasSuffix(lower, ".gz") {
+		sf.compressed = "gz"
+		lower = strings.TrimSuffix(lower, ".gz")
+	}
+
+	// Check disk format
+	switch {
+	case strings.HasSuffix(lower, ".vmdk"):
+		sf.diskFormat = "vmdk"
+	case strings.HasSuffix(lower, ".qcow2"):
+		sf.diskFormat = "qcow2"
+	case strings.HasSuffix(lower, ".vhd"), strings.HasSuffix(lower, ".vhdx"):
+		sf.diskFormat = "vpc" // qemu-img uses "vpc" for VHD
+	case strings.HasSuffix(lower, ".iso"):
+		sf.diskFormat = "iso"
+	case strings.HasSuffix(lower, ".img"), strings.HasSuffix(lower, ".raw"):
+		sf.diskFormat = "raw"
+	}
+
+	return sf
+}
+
+// needsConversion returns true if the source requires decompression or format conversion.
+func (sf sourceFormat) needsConversion() bool {
+	return sf.compressed != "" || (sf.diskFormat != "raw" && sf.diskFormat != "iso")
+}
+
 // cloneISCSIDisk performs the background clone: creates sparse file, copies source, registers target.
 func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath, sourceType, diskPath string, sizeGB int) {
 	diskCloneMu.Lock()
@@ -533,8 +577,30 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 		return
 	}
 
-	// Create sparse disk file of target size
 	targetBytes := int64(sizeGB) * 1024 * 1024 * 1024
+
+	// Detect source format and convert if needed
+	sf := detectSourceFormat(sourcePath)
+	effectivePath := sourcePath
+
+	if sf.needsConversion() {
+		log.Infow("source needs conversion", "path", sourcePath,
+			"compressed", sf.compressed, "format", sf.diskFormat)
+
+		var err error
+		effectivePath, err = p.convertSourceToRaw(ctx, sourcePath, sf, log)
+		if err != nil {
+			p.setDiskError(ctx, name, fmt.Sprintf("converting source: %v", err))
+			return
+		}
+		defer os.Remove(effectivePath) // clean up intermediate file
+		log.Infow("source converted to raw", "intermediate", effectivePath)
+
+		// For converted sources, treat as raw path
+		sourceType = "path"
+	}
+
+	// Create sparse disk file of target size
 	if err := createSparseFile(diskPath, targetBytes); err != nil {
 		p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
 		return
@@ -545,15 +611,15 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	switch sourceType {
 	case "cdrom":
 		// ISO source: dd the ISO into the beginning of the raw disk
-		if err := ddCopy(sourcePath, diskPath); err != nil {
+		if err := ddCopy(effectivePath, diskPath); err != nil {
 			os.Remove(diskPath)
 			p.setDiskError(ctx, name, fmt.Sprintf("copying ISO to disk: %v", err))
 			return
 		}
-		log.Infow("ISO copied to disk", "source", sourcePath)
+		log.Infow("ISO copied to disk", "source", effectivePath)
 	case "disk", "path":
 		// Disk-to-disk: cp --sparse=auto
-		if err := sparseCopy(sourcePath, diskPath); err != nil {
+		if err := sparseCopy(effectivePath, diskPath); err != nil {
 			os.Remove(diskPath)
 			p.setDiskError(ctx, name, fmt.Sprintf("copying disk: %v", err))
 			return
@@ -564,7 +630,7 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 				log.Warnw("failed to extend disk after copy", "error", err)
 			}
 		}
-		log.Infow("disk copied", "source", sourcePath)
+		log.Infow("disk copied", "source", effectivePath)
 	}
 
 	// Configure iSCSI target on RouterOS
@@ -600,6 +666,127 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 			"diskID", disk.Status.RouterOSID,
 			"path", diskPath)
 	}
+}
+
+// convertSourceToRaw handles decompression and format conversion, returning
+// the path to a raw disk image (caller must clean up the temp file).
+func (p *MicroKubeProvider) convertSourceToRaw(ctx context.Context, sourcePath string, sf sourceFormat, log interface{ Infow(string, ...interface{}) }) (string, error) {
+	currentPath := sourcePath
+
+	// Step 1: Decompress if needed
+	if sf.compressed != "" {
+		decompressed, err := decompressFile(currentPath, sf.compressed)
+		if err != nil {
+			return "", fmt.Errorf("decompressing %s: %w", sf.compressed, err)
+		}
+		currentPath = decompressed
+		log.Infow("decompressed source", "format", sf.compressed, "output", currentPath)
+	}
+
+	// Step 2: Convert disk format to raw if needed
+	if sf.diskFormat != "raw" && sf.diskFormat != "iso" {
+		rawPath, err := convertDiskToRaw(currentPath, sf.diskFormat)
+		if err != nil {
+			// Clean up decompressed intermediate if we created one
+			if currentPath != sourcePath {
+				os.Remove(currentPath)
+			}
+			return "", fmt.Errorf("converting %s to raw: %w", sf.diskFormat, err)
+		}
+		// Clean up decompressed intermediate
+		if currentPath != sourcePath {
+			os.Remove(currentPath)
+		}
+		currentPath = rawPath
+		log.Infow("converted to raw", "from", sf.diskFormat, "output", currentPath)
+	}
+
+	return currentPath, nil
+}
+
+// decompressFile decompresses an xz or gz file, returning the path to the
+// decompressed output (temp file in the same directory as source).
+func decompressFile(path, compression string) (string, error) {
+	srcFile, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer srcFile.Close()
+
+	// Create temp output file next to source (same filesystem for rename if needed)
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	// Strip compression extension for output name
+	switch compression {
+	case "xz":
+		base = strings.TrimSuffix(base, ".xz")
+		base = strings.TrimSuffix(base, ".XZ")
+	case "gz":
+		base = strings.TrimSuffix(base, ".gz")
+		base = strings.TrimSuffix(base, ".GZ")
+	}
+	outPath := filepath.Join(dir, base+".decompressing")
+
+	dstFile, err := os.Create(outPath)
+	if err != nil {
+		return "", fmt.Errorf("creating output: %w", err)
+	}
+	defer func() {
+		dstFile.Close()
+		// Rename to final name on success (remove .decompressing suffix)
+		finalPath := filepath.Join(dir, base)
+		os.Rename(outPath, finalPath)
+	}()
+
+	switch compression {
+	case "xz":
+		reader, err := xz.NewReader(srcFile)
+		if err != nil {
+			os.Remove(outPath)
+			return "", fmt.Errorf("creating xz reader: %w", err)
+		}
+		if _, err := io.Copy(dstFile, reader); err != nil {
+			os.Remove(outPath)
+			return "", fmt.Errorf("decompressing xz: %w", err)
+		}
+	case "gz":
+		// Use exec for gzip (simpler than importing compress/gzip for large files)
+		dstFile.Close()
+		srcFile.Close()
+		cmd := exec.Command("gzip", "-d", "-k", "-c", path)
+		out, err := os.Create(outPath)
+		if err != nil {
+			return "", err
+		}
+		cmd.Stdout = out
+		err = cmd.Run()
+		out.Close()
+		if err != nil {
+			os.Remove(outPath)
+			return "", fmt.Errorf("decompressing gz: %w", err)
+		}
+	default:
+		os.Remove(outPath)
+		return "", fmt.Errorf("unsupported compression: %s", compression)
+	}
+
+	finalPath := filepath.Join(dir, base)
+	return finalPath, nil
+}
+
+// convertDiskToRaw converts a vmdk/qcow2/vhd image to raw format using qemu-img.
+// Returns the path to the raw output (temp file, caller must clean up).
+func convertDiskToRaw(inputPath, format string) (string, error) {
+	outputPath := inputPath + ".converting.raw"
+
+	cmd := exec.Command("qemu-img", "convert", "-f", format, "-O", "raw", inputPath, outputPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		os.Remove(outputPath)
+		return "", fmt.Errorf("qemu-img convert failed: %w\noutput: %s", err, string(out))
+	}
+
+	return outputPath, nil
 }
 
 func (p *MicroKubeProvider) setDiskError(ctx context.Context, name, msg string) {
