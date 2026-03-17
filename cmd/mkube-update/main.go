@@ -975,8 +975,8 @@ func (u *Updater) rosPost(ctx context.Context, path string, body interface{}) er
 // ─── Wait helpers ───────────────────────────────────────────────────────────
 
 func (u *Updater) waitForStopped(ctx context.Context, name string) error {
-	for i := 0; i < 30; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 60; i++ {
+		time.Sleep(500 * time.Millisecond)
 		ct, err := u.rosGetContainer(ctx, name)
 		if err != nil {
 			continue
@@ -1000,8 +1000,8 @@ func (u *Updater) waitForExists(ctx context.Context, name string) error {
 }
 
 func (u *Updater) waitForRunning(ctx context.Context, name string) error {
-	for i := 0; i < 30; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 60; i++ {
+		time.Sleep(500 * time.Millisecond)
 		ct, err := u.rosGetContainer(ctx, name)
 		if err != nil {
 			continue

@@ -542,7 +542,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 // (tarball extraction complete) or the timeout expires.
 func (p *MicroKubeProvider) waitForStopped(ctx context.Context, name string, timeout time.Duration) (*runtime.Container, error) {
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -571,8 +571,8 @@ func (p *MicroKubeProvider) stopAndRemoveContainer(ctx context.Context, name, id
 
 	if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil && ct.IsRunning() {
 		_ = p.deps.Runtime.StopContainer(ctx, id)
-		for j := 0; j < 15; j++ {
-			time.Sleep(time.Second)
+		for j := 0; j < 30; j++ {
+			time.Sleep(500 * time.Millisecond)
 			if updated, err := p.deps.Runtime.GetContainer(ctx, name); err != nil || !updated.IsRunning() {
 				break
 			}
@@ -1066,7 +1066,7 @@ func normalizePath(p string) string {
 // waitForRunning polls until the container reaches "running" state or timeout.
 func (p *MicroKubeProvider) waitForRunning(ctx context.Context, name string, timeout time.Duration) bool {
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -2176,9 +2176,11 @@ func loadManifests(path string) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 // status changes so the framework can update the API server.
 func (p *MicroKubeProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)) {
 	p.notifyPodStatus = cb
-	// Start a background goroutine that periodically pushes status updates
+	// Background goroutine pushes full status updates as a fallback.
+	// Primary status updates come from notifyPodChange called by CRUD handlers
+	// and lifecycle callbacks, so this can run at a slower interval.
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -2198,6 +2200,20 @@ func (p *MicroKubeProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)
 			}
 		}
 	}()
+}
+
+// notifyPodChange pushes a single pod's status to the VK framework immediately.
+func (p *MicroKubeProvider) notifyPodChange(ctx context.Context, pod *corev1.Pod) {
+	if p.notifyPodStatus == nil {
+		return
+	}
+	status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name)
+	if err != nil {
+		return
+	}
+	updated := pod.DeepCopy()
+	updated.Status = *status
+	p.notifyPodStatus(updated)
 }
 
 // RunVirtualKubelet starts the full Virtual Kubelet node, registering
