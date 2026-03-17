@@ -263,6 +263,7 @@ func (p *MicroKubeProvider) handleCreateJob(w http.ResponseWriter, r *http.Reque
 
 	p.persistJob(r.Context(), &job)
 	p.jobs[key] = &job
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusCreated, &job)
 }
@@ -296,6 +297,7 @@ func (p *MicroKubeProvider) handleUpdateJob(w http.ResponseWriter, r *http.Reque
 
 	p.persistJob(r.Context(), &job)
 	p.jobs[key] = &job
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, &job)
 }
@@ -329,6 +331,7 @@ func (p *MicroKubeProvider) handlePatchJob(w http.ResponseWriter, r *http.Reques
 
 	p.persistJob(r.Context(), merged)
 	p.jobs[key] = merged
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
@@ -688,6 +691,7 @@ func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.R
 	p.releaseJobHost(r.Context(), matchedJob)
 
 	p.persistJob(r.Context(), matchedJob)
+	p.triggerScheduler()
 
 	p.deps.Logger.Infow("job completed",
 		"job", jobKey(matchedJob),

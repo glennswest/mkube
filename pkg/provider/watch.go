@@ -236,6 +236,10 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-p.kickReconcile:
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (kick-triggered)", "error", err)
+			}
 		case evt, ok := <-events:
 			if !ok {
 				return fmt.Errorf("watch channel closed")

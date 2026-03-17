@@ -127,6 +127,7 @@ func (p *MicroKubeProvider) handleCreateDeployment(w http.ResponseWriter, r *htt
 	}
 	p.deployments[key] = &deploy
 	p.deps.Logger.Infow("deployment created", "deployment", key, "replicas", deploy.Spec.Replicas)
+	p.triggerReconcile()
 
 	podWriteJSON(w, http.StatusCreated, &deploy)
 }
@@ -213,6 +214,7 @@ func (p *MicroKubeProvider) handleUpdateDeployment(w http.ResponseWriter, r *htt
 	deploy.Status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	p.deployments[key] = &deploy
 	p.deps.Logger.Infow("deployment updated", "deployment", key, "replicas", deploy.Spec.Replicas)
+	p.triggerReconcile()
 
 	p.enrichDeploymentStatus(&deploy)
 	podWriteJSON(w, http.StatusOK, &deploy)
@@ -256,6 +258,7 @@ func (p *MicroKubeProvider) handleDeleteDeployment(w http.ResponseWriter, r *htt
 
 	delete(p.deployments, key)
 	p.deps.Logger.Infow("deployment deleted", "deployment", key, "podsRemoved", len(ownedPods))
+	p.triggerReconcile()
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},

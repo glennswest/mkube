@@ -111,6 +111,8 @@ type MicroKubeProvider struct {
 	networkFailures    map[string]int               // pod key -> consecutive network health failures
 	consistencyRunning atomic.Bool                  // guards CheckConsistencyAsync against goroutine leaks
 	clusterMgr         *cluster.Manager             // nil if clustering is disabled
+	kickReconcile      chan struct{}                 // event-driven reconcile trigger (buffered 1)
+	kickScheduler      chan struct{}                 // event-driven scheduler trigger (buffered 1)
 }
 
 // SetStore sets the NATS store on the provider (used for deferred NATS connection).
@@ -179,6 +181,8 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		redeploying:     make(map[string]bool),
 		createFailures:  make(map[string]int),
 		networkFailures: make(map[string]int),
+		kickReconcile:   make(chan struct{}, 1),
+		kickScheduler:   make(chan struct{}, 1),
 	}
 
 	// Load built-in default ConfigMaps derived from mkube config
@@ -195,6 +199,22 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 	}
 
 	return p, nil
+}
+
+// triggerReconcile sends a non-blocking signal to run reconcile immediately.
+func (p *MicroKubeProvider) triggerReconcile() {
+	select {
+	case p.kickReconcile <- struct{}{}:
+	default:
+	}
+}
+
+// triggerScheduler sends a non-blocking signal to run the job scheduler immediately.
+func (p *MicroKubeProvider) triggerScheduler() {
+	select {
+	case p.kickScheduler <- struct{}{}:
+	default:
+	}
 }
 
 // ─── PodLifecycleHandler Interface ──────────────────────────────────────────
@@ -1437,6 +1457,10 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 		case <-ticker.C:
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error", "error", err)
+			}
+		case <-p.kickReconcile:
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (kick-triggered)", "error", err)
 			}
 		case evt, ok := <-p.pushEventsChan():
 			if !ok {

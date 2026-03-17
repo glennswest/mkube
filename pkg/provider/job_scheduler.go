@@ -30,6 +30,10 @@ func (p *MicroKubeProvider) RunJobScheduler(ctx context.Context) {
 			p.mu.Lock()
 			p.schedulerTick(ctx)
 			p.mu.Unlock()
+		case <-p.kickScheduler:
+			p.mu.Lock()
+			p.schedulerTick(ctx)
+			p.mu.Unlock()
 		}
 	}
 }

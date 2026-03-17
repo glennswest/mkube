@@ -167,6 +167,7 @@ func (p *MicroKubeProvider) handleCreateBMH(w http.ResponseWriter, r *http.Reque
 
 	// Sync BootConfig assignedTo
 	p.syncBootConfigRef(r.Context(), bmh.Name, "", bmh.Spec.BootConfigRef)
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusCreated, &bmh)
 }
@@ -297,6 +298,7 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 
 	// Sync BootConfig assignedTo
 	p.syncBootConfigRef(r.Context(), bmh.Name, oldBootConfigRef, bmh.Spec.BootConfigRef)
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, &bmh)
 }
@@ -356,6 +358,7 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 
 	// Sync BootConfig assignedTo
 	p.syncBootConfigRef(r.Context(), merged.Name, oldBootConfigRef, merged.Spec.BootConfigRef)
+	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
