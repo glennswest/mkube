@@ -11,6 +11,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -143,9 +144,10 @@ func main() {
 	defer cancel()
 
 	updater := &Updater{
-		cfg:     cfg,
-		log:     log,
-		digests: make(map[string]string),
+		cfg:      cfg,
+		log:      log,
+		digests:  make(map[string]string),
+		kickPoll: make(chan struct{}, 1),
 		http: &http.Client{
 			Transport: loadRegistryTransport(log),
 			Timeout:   30 * time.Second,
@@ -187,15 +189,19 @@ func main() {
 
 // Updater polls the local registry for digest changes and replaces containers.
 type Updater struct {
-	cfg     Config
-	log     *zap.SugaredLogger
-	digests map[string]string // "repo:tag" → last seen digest
-	http    *http.Client
+	cfg      Config
+	log      *zap.SugaredLogger
+	digests  map[string]string // "repo:tag" → last seen digest
+	http     *http.Client
+	kickPoll chan struct{} // SSE-triggered immediate poll
 }
 
 func (u *Updater) run(ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(u.cfg.PollSeconds) * time.Second)
 	defer ticker.Stop()
+
+	// Start SSE watcher for instant push notifications
+	go u.watchSSE(ctx)
 
 	// Initial poll immediately
 	u.poll(ctx)
@@ -206,6 +212,9 @@ func (u *Updater) run(ctx context.Context) {
 			u.log.Info("shutting down")
 			return
 		case <-ticker.C:
+			u.poll(ctx)
+		case <-u.kickPoll:
+			u.log.Info("SSE push event, immediate poll")
 			u.poll(ctx)
 		}
 	}
@@ -1035,6 +1044,85 @@ func loadRegistryTransport(log *zap.SugaredLogger) http.RoundTripper {
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool},
 	}
+}
+
+// watchSSE connects to the registry management SSE endpoint and triggers
+// immediate polls when push events arrive. Reconnects with backoff on errors.
+// Polling continues as fallback when SSE is unavailable.
+func (u *Updater) watchSSE(ctx context.Context) {
+	sseURL := u.managementURL() + "/events"
+	u.log.Infow("SSE watcher starting", "url", sseURL)
+
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		err := u.readSSEStream(ctx, sseURL)
+		if err != nil && ctx.Err() == nil {
+			u.log.Warnw("SSE connection error, reconnecting", "error", err, "backoff", backoff)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff capped at maxBackoff
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func (u *Updater) readSSEStream(ctx context.Context, sseURL string) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", sseURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := u.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("SSE endpoint returned %d", resp.StatusCode)
+	}
+
+	u.log.Info("SSE connected")
+	// Reset backoff on successful connection (caller will reset)
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: push") {
+			// Next data line is the push event — trigger poll
+			select {
+			case u.kickPoll <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+// managementURL derives the registry management API URL (:5001) from the
+// registry URL. Replaces the port with 5001.
+func (u *Updater) managementURL() string {
+	url := u.cfg.RegistryURL
+	// Replace :5000 with :5001 if present
+	url = strings.Replace(url, ":5000", ":5001", 1)
+	return url
 }
 
 // trimScheme removes http:// or https:// from a URL to get a registry host.

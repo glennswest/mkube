@@ -2,7 +2,8 @@
 //
 // Runs the OCI Distribution v2 registry on :5000, polls GHCR for new image
 // digests (ImageWatcher), and optionally syncs local pushes upstream
-// (UpstreamSyncer). Push events are forwarded to mkube via HTTP webhook.
+// (UpstreamSyncer). Push events are forwarded to mkube via HTTP webhook
+// and streamed to mkube-update via SSE.
 //
 // This container boots before mkube in the boot order, solving the
 // chicken-and-egg problem where mkube needs the registry to pull its
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +31,49 @@ import (
 )
 
 var version = "dev"
+
+// PushFanout distributes push events from a single source channel to
+// multiple subscribers (webhook forwarder, SSE endpoint, etc.).
+type PushFanout struct {
+	mu   sync.RWMutex
+	subs map[int]chan registry.PushEvent
+	next int
+}
+
+// Subscribe returns a channel that receives push events. Caller must
+// call Unsubscribe when done.
+func (f *PushFanout) Subscribe() (int, <-chan registry.PushEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.next
+	f.next++
+	ch := make(chan registry.PushEvent, 16)
+	f.subs[id] = ch
+	return id, ch
+}
+
+// Unsubscribe removes a subscriber and closes its channel.
+func (f *PushFanout) Unsubscribe(id int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ch, ok := f.subs[id]; ok {
+		close(ch)
+		delete(f.subs, id)
+	}
+}
+
+// Broadcast sends an event to all current subscribers.
+// Non-blocking: if a subscriber's buffer is full, the event is dropped for that subscriber.
+func (f *PushFanout) Broadcast(evt registry.PushEvent) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	for _, ch := range f.subs {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+}
 
 func main() {
 	logger, _ := zap.NewProduction()
@@ -75,19 +120,28 @@ func main() {
 	defer func() { _ = reg.Shutdown(ctx) }()
 	log.Infow("registry started", "addr", cfg.ListenAddr, "store", cfg.StorePath)
 
-	// Webhook: drain PushEvents and POST to mkube's push-notify endpoint
-	if cfg.NotifyURL != "" {
-		go webhookForwarder(ctx, reg.PushEvents, cfg.NotifyURL, log)
-	} else {
-		// Drain events to prevent channel backup
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
+	// Fan-out: distribute push events to multiple consumers
+	fanout := &PushFanout{subs: make(map[int]chan registry.PushEvent)}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-reg.PushEvents:
+				if !ok {
 					return
-				case <-reg.PushEvents:
 				}
+				fanout.Broadcast(evt)
 			}
+		}
+	}()
+
+	// Webhook subscriber
+	if cfg.NotifyURL != "" {
+		subID, ch := fanout.Subscribe()
+		go func() {
+			webhookForwarder(ctx, ch, cfg.NotifyURL, log)
+			fanout.Unsubscribe(subID)
 		}()
 	}
 
@@ -138,6 +192,43 @@ func main() {
 				return
 			case t := <-ticker.C:
 				_, err := fmt.Fprintf(w, "data: %d\n\n", t.Unix())
+				if err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	})
+	// SSE endpoint: stream push events to subscribers (e.g. mkube-update)
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		subID, ch := fanout.Subscribe()
+		defer fanout.Unsubscribe(subID)
+
+		// Send initial heartbeat
+		fmt.Fprintf(w, ": heartbeat\n\n")
+		flusher.Flush()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case evt, ok := <-ch:
+				if !ok {
+					return
+				}
+				data, _ := json.Marshal(evt)
+				_, err := fmt.Fprintf(w, "event: push\ndata: %s\n\n", data)
 				if err != nil {
 					return
 				}
