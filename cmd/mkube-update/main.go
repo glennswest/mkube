@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -203,6 +205,11 @@ func (u *Updater) run(ctx context.Context) {
 	// Start SSE watcher for instant push notifications
 	go u.watchSSE(ctx)
 
+	// Start half-open socket watcher for instant mkube crash detection.
+	// Maintains a persistent TCP connection to mkube — when mkube dies,
+	// the socket breaks immediately and we restart it.
+	go u.watchMkubeSocket(ctx)
+
 	// Initial poll immediately
 	u.poll(ctx)
 	u.checkContainerHealth(ctx)
@@ -357,6 +364,78 @@ func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 	}
 
 	u.log.Infow("watchdog: container restarted successfully", "container", name)
+}
+
+// watchMkubeSocket maintains a persistent TCP connection to the mkube API.
+// When mkube crashes, the kernel sends RST/FIN and the read returns immediately.
+// This gives sub-second crash detection vs. polling every N seconds.
+func (u *Updater) watchMkubeSocket(ctx context.Context) {
+	if u.cfg.MkubeAPI == "" {
+		u.log.Info("watchMkubeSocket: no mkubeAPI configured, skipping")
+		return
+	}
+
+	parsed, err := url.Parse(u.cfg.MkubeAPI)
+	if err != nil {
+		u.log.Warnw("watchMkubeSocket: bad mkubeAPI URL", "error", err)
+		return
+	}
+	host := parsed.Host
+	if !strings.Contains(host, ":") {
+		host += ":8082"
+	}
+
+	u.log.Infow("half-open socket watcher starting", "target", host)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, err := net.DialTimeout("tcp", host, 5*time.Second)
+		if err != nil {
+			// mkube not up yet — check and restart, then wait before retry
+			u.log.Debugw("watchMkubeSocket: connect failed", "error", err)
+			u.checkContainerHealth(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+			continue
+		}
+
+		u.log.Infow("half-open socket connected to mkube", "target", host)
+
+		// Keep reading — when mkube dies, Read returns error immediately.
+		// Set a generous read deadline so we don't time out on idle connections.
+		buf := make([]byte, 1)
+		for {
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			_, err := conn.Read(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					// Timeout is fine — connection still alive, reset deadline
+					continue
+				}
+				// Connection dropped — mkube likely crashed
+				u.log.Warnw("half-open socket: mkube connection lost, restarting",
+					"target", host, "error", err)
+				conn.Close()
+				u.checkContainerHealth(ctx)
+				break
+			}
+		}
+
+		// Brief cooldown before reconnecting
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // getDigest queries the local registry for the current digest of repo:tag.

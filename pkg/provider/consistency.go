@@ -1348,8 +1348,8 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 
 			// Re-seed DHCP pools/reservations/forwarders — the database
 			// may be empty after restart (redb ephemeral).
-			if net, ok := p.networks[dead.netName]; ok {
-				go p.seedDNSConfig(context.Background(), net)
+			if _, ok := p.networks[dead.netName]; ok {
+				p.triggerNetworkReseed(dead.netName)
 			}
 		} else {
 			log.Errorw("DNS pod restarted but port 53 still dead, halting DNS repair",

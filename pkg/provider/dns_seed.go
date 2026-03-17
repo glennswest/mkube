@@ -297,9 +297,17 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 		}
 
 		if needsSeed {
-			// Use background context — seedDNSConfig retries for 30s
-			// and shouldn't be tied to the reconcile tick deadline
-			go p.seedDNSConfig(context.Background(), net)
+			// Guard with reseedRunning to prevent unbounded goroutine growth
+			// when multiple networks need re-seeding concurrently.
+			if p.reseedRunning.CompareAndSwap(false, true) {
+				netCopy := net
+				go func() {
+					defer p.reseedRunning.Store(false)
+					ctx2, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer cancel()
+					p.seedDNSConfig(ctx2, netCopy)
+				}()
+			}
 			continue
 		}
 

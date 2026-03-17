@@ -15,6 +15,13 @@ import (
 	"github.com/glennswest/mkube/pkg/runtime"
 )
 
+// stateChangeEvent is sent on the bounded channel when a container's state changes.
+type stateChangeEvent struct {
+	containerName string
+	oldStatus     string
+	newStatus     string
+}
+
 // Manager handles the full container lifecycle on RouterOS:
 //   - Keepalive: restarts start-on-boot containers that stop
 //   - Probes: K8s-style startup/liveness/readiness probes
@@ -27,6 +34,12 @@ type Manager struct {
 
 	mu    sync.RWMutex
 	units map[string]*ContainerUnit
+
+	// Bounded channels for callback dispatch — prevents unbounded goroutine
+	// growth when containers flap (stop/restart/fail rapidly). A single
+	// consumer goroutine processes events sequentially.
+	stateChangeCh chan stateChangeEvent
+	failedCh      chan string
 
 	// OnFailed is called when a container exceeds max restarts and is marked
 	// as failed. The provider registers this to trigger a full pod recreate
@@ -114,10 +127,12 @@ type HealthCheck struct {
 // (e.g., StormBase's stormd manages container restarts).
 func NewManager(cfg config.LifecycleConfig, rt runtime.ContainerRuntime, log *zap.SugaredLogger) *Manager {
 	return &Manager{
-		cfg:   cfg,
-		rt:    rt,
-		log:   log,
-		units: make(map[string]*ContainerUnit),
+		cfg:           cfg,
+		rt:            rt,
+		log:           log,
+		units:         make(map[string]*ContainerUnit),
+		stateChangeCh: make(chan stateChangeEvent, 64),
+		failedCh:      make(chan string, 16),
 	}
 }
 
@@ -162,10 +177,37 @@ func (m *Manager) GetUnitReady(name string) bool {
 	return false
 }
 
-// fireStateChanged safely calls the OnStateChanged callback if registered.
+// fireStateChanged enqueues a state change event for the callback consumer.
+// Non-blocking: drops the event if the channel is full (prevents goroutine leak).
 func (m *Manager) fireStateChanged(containerName, oldStatus, newStatus string) {
 	if m.OnStateChanged != nil {
-		go m.OnStateChanged(containerName, oldStatus, newStatus)
+		select {
+		case m.stateChangeCh <- stateChangeEvent{containerName, oldStatus, newStatus}:
+		default:
+			m.log.Debugw("state change channel full, dropping event",
+				"container", containerName, "from", oldStatus, "to", newStatus)
+		}
+	}
+}
+
+// callbackConsumer is a single goroutine that processes all state change and
+// failed events sequentially. This replaces the old pattern of spawning a new
+// goroutine per event, which caused unbounded goroutine growth (OOM) when
+// containers flapped rapidly.
+func (m *Manager) callbackConsumer(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt := <-m.stateChangeCh:
+			if m.OnStateChanged != nil {
+				m.OnStateChanged(evt.containerName, evt.oldStatus, evt.newStatus)
+			}
+		case name := <-m.failedCh:
+			if m.OnFailed != nil {
+				m.OnFailed(name)
+			}
+		}
 	}
 }
 
@@ -232,6 +274,11 @@ func (m *Manager) RunWatchdog(ctx context.Context) {
 	if interval == 0 {
 		interval = 5 * time.Second
 	}
+
+	// Start the single callback consumer goroutine. All state change and
+	// failed events are funneled through bounded channels to this goroutine,
+	// preventing unbounded goroutine growth when containers flap.
+	go m.callbackConsumer(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -540,7 +587,11 @@ func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 		unit.Status = "failed"
 		m.fireStateChanged(unit.Name, oldStatus, "failed")
 		if m.OnFailed != nil {
-			go m.OnFailed(unit.Name)
+			select {
+			case m.failedCh <- unit.Name:
+			default:
+				m.log.Warnw("failed channel full, dropping event", "container", unit.Name)
+			}
 		}
 		return
 	}

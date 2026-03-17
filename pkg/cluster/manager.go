@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -50,9 +51,10 @@ type Manager struct {
 	log      *zap.SugaredLogger
 	syncMgr  *SyncManager
 
-	mu       sync.RWMutex
-	peerUp   map[string]bool
-	lastSeen map[string]time.Time
+	mu           sync.RWMutex
+	peerUp       map[string]bool
+	lastSeen     map[string]time.Time
+	peerResyncing sync.Map // map[string]*atomic.Bool — guards per-peer resync
 }
 
 // New creates a cluster manager. arch is the local node's architecture (e.g. "arm64", "amd64").
@@ -180,8 +182,19 @@ func (m *Manager) peerMonitorLoop(ctx context.Context) {
 				m.mu.Unlock()
 
 				if !wasUp && healthy {
-					m.log.Infow("peer came up, triggering full resync", "peer", peer.Name)
-					go m.syncMgr.FullResyncWithPeer(ctx, peer)
+					// Guard: only one resync goroutine per peer at a time
+					flagI, _ := m.peerResyncing.LoadOrStore(peer.Name, &atomic.Bool{})
+					flag := flagI.(*atomic.Bool)
+					if flag.CompareAndSwap(false, true) {
+						m.log.Infow("peer came up, triggering full resync", "peer", peer.Name)
+						peerCopy := peer
+						go func() {
+							defer flag.Store(false)
+							m.syncMgr.FullResyncWithPeer(ctx, peerCopy)
+						}()
+					} else {
+						m.log.Debugw("resync already in progress, skipping", "peer", peer.Name)
+					}
 				} else if wasUp && !healthy {
 					m.log.Warnw("peer went down", "peer", peer.Name)
 				}
