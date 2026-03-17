@@ -29,18 +29,21 @@ type BareMetalHost struct {
 }
 
 type BMHSpec struct {
-	BMC            BMCDetails `json:"bmc,omitempty"`
-	BootMACAddress string     `json:"bootMACAddress"`
-	Online         *bool      `json:"online,omitempty"`
-	Image          string     `json:"image,omitempty"`
-	Network        string     `json:"network,omitempty"`        // network CRD name (e.g. "g10")
-	IP             string     `json:"ip,omitempty"`             // static IP for DHCP reservation
-	Hostname       string     `json:"hostname,omitempty"`       // hostname for DHCP reservation
-	NextServer     string     `json:"nextServer,omitempty"`     // PXE next-server (TFTP)
-	BootFile       string     `json:"bootFile,omitempty"`       // PXE boot file (BIOS)
-	BootFileEFI    string     `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
-	BootConfigRef  string     `json:"bootConfigRef,omitempty"`  // reference to a BootConfig CRD name
-	Disk           string     `json:"disk,omitempty"`           // ISCSIDisk name for iSCSI root disk boot
+	BMC            BMCDetails      `json:"bmc,omitempty"`
+	BootMACAddress string          `json:"bootMACAddress"`
+	Online         *bool           `json:"online,omitempty"`
+	Image          string          `json:"image,omitempty"`
+	Network        string          `json:"network,omitempty"`        // network CRD name (e.g. "g10")
+	IP             string          `json:"ip,omitempty"`             // static IP for DHCP reservation
+	Hostname       string          `json:"hostname,omitempty"`       // hostname for DHCP reservation
+	NextServer     string          `json:"nextServer,omitempty"`     // PXE next-server (TFTP)
+	BootFile       string          `json:"bootFile,omitempty"`       // PXE boot file (BIOS)
+	BootFileEFI    string          `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
+	BootConfigRef  string          `json:"bootConfigRef,omitempty"`  // reference to a BootConfig CRD name (legacy — use Template for cloudid)
+	Disk           string          `json:"disk,omitempty"`           // ISCSIDisk name for iSCSI root disk boot
+	Template       string          `json:"template,omitempty"`       // cloudid template ref (e.g. "agent-runner.ign.json")
+	Ignition       json.RawMessage `json:"ignition,omitempty"`       // base Ignition v3 JSON (platform config — disks, filesystems)
+	Kickstart      string          `json:"kickstart,omitempty"`      // base kickstart text (platform config)
 }
 
 type BMCDetails struct {
@@ -62,6 +65,12 @@ type BMHStatus struct {
 	AvailableImages   []string           `json:"availableImages,omitempty"`
 	Hardware          *HardwareDetails   `json:"hardware,omitempty"`
 	NetworkInterfaces map[string]NICInfo `json:"networkInterfaces,omitempty"`
+	// Operator-managed fields (written by bmh-operator via PATCH)
+	State           string `json:"state,omitempty"`           // Operator state: Idle, PoweringOn, Provisioning, Ready, PoweringOff, Error
+	LastStateChange string `json:"lastStateChange,omitempty"` // RFC3339 timestamp of last state transition
+	OperatorVersion string `json:"operatorVersion,omitempty"` // bmh-operator version managing this host
+	SerialActive    bool   `json:"serialActive,omitempty"`    // IPMI SOL session active
+	IPMIReachable   bool   `json:"ipmiReachable,omitempty"`   // Last IPMI ping result
 }
 
 // HardwareDetails holds full hardware inventory for a bare metal host.
@@ -97,6 +106,11 @@ func (b *BareMetalHost) DeepCopy() *BareMetalHost {
 	if b.Spec.Online != nil {
 		v := *b.Spec.Online
 		out.Spec.Online = &v
+	}
+	if b.Spec.Ignition != nil {
+		ign := make(json.RawMessage, len(b.Spec.Ignition))
+		copy(ign, b.Spec.Ignition)
+		out.Spec.Ignition = ign
 	}
 	if b.Status.Hardware != nil {
 		hw := *b.Status.Hardware
@@ -692,6 +706,7 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 		ColumnDefinitions: []metav1.TableColumnDefinition{
 			{Name: "Name", Type: "string", Format: "name"},
 			{Name: "Status", Type: "string"},
+			{Name: "State", Type: "string"},
 			{Name: "Power", Type: "string"},
 			{Name: "Network", Type: "string"},
 			{Name: "Image", Type: "string"},
@@ -712,8 +727,18 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 		image := h.Spec.Image
 		if h.Spec.Disk != "" {
 			image = "disk:" + h.Spec.Disk
+		} else if h.Spec.Template != "" {
+			image = "tpl:" + h.Spec.Template
+			if h.Spec.Image != "" {
+				image = h.Spec.Image + " tpl:" + h.Spec.Template
+			}
 		} else if image == "" {
 			image = "localboot"
+		}
+
+		state := h.Status.State
+		if state == "" {
+			state = "-"
 		}
 
 		age := "<unknown>"
@@ -744,6 +769,7 @@ func bmhListToTable(hosts []BareMetalHost) *metav1.Table {
 			Cells: []interface{}{
 				h.Name,
 				h.Status.Phase,
+				state,
 				power,
 				network,
 				image,

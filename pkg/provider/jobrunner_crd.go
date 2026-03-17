@@ -131,7 +131,8 @@ func (s *WorkSchedule) FormatSummary() string {
 // JobRunnerSpec defines the desired state of a JobRunner.
 type JobRunnerSpec struct {
 	Pool          string            `json:"pool"`                    // pool name
-	BootConfigRef string            `json:"bootConfigRef"`           // BootConfig name (ignition with agent)
+	BootConfigRef string            `json:"bootConfigRef,omitempty"` // BootConfig name (legacy — use Template for cloudid)
+	Template      string            `json:"template,omitempty"`      // cloudid template ref (takes precedence over bootConfigRef)
 	Image         string            `json:"image,omitempty"`         // iSCSI CDROM or PXE image
 	IdleTimeout   int               `json:"idleTimeout,omitempty"`   // seconds before powering off idle host
 	ReclaimPolicy string            `json:"reclaimPolicy,omitempty"` // PowerOff (default), Retain
@@ -281,15 +282,17 @@ func (p *MicroKubeProvider) handleCreateJobRunner(w http.ResponseWriter, r *http
 		http.Error(w, "spec.pool is required", http.StatusBadRequest)
 		return
 	}
-	if jr.Spec.BootConfigRef == "" {
-		http.Error(w, "spec.bootConfigRef is required", http.StatusBadRequest)
+	if jr.Spec.Template == "" && jr.Spec.BootConfigRef == "" {
+		http.Error(w, "spec.template or spec.bootConfigRef is required", http.StatusBadRequest)
 		return
 	}
 
-	// Validate BootConfigRef
-	if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
-		http.Error(w, fmt.Sprintf("BootConfig %q not found", jr.Spec.BootConfigRef), http.StatusBadRequest)
-		return
+	// Validate BootConfigRef if set (not required when using cloudid Template)
+	if jr.Spec.BootConfigRef != "" {
+		if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+			http.Error(w, fmt.Sprintf("BootConfig %q not found", jr.Spec.BootConfigRef), http.StatusBadRequest)
+			return
+		}
 	}
 
 	jr.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "JobRunner"}
@@ -559,11 +562,17 @@ func jobRunnerListToTable(items []JobRunner) *metav1.Table {
 			},
 		})
 
+		// Show Template (cloudid) or BootConfigRef (legacy)
+		configRef := jr.Spec.BootConfigRef
+		if jr.Spec.Template != "" {
+			configRef = "tpl:" + jr.Spec.Template
+		}
+
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
 				jr.Name,
 				jr.Spec.Pool,
-				jr.Spec.BootConfigRef,
+				configRef,
 				jr.Status.ReservedHosts,
 				jr.Status.ActiveJobs,
 				jr.Status.TotalCompleted,
@@ -619,13 +628,28 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 		}
 	}
 
-	// Validate BootConfigRef
+	// Validate provisioning config (Template or BootConfigRef)
 	for name, jr := range p.jobRunners {
-		if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+		if jr.Spec.Template != "" {
+			// cloudid template — no local validation (cloudid resolves templates)
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("jobrunner-ref/%s", name),
+				Status:  "pass",
+				Message: fmt.Sprintf("uses cloudid template %q", jr.Spec.Template),
+			})
+		} else if jr.Spec.BootConfigRef != "" {
+			if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("jobrunner-ref/%s", name),
+					Status:  "warn",
+					Message: fmt.Sprintf("references BootConfig %q which does not exist", jr.Spec.BootConfigRef),
+				})
+			}
+		} else {
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("jobrunner-ref/%s", name),
 				Status:  "warn",
-				Message: fmt.Sprintf("references BootConfig %q which does not exist", jr.Spec.BootConfigRef),
+				Message: "has neither template nor bootConfigRef",
 			})
 		}
 	}

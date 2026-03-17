@@ -128,10 +128,15 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 			}
 		}
 
-		// Set BMH bootConfigRef and power on
+		// Set BMH provisioning config and power on
 		for _, bmh := range p.bareMetalHosts {
 			if bmh.Name == bmhName {
-				bmh.Spec.BootConfigRef = runner.Spec.BootConfigRef
+				// cloudid Template takes precedence over legacy BootConfigRef
+				if runner.Spec.Template != "" {
+					bmh.Spec.Template = runner.Spec.Template
+				} else {
+					bmh.Spec.BootConfigRef = runner.Spec.BootConfigRef
+				}
 				if runner.Spec.Image != "" {
 					bmh.Spec.Image = runner.Spec.Image
 				}
