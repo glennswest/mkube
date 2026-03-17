@@ -55,10 +55,10 @@ tarball: build
 	@bash hack/make-tarball.sh dist/$(BINARY)-$(ARCH) deploy/config.yaml dist/$(BINARY)-$(ARCH).tar
 
 ## Deploy via local registry — build container, push, mkube-update picks it up.
-## Also syncs config + boot-order to the device so they stay current.
 ## After push, waits up to 90s for mkube-update to swap in the new binary
 ## and verifies the running commit matches what was just built.
-deploy: build deploy-config
+## Use `make deploy-config` separately when config/boot-order files change.
+deploy: build
 	cp dist/$(BINARY)-$(ARCH) mkube
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
 	rm -f mkube
