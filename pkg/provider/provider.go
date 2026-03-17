@@ -57,6 +57,11 @@ const (
 	// annotationNode tracks which cluster node a pod is assigned to.
 	annotationNode = "vkube.io/node"
 
+	// annotationImageDigest stores the registry digest of the image used
+	// to create/update the pod. Survives restart via NATS persistence.
+	// Used to detect stale images on boot (session memory is empty).
+	annotationImageDigest = "vkube.io/image-digest"
+
 	// Device passthrough annotations (StormBase only)
 	annotationDeviceClass = "stormbase.io/device-class"
 	annotationDeviceCount = "stormbase.io/device-count"
@@ -551,6 +556,9 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	tracker.start(PhasePodReady)
 	p.pushLogMappings(ctx, pod, log)
 
+	// Stamp the deployed image digest so we can detect stale images on restart.
+	p.stampImageDigest(ctx, pod)
+
 	// Track the pod
 	p.pods[podKey(pod)] = pod.DeepCopy()
 
@@ -663,6 +671,9 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 		return p.CreatePod(ctx, pod)
 	}
+	// Stamp the deployed digest after successful update
+	p.stampImageDigest(ctx, pod)
+	p.pods[podKey(pod)] = pod.DeepCopy()
 	return nil
 }
 
@@ -1819,11 +1830,14 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			// all pods are tracked — restarted one-at-a-time per image group.
 			// Use bootCheckedImages to call RefreshImage once per unique image,
 			// then mark ALL pods with that image as stale (same fix as step 3c).
+			// Pass the stored image-digest annotation as hint so first-check-after-
+			// restart can detect stale images (session memory is empty on boot).
 			if pod.Annotations[annotationImagePolicy] == "auto" && pod.Annotations[annotationFile] == "" {
+				deployedDigest := pod.Annotations[annotationImageDigest]
 				for _, c := range pod.Spec.Containers {
 					changed, alreadyChecked := bootCheckedImages[c.Image]
 					if !alreadyChecked {
-						_, changed, err := p.deps.StorageMgr.RefreshImage(ctx, c.Image)
+						_, changed, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
 						if err != nil {
 							log.Warnw("failed to check image freshness", "pod", key, "image", c.Image, "error", err)
 							bootCheckedImages[c.Image] = false
@@ -2246,6 +2260,36 @@ func (p *MicroKubeProvider) notifyPodChange(ctx context.Context, pod *corev1.Pod
 	updated := pod.DeepCopy()
 	updated.Status = *status
 	p.notifyPodStatus(updated)
+}
+
+// stampImageDigest fetches the current registry digest for each container
+// image and stores it in a pod annotation. This annotation survives restart
+// (via NATS persistence) and allows boot-time image freshness checks to
+// compare against the actual deployed digest rather than empty session memory.
+func (p *MicroKubeProvider) stampImageDigest(ctx context.Context, pod *corev1.Pod) {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Image == "" || pod.Annotations[annotationFile] != "" {
+			continue
+		}
+		digest, err := p.deps.StorageMgr.GetCurrentDigest(ctx, c.Image)
+		if err != nil {
+			p.deps.Logger.Debugw("failed to get digest for annotation stamp",
+				"pod", podKey(pod), "image", c.Image, "error", err)
+			continue
+		}
+		pod.Annotations[annotationImageDigest] = digest
+		break // one digest per pod (all containers usually share the same image)
+	}
+	// Persist to NATS so the annotation survives restart
+	if p.deps.Store != nil {
+		storeKey := pod.Namespace + "/" + pod.Name
+		if _, err := p.deps.Store.Pods.PutJSON(context.Background(), storeKey, pod); err != nil {
+			p.deps.Logger.Debugw("failed to persist digest annotation", "pod", storeKey, "error", err)
+		}
+	}
 }
 
 // RunVirtualKubelet starts the full Virtual Kubelet node, registering

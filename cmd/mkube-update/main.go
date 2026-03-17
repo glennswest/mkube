@@ -639,11 +639,13 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	}
 	time.Sleep(2 * time.Second)
 
-	// Step 5: Remove old root-dir to force fresh extraction
+	// Step 5: Remove old root-dir to force fresh extraction.
+	// MUST use recursive removal — simple /file/remove fails silently on
+	// non-empty directories. If root-dir survives, RouterOS skips extraction
+	// and reuses the old binary.
 	if ct.rootDir != "" {
 		log.Infow("cleaning root-dir for fresh extraction", "rootDir", ct.rootDir)
-		// RouterOS file remove via REST API
-		_ = u.rosPost(ctx, "/file/remove", map[string]string{".id": ct.rootDir})
+		u.rosRemoveDirectory(ctx, ct.rootDir)
 		time.Sleep(time.Second)
 	}
 
@@ -979,6 +981,57 @@ func (u *Updater) rosPost(ctx context.Context, path string, body interface{}) er
 		return fmt.Errorf("POST %s: %d: %s", path, resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+// rosRemoveDirectory recursively removes a directory from the RouterOS filesystem.
+// Simple /file/remove fails silently on non-empty directories — RouterOS then
+// skips tarball extraction and reuses the old binary. This method lists all
+// children and removes them deepest-first before removing the parent.
+func (u *Updater) rosRemoveDirectory(ctx context.Context, path string) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return
+	}
+
+	// Try simple removal first (works on newer RouterOS 7.x for dirs)
+	if err := u.rosPost(ctx, "/file/remove", map[string]string{".id": path}); err == nil {
+		return
+	}
+
+	// Fallback: list all files, collect children, remove deepest-first
+	var files []map[string]interface{}
+	if err := u.rosGET(ctx, "/file", &files); err != nil {
+		u.log.Warnw("failed to list files for recursive root-dir removal", "path", path, "error", err)
+		return
+	}
+
+	type entry struct {
+		id, name string
+		depth    int
+	}
+	prefix := path + "/"
+	var children []entry
+	for _, f := range files {
+		name, _ := f["name"].(string)
+		id, _ := f[".id"].(string)
+		if name == path || strings.HasPrefix(name, prefix) {
+			children = append(children, entry{id: id, name: name, depth: strings.Count(name, "/")})
+		}
+	}
+
+	// Sort deepest-first
+	for i := 0; i < len(children); i++ {
+		for j := i + 1; j < len(children); j++ {
+			if children[i].depth < children[j].depth {
+				children[i], children[j] = children[j], children[i]
+			}
+		}
+	}
+
+	for _, child := range children {
+		_ = u.rosPost(ctx, "/file/remove", map[string]string{".id": child.id})
+	}
+	u.log.Infow("recursive root-dir removal", "path", path, "files_removed", len(children))
 }
 
 // ─── Wait helpers ───────────────────────────────────────────────────────────

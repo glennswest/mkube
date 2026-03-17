@@ -205,6 +205,8 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 	}
 
 	// Digest changed or first check this session — re-pull.
+	// On first check (no stored digest), always treat as changed since we
+	// don't know if the running container matches the current registry image.
 	storedDigest := ""
 	if cached, ok := m.images[imageRef]; ok {
 		storedDigest = cached.Digest
@@ -232,6 +234,71 @@ func (m *Manager) RefreshImage(ctx context.Context, imageRef string) (tarballPat
 	}
 
 	return hostPath, wasChanged, nil
+}
+
+// RefreshImageWithHint is like RefreshImage but accepts a deployedDigest hint.
+// On first check after restart (no session record), it compares the current
+// registry digest against deployedDigest instead of returning changed=false.
+// This solves the stale-binary-on-restart bug where the session has no memory
+// of what digest the running container was created from.
+func (m *Manager) RefreshImageWithHint(ctx context.Context, imageRef, deployedDigest string) (tarballPath string, changed bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	imageRef = m.rewriteLocalhost(imageRef)
+
+	currentDigest, err := m.getRegistryDigest(ctx, imageRef)
+	if err != nil {
+		return "", false, fmt.Errorf("getting digest for %s: %w", imageRef, err)
+	}
+
+	tarballName := dockersave.SanitizeImageRef(imageRef) + ".tar"
+	localTarball := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
+
+	// Compare against in-memory digest from this session first.
+	if cached, ok := m.images[imageRef]; ok && cached.Digest == currentDigest {
+		hostPath := m.HostVisiblePath(localTarball)
+		return hostPath, false, nil
+	}
+
+	// First check this session: use deployedDigest hint if available.
+	compareDigest := ""
+	if cached, ok := m.images[imageRef]; ok {
+		compareDigest = cached.Digest
+	} else if deployedDigest != "" {
+		compareDigest = deployedDigest
+	}
+
+	m.log.Infow("image refresh: pulling fresh",
+		"ref", imageRef,
+		"deployed_digest", truncDigest(compareDigest),
+		"registry_digest", truncDigest(currentDigest))
+	_ = os.Remove(localTarball)
+	_ = os.Remove(localTarball + ".digest")
+
+	if err := m.pullAndUpload(ctx, imageRef, localTarball); err != nil {
+		return "", false, fmt.Errorf("re-pulling image %s: %w", imageRef, err)
+	}
+
+	hostPath := m.HostVisiblePath(localTarball)
+
+	wasChanged := compareDigest != "" && compareDigest != currentDigest
+	m.images[imageRef] = &CachedImage{
+		Ref:         imageRef,
+		TarballPath: hostPath,
+		Digest:      currentDigest,
+		PulledAt:    time.Now(),
+		InUse:       1,
+	}
+
+	return hostPath, wasChanged, nil
+}
+
+// GetCurrentDigest returns the current registry digest for an image.
+// Used to stamp pods with the deployed digest for boot-time comparison.
+func (m *Manager) GetCurrentDigest(ctx context.Context, imageRef string) (string, error) {
+	imageRef = m.rewriteLocalhost(imageRef)
+	return m.getRegistryDigest(ctx, imageRef)
 }
 
 // getRegistryDigest queries the registry for the current manifest digest.
