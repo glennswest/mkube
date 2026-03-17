@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-17
+- **fix:** Shared HTTP transports for remaining per-call allocations — 8 call sites across 7 files were creating new `http.Transport` per call (each spawns internal goroutines). Provider package gets `oneshotTransport` (DisableKeepAlives) shared by pushLogMappings, probeHTTP, pollDHCPLeases, API log proxy. Cluster package gets `clusterTransport` (bounded pool) shared by peer monitor and sync sender. DZO operator and registry webhook forwarder also use shared transports.
 - **feat:** mkube-update crash watchdog — polls all watched containers each cycle, restarts any that are stopped immediately. No backoff for mkube — it's critical infrastructure that must always be up. Catches crashes regardless of image changes.
 - **feat:** mkube auto-recovery exponential backoff — reconciler restart attempts now tracked per-container with backoff after 3 rapid failures (30s→5min cap). Prevents restart storms on persistent crashes. Resets when container stays running for 2 minutes. Default restart policy is on (RestartPolicyAlways → start-on-boot=true).
 - **fix:** Goroutine leak in cluster SyncManager — `OnLocalWrite` spawned unbounded goroutines per peer on every NATS write. When peer was unreachable, goroutines piled up (10s HTTP timeout each) until OOM (exit status 2). Replaced with one sender goroutine per peer + bounded channel (64 events). Events dropped when channel full — caught up on full resync.
