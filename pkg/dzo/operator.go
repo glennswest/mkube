@@ -493,12 +493,21 @@ func (o *Operator) removeDedicatedInstance(ctx context.Context, zone *Zone) erro
 	return nil
 }
 
+// dzoTransport is a shared HTTP transport for DZO operator probe calls.
+var dzoTransport = &http.Transport{
+	MaxIdleConns:        5,
+	MaxIdleConnsPerHost: 1,
+	MaxConnsPerHost:     2,
+	IdleConnTimeout:     30 * time.Second,
+	DisableKeepAlives:   true,
+}
+
 func (o *Operator) waitForMicroDNS(ctx context.Context, endpoint string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: dzoTransport}
 
 	for {
 		select {

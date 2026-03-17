@@ -498,10 +498,7 @@ func (p *MicroKubeProvider) enrichRegistryStatus(ctx context.Context, reg *Regis
 
 // probeHTTP performs a simple HTTP GET health check.
 func probeHTTP(host, port, path string, timeout time.Duration) bool {
-	client := &http.Client{Timeout: timeout, Transport: &http.Transport{
-		MaxConnsPerHost:   1,
-		DisableKeepAlives: true,
-	}}
+	client := &http.Client{Timeout: timeout, Transport: oneshotTransport}
 	url := fmt.Sprintf("http://%s:%s%s", host, port, path)
 	resp, err := client.Get(url)
 	if err != nil {

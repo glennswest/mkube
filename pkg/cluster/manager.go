@@ -16,6 +16,16 @@ import (
 	"github.com/glennswest/mkube/pkg/store"
 )
 
+// clusterTransport is a shared HTTP transport for cluster peer communication
+// (health checks, sync pushes, full resync). Bounded connection pool prevents
+// goroutine accumulation when peers are unreachable or slow.
+var clusterTransport = &http.Transport{
+	MaxIdleConns:        10,
+	MaxIdleConnsPerHost: 2,
+	MaxConnsPerHost:     4,
+	IdleConnTimeout:     30 * time.Second,
+}
+
 // NodeStatus is written to the NODE_STATUS bucket as a heartbeat.
 type NodeStatus struct {
 	Name         string `json:"name"`
@@ -163,7 +173,7 @@ func (m *Manager) peerMonitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: clusterTransport}
 
 	for {
 		select {

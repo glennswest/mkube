@@ -69,6 +69,19 @@ const (
 	annotationDeviceAllocation = "stormbase.io/device-allocation"
 )
 
+// oneshotTransport is a shared HTTP transport for short-lived, fire-and-forget
+// HTTP calls (probes, log pushes, DHCP polls). DisableKeepAlives ensures
+// connections close immediately, preventing goroutine accumulation from idle
+// connection management. Shared across all callers to avoid per-call transport
+// allocation (each Transport spawns internal goroutines).
+var oneshotTransport = &http.Transport{
+	MaxIdleConns:        10,
+	MaxIdleConnsPerHost: 2,
+	MaxConnsPerHost:     4,
+	IdleConnTimeout:     30 * time.Second,
+	DisableKeepAlives:   true,
+}
+
 // Deps holds injected dependencies for the provider.
 type Deps struct {
 	Config       *config.Config
@@ -3012,10 +3025,7 @@ func (p *MicroKubeProvider) pushLogMappings(ctx context.Context, pod *corev1.Pod
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		logsClient := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
-			MaxConnsPerHost:   1,
-			DisableKeepAlives: true,
-		}}
+		logsClient := &http.Client{Timeout: 5 * time.Second, Transport: oneshotTransport}
 		resp, err := logsClient.Do(req)
 		if err != nil {
 			log.Warnw("failed to push log mapping", "container", rosName, "error", err)

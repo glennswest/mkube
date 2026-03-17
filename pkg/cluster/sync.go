@@ -64,7 +64,7 @@ func NewSyncManager(nodeName string, cfg config.ClusterConfig, st *store.Store, 
 		cfg:       cfg,
 		store:     st,
 		log:       log.Named("sync"),
-		client:    &http.Client{Timeout: 10 * time.Second},
+		client:    &http.Client{Timeout: 10 * time.Second, Transport: clusterTransport},
 		peerChans: make(map[string]chan SyncEvent, len(cfg.Peers)),
 	}
 	for _, peer := range cfg.Peers {

@@ -265,9 +265,18 @@ func main() {
 	log.Info("shutting down")
 }
 
+// webhookTransport is a shared transport for webhook POST calls to mkube.
+var webhookTransport = &http.Transport{
+	MaxIdleConns:        5,
+	MaxIdleConnsPerHost: 2,
+	MaxConnsPerHost:     2,
+	IdleConnTimeout:     30 * time.Second,
+	DisableKeepAlives:   true,
+}
+
 // webhookForwarder drains PushEvents and POSTs each to the mkube push-notify endpoint.
 func webhookForwarder(ctx context.Context, events <-chan registry.PushEvent, notifyURL string, log *zap.SugaredLogger) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: webhookTransport}
 
 	for {
 		select {

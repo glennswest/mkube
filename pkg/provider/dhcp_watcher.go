@@ -400,10 +400,7 @@ func (p *MicroKubeProvider) pollDHCPLeases(ctx context.Context, log *zap.Sugared
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-		MaxConnsPerHost:   1,
-		DisableKeepAlives: true,
-	}}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: oneshotTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Debugw("DHCP lease fetch failed", "network", networkName, "error", err)
