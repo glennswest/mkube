@@ -118,6 +118,15 @@ type MicroKubeProvider struct {
 	clusterMgr         *cluster.Manager             // nil if clustering is disabled
 	kickReconcile      chan struct{}                 // event-driven reconcile trigger (buffered 1)
 	kickScheduler      chan struct{}                 // event-driven scheduler trigger (buffered 1)
+	restartBackoff     map[string]*containerRestartState // container name -> restart backoff tracking
+}
+
+// containerRestartState tracks restart attempts for exponential backoff.
+type containerRestartState struct {
+	attempts    int
+	lastAttempt time.Time
+	lastRunning time.Time
+	backoff     time.Duration
 }
 
 // SetStore sets the NATS store on the provider (used for deferred NATS connection).
@@ -189,6 +198,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		networkFailures: make(map[string]int),
 		kickReconcile:   make(chan struct{}, 1),
 		kickScheduler:   make(chan struct{}, 1),
+		restartBackoff:  make(map[string]*containerRestartState),
 	}
 
 	// Load built-in default ConfigMaps derived from mkube config
@@ -1656,10 +1666,26 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 	// 2c. Auto-recover stopped/faulted containers.
 	// Containers that are stopped but belong to tracked pods with start-on-boot=yes
-	// should be restarted. If restart fails (e.g. veth gone), remove the container
-	// from actualByName so step 3 recreates the entire pod.
+	// should be restarted. Uses exponential backoff after 3 rapid restart attempts
+	// to avoid restart storms on persistent failures. If restart fails (e.g. veth gone),
+	// remove the container from actualByName so step 3 recreates the entire pod.
+	const (
+		recoveryBackoffThreshold = 3
+		recoveryInitialBackoff   = 30 * time.Second
+		recoveryMaxBackoff       = 5 * time.Minute
+		recoveryStableWindow     = 2 * time.Minute
+	)
 	for name, ct := range actualByName {
 		if ct.IsRunning() {
+			// Track running state for backoff reset
+			if rs, ok := p.restartBackoff[name]; ok && rs.attempts > 0 {
+				rs.lastRunning = time.Now()
+				if time.Since(rs.lastAttempt) > recoveryStableWindow {
+					log.Infow("RECOVERY: container stable, resetting backoff", "container", name)
+					rs.attempts = 0
+					rs.backoff = 0
+				}
+			}
 			continue
 		}
 		if ct.StartOnBoot != "true" {
@@ -1683,23 +1709,58 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			continue // orphan, handled elsewhere
 		}
 
+		// Check restart backoff
+		rs := p.restartBackoff[name]
+		if rs == nil {
+			rs = &containerRestartState{}
+			p.restartBackoff[name] = rs
+		}
+		if rs.backoff > 0 && time.Since(rs.lastAttempt) < rs.backoff {
+			log.Debugw("RECOVERY: container stopped but in backoff, skipping",
+				"container", name, "backoff", rs.backoff,
+				"remaining", rs.backoff-time.Since(rs.lastAttempt))
+			continue
+		}
+
 		comment := ct.Comment
 		if comment == "" {
 			comment = "no error detail"
 		}
-		log.Warnw("RECOVERY: stopped container detected",
-			"container", name, "comment", comment, "id", ct.ID)
+
+		rs.attempts++
+		rs.lastAttempt = time.Now()
+
+		// Calculate backoff for next attempt if past threshold
+		if rs.attempts > recoveryBackoffThreshold {
+			if rs.backoff == 0 {
+				rs.backoff = recoveryInitialBackoff
+			} else {
+				rs.backoff *= 2
+				if rs.backoff > recoveryMaxBackoff {
+					rs.backoff = recoveryMaxBackoff
+				}
+			}
+			log.Warnw("RECOVERY: stopped container detected (backoff active)",
+				"container", name, "comment", comment, "id", ct.ID,
+				"attempt", rs.attempts, "nextBackoff", rs.backoff)
+		} else {
+			log.Warnw("RECOVERY: stopped container detected",
+				"container", name, "comment", comment, "id", ct.ID,
+				"attempt", rs.attempts)
+		}
+
 		p.recordEvent(ownerPod, "ContainerStopped",
-			fmt.Sprintf("Container %s stopped: %s", name, comment), "Warning")
+			fmt.Sprintf("Container %s stopped (attempt %d): %s", name, rs.attempts, comment), "Warning")
 
 		// Attempt restart first — cheapest fix
 		if err := p.deps.Runtime.StartContainer(ctx, ct.ID); err == nil {
 			// Verify it actually came up
 			time.Sleep(2 * time.Second)
 			if updated, err := p.deps.Runtime.GetContainer(ctx, name); err == nil && updated.IsRunning() {
-				log.Infow("RECOVERY: container restarted successfully", "container", name)
+				log.Infow("RECOVERY: container restarted successfully",
+					"container", name, "attempt", rs.attempts)
 				p.recordEvent(ownerPod, "Restarted",
-					fmt.Sprintf("Container %s restarted after fault: %s", name, comment), "Normal")
+					fmt.Sprintf("Container %s restarted after fault (attempt %d): %s", name, rs.attempts, comment), "Normal")
 				globalStats.RecordRestart(true, name, comment)
 				actualByName[name] = *updated
 				continue
@@ -1708,7 +1769,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 		// Restart failed — destroy container, veths, mounts so step 3 recreates
 		log.Warnw("RECOVERY: restart failed, destroying for full recreation",
-			"container", name, "comment", comment)
+			"container", name, "comment", comment, "attempt", rs.attempts)
 		globalStats.RecordRestart(false, name, comment)
 		p.stopAndRemoveContainer(ctx, name, ct.ID)
 		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
