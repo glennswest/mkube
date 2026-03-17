@@ -136,6 +136,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadJobRunnersFromStore(context.Background())
 	p.LoadJobsFromStore(context.Background())
 	p.startDHCPSubscription(context.Background())
+	go p.RunResourceWatchers(context.Background())
 }
 
 // SetClusterManager sets the cluster manager on the provider.

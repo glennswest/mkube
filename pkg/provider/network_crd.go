@@ -524,6 +524,7 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 
 	// Rebuild DHCP index on reservation changes
 	p.rebuildDHCPIndex()
+	p.triggerNetworkReseed(name)
 	p.triggerReconcile()
 
 	podWriteJSON(w, http.StatusOK, &net)
@@ -569,6 +570,7 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 
 	// Rebuild DHCP index on reservation changes
 	p.rebuildDHCPIndex()
+	p.triggerNetworkReseed(name)
 	p.triggerReconcile()
 
 	podWriteJSON(w, http.StatusOK, merged)
