@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-17
+- **fix:** Goroutine leak in cluster SyncManager — `OnLocalWrite` spawned unbounded goroutines per peer on every NATS write. When peer was unreachable, goroutines piled up (10s HTTP timeout each) until OOM (exit status 2). Replaced with one sender goroutine per peer + bounded channel (64 events). Events dropped when channel full — caught up on full resync.
 - **feat:** Post-replace health verification + rollback for mkube-update. After replacing a container, mkube-update now monitors for 15s to detect startup crashes. On failure: 3 restart retries, then automatic rollback to the previous image tarball. Previous tarballs preserved via rename (`-prev.tar`) before each update. Covers CRITICAL case where both new and previous images fail. Digest reverted on rollback so next poll retries.
 - **feat:** BMH cloudid integration fields — `spec.template` (cloudid template ref, takes precedence over `spec.bootConfigRef`), `spec.ignition` (base Ignition v3 JSON for platform config), `spec.kickstart` (base kickstart text). Enables cloudid variable substitution and ignition merge for provisioning.
 - **feat:** BMH operator status fields — `status.state` (Idle/PoweringOn/Provisioning/Ready/PoweringOff/Error), `status.lastStateChange`, `status.operatorVersion`, `status.serialActive`, `status.ipmiReachable`. Written by bmh-operator via PATCH; mkube stores/serves them opaquely.

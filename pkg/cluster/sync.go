@@ -47,21 +47,39 @@ var syncedBuckets = []string{
 
 // SyncManager handles push-on-write replication and full resync.
 type SyncManager struct {
-	nodeName string
-	cfg      config.ClusterConfig
-	store    *store.Store
-	log      *zap.SugaredLogger
-	client   *http.Client
+	nodeName  string
+	cfg       config.ClusterConfig
+	store     *store.Store
+	log       *zap.SugaredLogger
+	client    *http.Client
+	peerChans map[string]chan SyncEvent // per-peer bounded event channel
 }
 
-// NewSyncManager creates a new sync manager.
+// NewSyncManager creates a new sync manager. Starts one sender goroutine per
+// peer with a bounded channel to prevent unbounded goroutine growth when peers
+// are unreachable.
 func NewSyncManager(nodeName string, cfg config.ClusterConfig, st *store.Store, log *zap.SugaredLogger) *SyncManager {
-	return &SyncManager{
-		nodeName: nodeName,
-		cfg:      cfg,
-		store:    st,
-		log:      log.Named("sync"),
-		client:   &http.Client{Timeout: 10 * time.Second},
+	sm := &SyncManager{
+		nodeName:  nodeName,
+		cfg:       cfg,
+		store:     st,
+		log:       log.Named("sync"),
+		client:    &http.Client{Timeout: 10 * time.Second},
+		peerChans: make(map[string]chan SyncEvent, len(cfg.Peers)),
+	}
+	for _, peer := range cfg.Peers {
+		ch := make(chan SyncEvent, 64)
+		sm.peerChans[peer.Name] = ch
+		go sm.peerSendLoop(peer, ch)
+	}
+	return sm
+}
+
+// peerSendLoop processes sync events for a single peer sequentially.
+// At most one HTTP call per peer at a time — no goroutine explosion.
+func (s *SyncManager) peerSendLoop(peer config.PeerConfig, ch <-chan SyncEvent) {
+	for evt := range ch {
+		s.pushToPeer(peer, evt)
 	}
 }
 
@@ -84,7 +102,16 @@ func (s *SyncManager) OnLocalWrite(bucket, key, op string, value []byte) {
 	}
 
 	for _, peer := range s.cfg.Peers {
-		go s.pushToPeer(peer, evt)
+		ch, ok := s.peerChans[peer.Name]
+		if !ok {
+			continue
+		}
+		select {
+		case ch <- evt:
+		default:
+			s.log.Debugw("sync channel full, dropping event (will catch up on resync)",
+				"peer", peer.Name, "bucket", bucket, "key", key)
+		}
 	}
 }
 
