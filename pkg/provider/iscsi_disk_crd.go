@@ -1,13 +1,13 @@
 package provider
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/glennswest/mkube/pkg/diskimg"
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/store"
 )
@@ -750,21 +751,17 @@ func decompressFile(path, compression string) (string, error) {
 			return "", fmt.Errorf("decompressing xz: %w", err)
 		}
 	case "gz":
-		// Use exec for gzip (simpler than importing compress/gzip for large files)
-		dstFile.Close()
-		srcFile.Close()
-		cmd := exec.Command("gzip", "-d", "-k", "-c", path)
-		out, err := os.Create(outPath)
+		gzReader, err := gzip.NewReader(srcFile)
 		if err != nil {
-			return "", err
+			os.Remove(outPath)
+			return "", fmt.Errorf("creating gzip reader: %w", err)
 		}
-		cmd.Stdout = out
-		err = cmd.Run()
-		out.Close()
-		if err != nil {
+		if _, err := io.Copy(dstFile, gzReader); err != nil {
+			gzReader.Close()
 			os.Remove(outPath)
 			return "", fmt.Errorf("decompressing gz: %w", err)
 		}
+		gzReader.Close()
 	default:
 		os.Remove(outPath)
 		return "", fmt.Errorf("unsupported compression: %s", compression)
@@ -774,16 +771,14 @@ func decompressFile(path, compression string) (string, error) {
 	return finalPath, nil
 }
 
-// convertDiskToRaw converts a vmdk/qcow2/vhd image to raw format using qemu-img.
+// convertDiskToRaw converts a vmdk/qcow2/vhd image to raw format using pure Go.
 // Returns the path to the raw output (temp file, caller must clean up).
 func convertDiskToRaw(inputPath, format string) (string, error) {
 	outputPath := inputPath + ".converting.raw"
 
-	cmd := exec.Command("qemu-img", "convert", "-f", format, "-O", "raw", inputPath, outputPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if err := diskimg.ConvertToRaw(inputPath, format, outputPath); err != nil {
 		os.Remove(outputPath)
-		return "", fmt.Errorf("qemu-img convert failed: %w\noutput: %s", err, string(out))
+		return "", fmt.Errorf("disk image conversion failed (%s→raw): %w", format, err)
 	}
 
 	return outputPath, nil
@@ -848,16 +843,66 @@ func ddCopy(src, dst string) error {
 	return dstFile.Sync()
 }
 
-// sparseCopy copies src to dst preserving sparse holes.
-// Falls back to regular copy if cp --sparse=auto is not available.
+// sparseCopy copies src to dst preserving sparse holes (pure Go).
+// Detects zero-filled blocks and skips them to create sparse output.
 func sparseCopy(src, dst string) error {
-	// Try cp --sparse=auto first (Linux)
-	cmd := exec.Command("cp", "--sparse=auto", src, dst)
-	if err := cmd.Run(); err != nil {
-		// Fallback: regular file copy
-		return regularCopy(src, dst)
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer srcFile.Close()
+
+	info, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	// Set output file size (sparse)
+	if err := dstFile.Truncate(info.Size()); err != nil {
+		return err
+	}
+
+	const blockSize = 64 * 1024 // 64KB blocks
+	buf := make([]byte, blockSize)
+	offset := int64(0)
+
+	for {
+		n, err := srcFile.Read(buf)
+		if n > 0 {
+			// Check if block is all zeros
+			if !isZeroBlock(buf[:n]) {
+				if _, werr := dstFile.WriteAt(buf[:n], offset); werr != nil {
+					return werr
+				}
+			}
+			// Zero blocks are skipped — sparse file has holes
+			offset += int64(n)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return dstFile.Sync()
+}
+
+// isZeroBlock checks if a byte slice contains only zeros.
+func isZeroBlock(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func regularCopy(src, dst string) error {
