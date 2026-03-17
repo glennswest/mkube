@@ -197,6 +197,38 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		deps.LifecycleMgr.OnFailed = func(containerName string) {
 			p.handleLifecycleFailed(containerName)
 		}
+
+		// Register state change callback for immediate pod status updates
+		// and reconcile kicks when containers stop/fail.
+		deps.LifecycleMgr.OnStateChanged = func(containerName, oldStatus, newStatus string) {
+			p.deps.Logger.Infow("container state changed",
+				"container", containerName, "from", oldStatus, "to", newStatus)
+
+			// Find owning pod and push immediate status update
+			p.mu.RLock()
+			var ownerPod *corev1.Pod
+			for _, pod := range p.pods {
+				for _, c := range pod.Spec.Containers {
+					if sanitizeName(pod, c.Name) == containerName {
+						ownerPod = pod
+						break
+					}
+				}
+				if ownerPod != nil {
+					break
+				}
+			}
+			p.mu.RUnlock()
+
+			if ownerPod != nil {
+				p.notifyPodChange(context.Background(), ownerPod)
+			}
+
+			// Kick reconcile on stopped/failed so auto-recovery runs immediately
+			if newStatus == "stopped" || newStatus == "failed" || newStatus == "unhealthy" {
+				p.triggerReconcile()
+			}
+		}
 	}
 
 	return p, nil

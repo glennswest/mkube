@@ -32,6 +32,12 @@ type Manager struct {
 	// as failed. The provider registers this to trigger a full pod recreate
 	// (delete+create with fresh veth allocation).
 	OnFailed func(containerName string)
+
+	// OnStateChanged is called whenever a container's lifecycle state changes.
+	// Fired on: stopped→restarting, restarting→failed, running→unhealthy,
+	// unhealthy→running (recovery). The provider uses this to push immediate
+	// pod status updates and kick the reconciler.
+	OnStateChanged func(containerName string, oldStatus, newStatus string)
 }
 
 // ProbeConfig defines a single health probe.
@@ -154,6 +160,13 @@ func (m *Manager) GetUnitReady(name string) bool {
 		return unit.Ready
 	}
 	return false
+}
+
+// fireStateChanged safely calls the OnStateChanged callback if registered.
+func (m *Manager) fireStateChanged(containerName, oldStatus, newStatus string) {
+	if m.OnStateChanged != nil {
+		go m.OnStateChanged(containerName, oldStatus, newStatus)
+	}
 }
 
 // ─── Boot Ordering ──────────────────────────────────────────────────────────
@@ -295,9 +308,11 @@ func (m *Manager) checkAll(ctx context.Context) {
 					unit.LivenessState.ConsecutiveSuccesses++
 					unit.LivenessState.ConsecutiveFailures = 0
 					if !unit.Healthy {
+						oldStatus := unit.Status
 						unit.Healthy = true
 						unit.Status = "running"
 						m.log.Infow("container recovered (liveness)", "name", name)
+						m.fireStateChanged(name, oldStatus, "running")
 					}
 				} else {
 					unit.LivenessState.ConsecutiveFailures++
@@ -307,9 +322,11 @@ func (m *Manager) checkAll(ctx context.Context) {
 						threshold = 3
 					}
 					if unit.LivenessState.ConsecutiveFailures >= threshold {
+						oldStatus := unit.Status
 						unit.Healthy = false
 						m.log.Warnw("liveness probe failed, restarting", "name", name,
 							"failures", unit.LivenessState.ConsecutiveFailures)
+						m.fireStateChanged(name, oldStatus, "unhealthy")
 						m.handleUnhealthy(ctx, unit)
 						unit.LivenessState = ProbeState{}
 					}
@@ -366,6 +383,7 @@ func (m *Manager) handleKeepalive(ctx context.Context, name string, unit *Contai
 		return
 	}
 	if ct.IsStopped() && unit.Status != "failed" {
+		oldStatus := unit.Status
 		cooldown := time.Duration(m.cfg.RestartCooldown) * time.Second
 		if cooldown == 0 {
 			cooldown = 10 * time.Second
@@ -376,11 +394,13 @@ func (m *Manager) handleKeepalive(ctx context.Context, name string, unit *Contai
 		m.log.Infow("keepalive: restarting stopped container", "name", name)
 		if err := m.rt.StartContainer(ctx, ct.ID); err != nil {
 			m.log.Errorw("keepalive: failed to start container", "name", name, "error", err)
+			m.fireStateChanged(name, oldStatus, "stopped")
 			return
 		}
 		unit.RestartCount++
 		unit.LastRestartAt = time.Now()
 		unit.Status = "running"
+		m.fireStateChanged(name, oldStatus, "running")
 	}
 }
 
@@ -459,10 +479,13 @@ func (m *Manager) runLegacyHealthCheck(ctx context.Context, name string, unit *C
 
 	if wasHealthy && !healthy {
 		m.log.Warnw("container became unhealthy", "name", name)
+		m.fireStateChanged(name, unit.Status, "unhealthy")
 		m.handleUnhealthy(ctx, unit)
 	} else if !wasHealthy && healthy {
+		oldStatus := unit.Status
 		m.log.Infow("container recovered", "name", name)
 		unit.Status = "running"
+		m.fireStateChanged(name, oldStatus, "running")
 	}
 }
 
@@ -509,10 +532,13 @@ func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 		maxRestarts = 5
 	}
 
+	oldStatus := unit.Status
+
 	if unit.RestartCount >= maxRestarts {
 		m.log.Errorw("container exceeded max restarts, marking as failed",
 			"name", unit.Name, "restarts", unit.RestartCount, "max", maxRestarts)
 		unit.Status = "failed"
+		m.fireStateChanged(unit.Name, oldStatus, "failed")
 		if m.OnFailed != nil {
 			go m.OnFailed(unit.Name)
 		}
@@ -529,6 +555,7 @@ func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 
 	m.log.Infow("restarting container", "name", unit.Name, "attempt", unit.RestartCount+1)
 	unit.Status = "restarting"
+	m.fireStateChanged(unit.Name, oldStatus, "restarting")
 
 	if m.rt != nil {
 		_ = m.rt.StopContainer(ctx, unit.ContainerID)
@@ -547,8 +574,10 @@ func (m *Manager) handleUnhealthy(ctx context.Context, unit *ContainerUnit) {
 	case "Always", "OnFailure":
 		m.restartUnit(ctx, unit)
 	case "Never":
+		oldStatus := unit.Status
 		m.log.Infow("container unhealthy but restart policy is Never", "name", unit.Name)
 		unit.Status = "stopped"
+		m.fireStateChanged(unit.Name, oldStatus, "stopped")
 	}
 }
 
