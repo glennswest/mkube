@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-17
+- **feat:** Event-driven architecture — kick channels for reconciler and scheduler. CRUD handlers (deployments, jobs, BMH, networks) now trigger immediate reconcile/schedule instead of waiting for 10s timer ticks. Buffered channels with non-blocking send ensure no goroutine stalls.
+- **feat:** NATS resource watchers for BMH, Deployment, Network, Job, and JobRunner buckets. External NATS changes (multi-node sync, direct KV writes) automatically update in-memory state and trigger reconcile/schedule. Each watcher has 5s reconnect on error.
+- **feat:** Event-driven NotifyPods with 30s fallback polling (was 5s). New `notifyPodChange` pushes immediate pod status updates on create/delete/update/recovery. Tighter container state polling: waitForStopped 2s→1s, waitForRunning 1s→500ms, stopAndRemove 1s→500ms.
+- **feat:** Registry SSE push events — PushFanout broadcaster distributes push events to multiple subscribers. `/events` SSE endpoint on registry management port (:5001). mkube-update connects via SSE with exponential backoff reconnect, triggering immediate poll on push events. Polling continues as fallback.
+- **feat:** Lifecycle state change callbacks — `OnStateChanged` callback on lifecycle Manager fires on every container state transition (stopped, restarting, failed, unhealthy, recovery). Provider wires callback to push immediate pod status updates and kick reconciler. Container failures now trigger auto-recovery within seconds instead of waiting for 10s reconcile tick.
+
 ### 2026-03-16
 - **feat:** Pure Go disk image library (`pkg/diskimg`) — replaces `qemu-img` and `gzip` external tool dependencies. VMDK reader (streamOptimized, monolithicSparse, monolithicFlat descriptor), QCOW2 reader (v2/v3, L1/L2 tables, compressed clusters), VHD reader (fixed, dynamic BAT). Sparse-aware file copy (pure Go, no `cp`). All decompression pure Go (xz via `ulikunitz/xz`, gzip via `compress/gzip`, deflate via `compress/flate`). 8 unit tests. Enables ISCSIDisk format conversion in scratch containers with zero external tools.
 - **feat:** ISCSIDisk source format conversion — supports VMDK, QCOW2, VHD sources in addition to raw. Handles xz/gz compressed sources (e.g. `fedora-coreos.vmdk.xz`). Multi-stage pipeline: decompress → convert → copy to sparse disk.
