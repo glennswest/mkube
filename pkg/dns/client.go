@@ -100,8 +100,16 @@ type createRecordRequest struct {
 // NewClient creates a new MicroDNS REST client.
 func NewClient(log *zap.SugaredLogger) *Client {
 	return &Client{
-		http: &http.Client{Timeout: 3 * time.Second},
-		log:  log,
+		http: &http.Client{
+			Timeout: 3 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 2,
+				MaxConnsPerHost:     4,
+				IdleConnTimeout:     30 * time.Second,
+			},
+		},
+		log: log,
 	}
 }
 

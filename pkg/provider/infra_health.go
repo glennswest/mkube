@@ -35,6 +35,14 @@ type infraContainer struct {
 var (
 	infraLastRestart = make(map[string]time.Time)
 	infraMu          sync.Mutex
+	// Shared HTTP transport for infra health watchers — limits goroutine
+	// growth from HTTP transport connections to unreachable endpoints.
+	infraTransport = &http.Transport{
+		MaxIdleConns:        5,
+		MaxIdleConnsPerHost: 1,
+		MaxConnsPerHost:     2,
+		IdleConnTimeout:     60 * time.Second,
+	}
 )
 
 // StartInfraHealthWatchers launches persistent SSE watch connections to each
@@ -71,9 +79,10 @@ func (p *MicroKubeProvider) watchInfraContainer(ctx context.Context, ic infraCon
 		}
 
 		client := &http.Client{
-			// No overall timeout — connection stays open indefinitely.
-			// We use per-read deadlines via the response body.
-			Timeout: 0,
+			// No overall timeout — SSE connection stays open indefinitely.
+			// Shared transport limits goroutine growth on reconnect cycles.
+			Timeout:   0,
+			Transport: infraTransport,
 		}
 
 		resp, err := client.Do(req)

@@ -41,6 +41,11 @@ type Manager struct {
 	stateChangeCh chan stateChangeEvent
 	failedCh      chan string
 
+	// Shared HTTP transport for probes — prevents creating a new transport
+	// (and its goroutines) per probe call. DisableKeepAlives ensures connections
+	// close immediately after each probe.
+	probeTransport *http.Transport
+
 	// OnFailed is called when a container exceeds max restarts and is marked
 	// as failed. The provider registers this to trigger a full pod recreate
 	// (delete+create with fresh veth allocation).
@@ -133,6 +138,13 @@ func NewManager(cfg config.LifecycleConfig, rt runtime.ContainerRuntime, log *za
 		units:         make(map[string]*ContainerUnit),
 		stateChangeCh: make(chan stateChangeEvent, 64),
 		failedCh:      make(chan string, 16),
+		probeTransport: &http.Transport{
+			MaxIdleConns:        5,
+			MaxIdleConnsPerHost: 1,
+			MaxConnsPerHost:     2,
+			IdleConnTimeout:     15 * time.Second,
+			DisableKeepAlives:   true, // probes are one-shot, don't hold connections
+		},
 	}
 }
 
@@ -489,7 +501,7 @@ func (m *Manager) runProbe(ctx context.Context, cfg *ProbeConfig, containerIP st
 }
 
 func (m *Manager) httpProbe(ctx context.Context, ip string, port int, path string, timeout time.Duration) bool {
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout, Transport: m.probeTransport}
 	url := fmt.Sprintf("http://%s:%d%s", ip, port, path)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

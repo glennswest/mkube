@@ -3012,7 +3012,11 @@ func (p *MicroKubeProvider) pushLogMappings(ctx context.Context, pod *corev1.Pod
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		logsClient := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+			MaxConnsPerHost:   1,
+			DisableKeepAlives: true,
+		}}
+		resp, err := logsClient.Do(req)
 		if err != nil {
 			log.Warnw("failed to push log mapping", "container", rosName, "error", err)
 			continue

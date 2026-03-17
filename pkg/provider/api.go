@@ -535,7 +535,11 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 			fmt.Sprintf("/api/v1/logs/%s/%s/%s", ns, name, containerName)
 		req, err := http.NewRequestWithContext(r.Context(), "GET", logsURL, nil)
 		if err == nil {
-			resp, err := http.DefaultClient.Do(req)
+			logsClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+				MaxConnsPerHost:   1,
+				DisableKeepAlives: true,
+			}}
+			resp, err := logsClient.Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
 				defer resp.Body.Close()
 				_, _ = io.Copy(w, resp.Body)
