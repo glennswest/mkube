@@ -100,30 +100,43 @@ func loadRegistryTransport(caFile, defaultPath string, log *zap.SugaredLogger) h
 	if caFile == "" {
 		caFile = defaultPath
 	}
+
+	// Bounded transport settings prevent goroutine accumulation from
+	// crane.Digest/Pull calls on every reconcile cycle. Each unbounded
+	// Transport connection spawns 2 goroutines (readLoop + writeLoop)
+	// that persist until idle timeout — without limits this causes OOM.
+	bounds := func(t *http.Transport) *http.Transport {
+		t.MaxIdleConns = 10
+		t.MaxIdleConnsPerHost = 2
+		t.MaxConnsPerHost = 4
+		t.IdleConnTimeout = 30 * time.Second
+		return t
+	}
+
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
 		if log != nil {
 			log.Warnw("registry CA cert not found, using insecure TLS", "path", caFile)
 		}
-		return &http.Transport{
+		return bounds(&http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
+		})
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
 		if log != nil {
 			log.Warnw("failed to parse registry CA cert, using insecure TLS", "path", caFile)
 		}
-		return &http.Transport{
+		return bounds(&http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
+		})
 	}
 	if log != nil {
 		log.Infow("loaded registry CA cert", "path", caFile)
 	}
-	return &http.Transport{
+	return bounds(&http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool},
-	}
+	})
 }
 
 // EnsureImage makes sure the given OCI image reference is available as a

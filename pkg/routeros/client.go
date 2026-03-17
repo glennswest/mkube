@@ -88,8 +88,10 @@ func NewClient(cfg config.RouterOSConfig) (*Client, error) {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureVerify,
 		},
-		MaxIdleConns:    10,
-		IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 4,
+		MaxConnsPerHost:     8,
+		IdleConnTimeout:     30 * time.Second,
 	}
 
 	return &Client{
