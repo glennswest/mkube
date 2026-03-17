@@ -148,7 +148,6 @@ func main() {
 		log:      log,
 		digests:  make(map[string]string),
 		kickPoll: make(chan struct{}, 1),
-		restarts: make(map[string]*restartTracker),
 		http: &http.Client{
 			Transport: loadRegistryTransport(log),
 			Timeout:   30 * time.Second,
@@ -188,22 +187,13 @@ func main() {
 	updater.run(ctx)
 }
 
-// restartTracker tracks per-container restart attempts for exponential backoff.
-type restartTracker struct {
-	attempts    int
-	lastAttempt time.Time
-	lastRunning time.Time     // last time we saw the container running
-	backoff     time.Duration // current backoff (0 until 3 rapid failures)
-}
-
 // Updater polls the local registry for digest changes and replaces containers.
 type Updater struct {
 	cfg      Config
 	log      *zap.SugaredLogger
-	digests  map[string]string            // "repo:tag" → last seen digest
+	digests  map[string]string // "repo:tag" → last seen digest
 	http     *http.Client
-	kickPoll chan struct{}                 // SSE-triggered immediate poll
-	restarts map[string]*restartTracker   // per-container restart state
+	kickPoll chan struct{}     // SSE-triggered immediate poll
 }
 
 func (u *Updater) run(ctx context.Context) {
@@ -320,10 +310,9 @@ func (u *Updater) poll(ctx context.Context) {
 }
 
 // checkContainerHealth checks all watched containers and restarts any that
-// have stopped (crashed). Uses exponential backoff after 3 rapid restarts
-// to avoid restart storms on persistent failures.
+// have stopped (crashed). Always restarts immediately — mkube is critical
+// infrastructure that must be up.
 func (u *Updater) checkContainerHealth(ctx context.Context) {
-	// Collect all unique container targets
 	seen := make(map[string]bool)
 	for _, w := range u.cfg.Watches {
 		if w.SelfUpdate {
@@ -339,72 +328,23 @@ func (u *Updater) checkContainerHealth(ctx context.Context) {
 	}
 }
 
-const (
-	restartBackoffThreshold = 3               // immediate restarts before backoff kicks in
-	restartInitialBackoff   = 30 * time.Second
-	restartMaxBackoff       = 5 * time.Minute
-	restartStableWindow     = 2 * time.Minute // running this long resets the counter
-)
-
 func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 	ct, err := u.rosGetContainer(ctx, name)
 	if err != nil {
 		return // container doesn't exist, skip
 	}
 
-	rt := u.restarts[name]
-	if rt == nil {
-		rt = &restartTracker{}
-		u.restarts[name] = rt
-	}
-
-	if ct.isRunning() {
-		rt.lastRunning = time.Now()
-		// Reset backoff if container has been stable since last restart attempt
-		if rt.attempts > 0 && !rt.lastAttempt.IsZero() && time.Since(rt.lastAttempt) > restartStableWindow {
-			u.log.Infow("watchdog: container stable, resetting backoff",
-				"container", name, "stableSince", rt.lastAttempt)
-			rt.attempts = 0
-			rt.backoff = 0
-		}
+	if ct.isRunning() || !ct.isStopped() {
 		return
 	}
-
-	if !ct.isStopped() {
-		return // extracting or other transient state
-	}
-
-	// Container is stopped — check backoff
-	if rt.backoff > 0 && time.Since(rt.lastAttempt) < rt.backoff {
-		return // still in backoff window
-	}
-
-	rt.attempts++
-	rt.lastAttempt = time.Now()
 
 	comment := ct.comment
 	if comment == "" {
 		comment = "no error detail"
 	}
 
-	if rt.attempts <= restartBackoffThreshold {
-		u.log.Warnw("watchdog: container stopped, restarting",
-			"container", name, "comment", comment,
-			"attempt", rt.attempts)
-	} else {
-		// Calculate exponential backoff for next attempt
-		if rt.backoff == 0 {
-			rt.backoff = restartInitialBackoff
-		} else {
-			rt.backoff *= 2
-			if rt.backoff > restartMaxBackoff {
-				rt.backoff = restartMaxBackoff
-			}
-		}
-		u.log.Warnw("watchdog: container stopped, restarting (backoff active)",
-			"container", name, "comment", comment,
-			"attempt", rt.attempts, "nextBackoff", rt.backoff)
-	}
+	u.log.Warnw("watchdog: container stopped, restarting immediately",
+		"container", name, "comment", comment)
 
 	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
 		u.log.Errorw("watchdog: restart failed", "container", name, "error", err)
@@ -416,7 +356,7 @@ func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 		return
 	}
 
-	u.log.Infow("watchdog: container restarted successfully", "container", name, "attempt", rt.attempts)
+	u.log.Infow("watchdog: container restarted successfully", "container", name)
 }
 
 // getDigest queries the local registry for the current digest of repo:tag.
