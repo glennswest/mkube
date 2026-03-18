@@ -5,9 +5,11 @@
 #   mk apply -f deploy/job-scheduling-setup.yaml
 #
 # This creates:
-#   1. BootConfig "coreos-agent" — ignition with mkube-agent systemd service
-#   2. JobRunner "build-runner"  — pool="build", powers off after 5min idle
-#   3. HostReservation "server1" — reserves server1 for the "build" pool
+#   1. JobRunner "build-runner"    — pool="build", uses cloudid template, powers off after 5min idle
+#   2. HostReservation "server1"   — reserves server1 for the "build" pool
+#
+# The ignition template "fcos/agent-runner" is managed in cloudid's template store.
+# It runs mkube-agent as a container: registry.gt.lo:5000/mkube-agent:edge
 #
 # Then submit jobs:
 #   mk apply -f - <<EOF
@@ -34,53 +36,12 @@
 #   mk logs job/my-build -n default   # or: curl $API/api/v1/namespaces/default/jobs/my-build/logs
 #
 apiVersion: v1
-kind: BootConfig
-metadata:
-  name: coreos-agent
-spec:
-  format: ignition
-  description: CoreOS with mkube-agent for job execution
-  data:
-    config.ign: |
-      {
-        "ignition": {"version": "3.4.0"},
-        "storage": {
-          "directories": [{"path": "/data", "mode": 493}],
-          "files": [
-            {
-              "path": "/usr/local/bin/mkube-agent",
-              "mode": 493,
-              "contents": {
-                "source": "http://192.168.200.2:8082/api/v1/bootconfigs/coreos-agent/files/mkube-agent"
-              }
-            },
-            {
-              "path": "/etc/mkube-agent.env",
-              "mode": 420,
-              "contents": {
-                "inline": "MKUBE_API=http://192.168.200.2:8082"
-              }
-            }
-          ]
-        },
-        "systemd": {
-          "units": [
-            {
-              "name": "mkube-agent.service",
-              "enabled": true,
-              "contents": "[Unit]\nDescription=mkube job agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironmentFile=/etc/mkube-agent.env\nExecStart=/usr/local/bin/mkube-agent\nWorkingDirectory=/data\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\n"
-            }
-          ]
-        }
-      }
----
-apiVersion: v1
 kind: JobRunner
 metadata:
   name: build-runner
 spec:
   pool: build
-  bootConfigRef: coreos-agent
+  template: fcos/agent-runner
   idleTimeout: 300
   reclaimPolicy: PowerOff
   maxConcurrent: 1
