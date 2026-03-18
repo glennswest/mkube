@@ -27,3 +27,10 @@ on_failure = "restart"
 restart_delay_secs = 10
 max_restarts = 100
 restart_window_secs = 3600
+
+[process.liveness]
+type = "http"
+url = "http://localhost:8082/healthz"
+interval_secs = 10
+failure_threshold = 3
+initial_delay_secs = 30
