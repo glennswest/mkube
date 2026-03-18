@@ -476,6 +476,7 @@ type DHCPPool struct {
 	Gateway       string   `json:"gateway"`
 	DNSServers    []string `json:"dns_servers"`
 	Domain        string   `json:"domain"`
+	DomainSearch  []string `json:"domain_search,omitempty"`
 	LeaseTimeSecs int      `json:"lease_time_secs"`
 	NextServer    string   `json:"next_server,omitempty"`
 	BootFile      string   `json:"boot_file,omitempty"`

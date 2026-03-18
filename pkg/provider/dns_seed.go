@@ -82,23 +82,10 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 	p.runDNSSmokeTest(smokeCtx, net)
 }
 
-// seedDHCPPool creates a DHCP pool for a source network on the target microdns instance.
-// Skips if a pool with matching subnet already exists.
+// seedDHCPPool creates or updates a DHCP pool for a source network on the target microdns instance.
+// If a pool with matching subnet already exists, updates it to ensure dns_servers and domain_search are set.
 func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client, endpoint string, source, target *Network) {
 	log := p.deps.Logger
-
-	// Check if pool already exists
-	existing, err := client.ListDHCPPools(ctx, endpoint)
-	if err != nil {
-		log.Warnw("failed to list DHCP pools", "endpoint", endpoint, "error", err)
-		return
-	}
-	for _, pool := range existing {
-		if pool.Subnet == source.Spec.CIDR {
-			log.Debugw("DHCP pool already exists", "subnet", source.Spec.CIDR, "endpoint", endpoint)
-			return
-		}
-	}
 
 	leaseTime := source.Spec.DHCP.LeaseTime
 	if leaseTime == 0 {
@@ -113,6 +100,7 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		Gateway:       source.Spec.Gateway,
 		DNSServers:    []string{target.Spec.DNS.Server},
 		Domain:        source.Spec.DNS.Zone,
+		DomainSearch:  []string{source.Spec.DNS.Zone},
 		LeaseTimeSecs: leaseTime,
 		NextServer:    source.Spec.DHCP.NextServer,
 		BootFile:      source.Spec.DHCP.BootFile,
@@ -120,8 +108,6 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 	}
 
 	// For data networks: set default iSCSI root_path to baremetalservices.
-	// All PXE clients on data networks boot baremetalservices by default
-	// unless overridden by a per-reservation root_path.
 	if source.Spec.Type == NetworkTypeData {
 		p.mu.RLock()
 		cdrom, ok := p.iscsiCdroms["baremetalservices"]
@@ -129,6 +115,24 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		if ok && cdrom.Status.TargetIQN != "" {
 			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
 			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
+		}
+	}
+
+	// Check if pool already exists — update if so, create if not
+	existing, err := client.ListDHCPPools(ctx, endpoint)
+	if err != nil {
+		log.Warnw("failed to list DHCP pools", "endpoint", endpoint, "error", err)
+		return
+	}
+	for _, ep := range existing {
+		if ep.Subnet == source.Spec.CIDR {
+			pool.ID = ep.ID
+			if _, err := client.UpdateDHCPPool(ctx, endpoint, ep.ID, pool); err != nil {
+				log.Warnw("failed to update DHCP pool", "network", source.Name, "id", ep.ID, "error", err)
+			} else {
+				log.Infow("DHCP pool updated", "network", source.Name, "id", ep.ID, "dns", pool.DNSServers, "search", pool.DomainSearch)
+			}
+			return
 		}
 	}
 

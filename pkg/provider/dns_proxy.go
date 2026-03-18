@@ -53,6 +53,7 @@ type DHCPPoolSpec struct {
 	Gateway       string   `json:"gateway"`
 	DNSServers    []string `json:"dnsServers,omitempty"`
 	Domain        string   `json:"domain,omitempty"`
+	DomainSearch  []string `json:"domainSearch,omitempty"`
 	LeaseTimeSecs int      `json:"leaseTimeSecs"`
 	NextServer    string   `json:"nextServer,omitempty"`
 	BootFile      string   `json:"bootFile,omitempty"`
@@ -492,6 +493,7 @@ func (p *MicroKubeProvider) handleCreateDHCPPool(w http.ResponseWriter, r *http.
 		Gateway:       res.Spec.Gateway,
 		DNSServers:    res.Spec.DNSServers,
 		Domain:        res.Spec.Domain,
+		DomainSearch:  res.Spec.DomainSearch,
 		LeaseTimeSecs: res.Spec.LeaseTimeSecs,
 		NextServer:    res.Spec.NextServer,
 		BootFile:      res.Spec.BootFile,
@@ -532,6 +534,7 @@ func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.
 		Gateway:       res.Spec.Gateway,
 		DNSServers:    res.Spec.DNSServers,
 		Domain:        res.Spec.Domain,
+		DomainSearch:  res.Spec.DomainSearch,
 		LeaseTimeSecs: res.Spec.LeaseTimeSecs,
 		NextServer:    res.Spec.NextServer,
 		BootFile:      res.Spec.BootFile,
@@ -632,6 +635,7 @@ func dhcpPoolToResource(pool dns.DHCPPool, ns string) DHCPPoolResource {
 			Gateway:       pool.Gateway,
 			DNSServers:    pool.DNSServers,
 			Domain:        pool.Domain,
+			DomainSearch:  pool.DomainSearch,
 			LeaseTimeSecs: pool.LeaseTimeSecs,
 			NextServer:    pool.NextServer,
 			BootFile:      pool.BootFile,
