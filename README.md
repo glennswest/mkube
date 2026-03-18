@@ -613,6 +613,181 @@ make build-all
 
 The agent binary needs to be served to booting hosts. The BootConfig ignition downloads it from mkube during PXE boot.
 
+### Job Guide: Build, Submit, and Get Results
+
+End-to-end walkthrough for running a job on bare metal.
+
+#### Prerequisites
+
+You need three resources already in place (one-time setup — see [Setup](#setup) above):
+
+1. **BareMetalHost** — a registered server with IPMI credentials
+2. **HostReservation** — claims that BMH for a pool (e.g. `build`)
+3. **JobRunner** — defines the pool's boot config, idle timeout, and concurrency
+
+Verify the pool is ready:
+
+```bash
+# Check runner exists and has reserved hosts
+mk get jr
+# NAME           POOL    BOOT-CONFIG    HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
+# build-runner   build   coreos-agent   1       0        0           0        300s           2d
+
+# Check host reservation is active
+mk get hres -A
+# NAME      POOL    BMH       OWNER   STATUS   ACTIVE-JOB   AGE
+# server1   build   server1   ci      Active                2d
+```
+
+#### Step 1: Write the Job Manifest
+
+Create a YAML file (e.g. `my-job.yaml`):
+
+```yaml
+apiVersion: v1
+kind: Job
+metadata:
+  name: my-build-001
+  namespace: default
+spec:
+  pool: build
+  priority: 10
+  timeout: 3600
+  script: |
+    #!/bin/bash
+    set -euo pipefail
+    echo "=== Build started on $(hostname) at $(date) ==="
+    echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
+    echo "CPUs: $(nproc)"
+    echo "RAM: $(free -h | awk '/Mem:/{print $2}')"
+
+    # Clone and build
+    git clone --depth 1 -b "${BRANCH}" "${REPO}" /data/src
+    cd /data/src
+    make build
+    make test
+
+    echo "=== Build finished at $(date) ==="
+  env:
+    REPO: https://github.com/example/project
+    BRANCH: main
+```
+
+#### Step 2: Submit the Job
+
+```bash
+# Submit via mk apply
+mk apply -f my-job.yaml
+
+# Or submit via curl
+curl -s -X POST http://192.168.200.2:8082/api/v1/namespaces/default/jobs \
+  -H 'Content-Type: application/json' \
+  -d @my-job.yaml
+```
+
+The job starts in **Pending** phase. The scheduler picks it up within 10 seconds.
+
+#### Step 3: Watch Progress
+
+```bash
+# Quick status check
+mk get jobs -n default
+# NAME            POOL    PRIORITY   STATUS        HOST      DURATION   EXIT   AGE
+# my-build-001    build   10         Running       server1   2m15s      -      3m
+
+# Detailed status (shows phase, host IP, heartbeat, timing)
+mk get job my-build-001 -n default -o yaml
+
+# Or via curl for JSON
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build-001 | python3 -m json.tool
+```
+
+Phase progression to watch for:
+- **Pending** → waiting for a free host in the pool
+- **Provisioning** → host powered on, PXE booting (up to 10 min)
+- **Running** → agent connected, script executing
+- **Completed** / **Failed** → done
+
+#### Step 4: Get the Results
+
+**Check exit code and status:**
+
+```bash
+mk get job my-build-001 -n default -o yaml
+```
+
+Key status fields:
+```yaml
+status:
+  phase: Completed          # or Failed, TimedOut, Cancelled
+  exitCode: 0               # 0 = success, non-zero = failure
+  startedAt: "2026-03-18T20:01:00Z"
+  completedAt: "2026-03-18T20:13:04Z"
+  logLines: 247
+  bmhRef: server1
+  hostIP: 192.168.10.10
+```
+
+**Get the full log output:**
+
+```bash
+# Via curl (returns plain text)
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build-001/logs
+
+# Save to file
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build-001/logs > build.log
+
+# Tail the last 20 lines
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build-001/logs | tail -20
+```
+
+Logs are streamed in real-time while the job runs — you can poll repeatedly to follow progress. Logs persist in NATS for 7 days after completion.
+
+#### Step 5: Cleanup
+
+```bash
+# Delete completed job
+mk delete job my-build-001 -n default
+
+# Or cancel a running job
+curl -s -X POST http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-build-001/cancel
+```
+
+The host is automatically released back to the pool when the job finishes. After the runner's `idleTimeout` (default 300s) with no pending jobs, the host powers off.
+
+#### Quick Reference: One-Liner Submit and Wait
+
+```bash
+# Submit, poll until done, print exit code and logs
+cat <<'EOF' | mk apply -f -
+apiVersion: v1
+kind: Job
+metadata:
+  name: quick-test
+  namespace: default
+spec:
+  pool: build
+  script: |
+    echo "Hello from $(hostname)"
+    uname -a
+  timeout: 60
+EOF
+
+# Poll until completed (check every 10s)
+while true; do
+  STATUS=$(curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/quick-test \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['status']['phase'])")
+  echo "Status: $STATUS"
+  case "$STATUS" in Completed|Failed|TimedOut|Cancelled) break;; esac
+  sleep 10
+done
+
+# Print results
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/quick-test \
+  | python3 -c "import json,sys; s=json.load(sys.stdin)['status']; print(f'Exit: {s.get(\"exitCode\",\"?\")}  Duration: {s.get(\"startedAt\",\"\")} → {s.get(\"completedAt\",\"\")}')"
+curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/quick-test/logs
+```
+
 ### Reclaim Policy
 
 | Policy | Behavior |
