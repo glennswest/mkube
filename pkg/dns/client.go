@@ -985,7 +985,7 @@ func (c *Client) GetDHCPPool(ctx context.Context, endpoint, poolID string) (*DHC
 // UpdateDHCPPool updates a DHCP pool by ID.
 func (c *Client) UpdateDHCPPool(ctx context.Context, endpoint, poolID string, pool DHCPPool) (*DHCPPool, error) {
 	payload, _ := json.Marshal(pool)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint+"/api/v1/dhcp/pools/"+poolID, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint+"/api/v1/dhcp/pools/"+poolID, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("building pool update request: %w", err)
 	}
