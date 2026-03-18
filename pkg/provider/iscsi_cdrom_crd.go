@@ -1230,6 +1230,16 @@ func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) checkISCSICdromCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot iscsiCdroms under lock
+	p.mu.RLock()
+	cdromNameSet := make(map[string]bool, len(p.iscsiCdroms))
+	cdromSnap := make([]*ISCSICdrom, 0, len(p.iscsiCdroms))
+	for name, cdrom := range p.iscsiCdroms {
+		cdromNameSet[name] = true
+		cdromSnap = append(cdromSnap, cdrom)
+	}
+	p.mu.RUnlock()
+
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.ISCSICdroms != nil {
 		storeKeys, err := p.deps.Store.ISCSICdroms.Keys(ctx, "")
@@ -1239,7 +1249,7 @@ func (p *MicroKubeProvider) checkISCSICdromCRDs(ctx context.Context) []CheckItem
 				storeSet[k] = true
 			}
 
-			for name := range p.iscsiCdroms {
+			for name := range cdromNameSet {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("iscsi-cdrom/%s", name),
@@ -1267,7 +1277,7 @@ func (p *MicroKubeProvider) checkISCSICdromCRDs(ctx context.Context) []CheckItem
 	}
 
 	// Verify ISO files exist for Ready CDROMs
-	for _, cdrom := range p.iscsiCdroms {
+	for _, cdrom := range cdromSnap {
 		if cdrom.Status.Phase != "Ready" {
 			continue
 		}

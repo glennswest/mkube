@@ -1175,6 +1175,16 @@ func iscsiDiskListToTable(disks []ISCSIDisk) *metav1.Table {
 func (p *MicroKubeProvider) checkISCSIDiskCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot iscsiDisks under lock
+	p.mu.RLock()
+	diskNameSet := make(map[string]bool, len(p.iscsiDisks))
+	diskSnap := make([]*ISCSIDisk, 0, len(p.iscsiDisks))
+	for name, disk := range p.iscsiDisks {
+		diskNameSet[name] = true
+		diskSnap = append(diskSnap, disk)
+	}
+	p.mu.RUnlock()
+
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.ISCSIDisks != nil {
 		storeKeys, err := p.deps.Store.ISCSIDisks.Keys(ctx, "")
@@ -1184,7 +1194,7 @@ func (p *MicroKubeProvider) checkISCSIDiskCRDs(ctx context.Context) []CheckItem 
 				storeSet[k] = true
 			}
 
-			for name := range p.iscsiDisks {
+			for name := range diskNameSet {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("iscsi-disk/%s", name),
@@ -1212,7 +1222,7 @@ func (p *MicroKubeProvider) checkISCSIDiskCRDs(ctx context.Context) []CheckItem 
 	}
 
 	// Verify disk files exist for Ready disks
-	for _, disk := range p.iscsiDisks {
+	for _, disk := range diskSnap {
 		if disk.Status.Phase != "Ready" {
 			continue
 		}

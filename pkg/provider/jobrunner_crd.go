@@ -593,6 +593,24 @@ func jobRunnerListToTable(items []JobRunner) *metav1.Table {
 func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot jobRunners and bootConfigs under lock
+	p.mu.RLock()
+	type jrEntry struct {
+		name string
+		jr   *JobRunner
+	}
+	jrSnap := make([]jrEntry, 0, len(p.jobRunners))
+	jrNameSet := make(map[string]bool, len(p.jobRunners))
+	for name, jr := range p.jobRunners {
+		jrSnap = append(jrSnap, jrEntry{name: name, jr: jr})
+		jrNameSet[name] = true
+	}
+	bcKeySet := make(map[string]bool, len(p.bootConfigs))
+	for name := range p.bootConfigs {
+		bcKeySet[name] = true
+	}
+	p.mu.RUnlock()
+
 	if p.deps.Store != nil && p.deps.Store.JobRunners != nil {
 		storeKeys, err := p.deps.Store.JobRunners.Keys(ctx, "")
 		if err == nil {
@@ -601,7 +619,7 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 				storeSet[k] = true
 			}
 
-			for name := range p.jobRunners {
+			for name := range jrNameSet {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("jobrunner/%s", name),
@@ -629,25 +647,25 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 	}
 
 	// Validate provisioning config (Template or BootConfigRef)
-	for name, jr := range p.jobRunners {
-		if jr.Spec.Template != "" {
+	for _, entry := range jrSnap {
+		if entry.jr.Spec.Template != "" {
 			// cloudid template — no local validation (cloudid resolves templates)
 			items = append(items, CheckItem{
-				Name:    fmt.Sprintf("jobrunner-ref/%s", name),
+				Name:    fmt.Sprintf("jobrunner-ref/%s", entry.name),
 				Status:  "pass",
-				Message: fmt.Sprintf("uses cloudid template %q", jr.Spec.Template),
+				Message: fmt.Sprintf("uses cloudid template %q", entry.jr.Spec.Template),
 			})
-		} else if jr.Spec.BootConfigRef != "" {
-			if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+		} else if entry.jr.Spec.BootConfigRef != "" {
+			if !bcKeySet[entry.jr.Spec.BootConfigRef] {
 				items = append(items, CheckItem{
-					Name:    fmt.Sprintf("jobrunner-ref/%s", name),
+					Name:    fmt.Sprintf("jobrunner-ref/%s", entry.name),
 					Status:  "warn",
-					Message: fmt.Sprintf("references BootConfig %q which does not exist", jr.Spec.BootConfigRef),
+					Message: fmt.Sprintf("references BootConfig %q which does not exist", entry.jr.Spec.BootConfigRef),
 				})
 			}
 		} else {
 			items = append(items, CheckItem{
-				Name:    fmt.Sprintf("jobrunner-ref/%s", name),
+				Name:    fmt.Sprintf("jobrunner-ref/%s", entry.name),
 				Status:  "warn",
 				Message: "has neither template nor bootConfigRef",
 			})

@@ -398,8 +398,16 @@ type expectedDNS struct {
 func (p *MicroKubeProvider) buildExpectedDNSRecords(pods []*corev1.Pod, networkName string) map[string]expectedDNS {
 	expected := make(map[string]expectedDNS)
 
-	// Add BMH data network DNS records (server hostnames from DHCP reservations)
+	// Snapshot BMHs under lock
+	p.mu.RLock()
+	bmhSnapshot := make([]*BareMetalHost, 0, len(p.bareMetalHosts))
 	for _, bmh := range p.bareMetalHosts {
+		bmhSnapshot = append(bmhSnapshot, bmh)
+	}
+	p.mu.RUnlock()
+
+	// Add BMH data network DNS records (server hostnames from DHCP reservations)
+	for _, bmh := range bmhSnapshot {
 		if bmh.Spec.Network == networkName && bmh.Spec.IP != "" && bmh.Spec.Hostname != "" {
 			expected[bmh.Spec.Hostname] = expectedDNS{ip: bmh.Spec.IP}
 		}
@@ -499,12 +507,20 @@ func (p *MicroKubeProvider) checkManifest() []CheckItem {
 		}}
 	}
 
+	// Snapshot pods under lock
+	p.mu.RLock()
+	podKeys := make(map[string]bool, len(p.pods))
+	for key := range p.pods {
+		podKeys[key] = true
+	}
+	p.mu.RUnlock()
+
 	manifestSet := make(map[string]bool, len(pods))
 	for _, pod := range pods {
 		key := podKey(pod)
 		manifestSet[key] = true
 
-		if _, exists := p.pods[key]; exists {
+		if podKeys[key] {
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("manifest/%s", key),
 				Status:  "pass",
@@ -521,7 +537,7 @@ func (p *MicroKubeProvider) checkManifest() []CheckItem {
 
 	// Tracked pods not in manifest — these come from NATS (oc apply),
 	// which is the normal deployment path. Not a warning.
-	for key := range p.pods {
+	for key := range podKeys {
 		if !manifestSet[key] {
 			items = append(items, CheckItem{
 				Name:    fmt.Sprintf("manifest/%s", key),
@@ -698,9 +714,29 @@ func buildDNSQuery(zone string) []byte {
 func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot pods and PVCs under lock
+	p.mu.RLock()
+	podSnap := make([]*corev1.Pod, 0, len(p.pods))
+	for _, pod := range p.pods {
+		podSnap = append(podSnap, pod)
+	}
+	type pvcEntry struct {
+		key string
+		pvc *corev1.PersistentVolumeClaim
+	}
+	pvcSnap := make([]pvcEntry, 0, len(p.pvcs))
+	for key, pvc := range p.pvcs {
+		pvcSnap = append(pvcSnap, pvcEntry{key: key, pvc: pvc})
+	}
+	pvcKeySet := make(map[string]bool, len(p.pvcs))
+	for key := range p.pvcs {
+		pvcKeySet[key] = true
+	}
+	p.mu.RUnlock()
+
 	// Build set of PVCs actively used by running pods
 	activePVCs := make(map[string]bool) // pvc key -> true
-	for _, pod := range p.pods {
+	for _, pod := range podSnap {
 		for _, v := range pod.Spec.Volumes {
 			if v.PersistentVolumeClaim != nil {
 				activePVCs[pod.Namespace+"/"+v.PersistentVolumeClaim.ClaimName] = true
@@ -709,7 +745,9 @@ func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 	}
 
 	// Check each PVC in memory has a matching NATS entry and disk directory
-	for key, pvc := range p.pvcs {
+	for _, entry := range pvcSnap {
+		key := entry.key
+		pvc := entry.pvc
 		// 1. NATS sync check
 		if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
 			storeKey := pvc.Namespace + "." + pvc.Name
@@ -794,14 +832,14 @@ func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 	}
 
 	// Check pods referencing PVCs have valid PVC objects
-	for _, pod := range p.pods {
+	for _, pod := range podSnap {
 		for _, v := range pod.Spec.Volumes {
 			if v.PersistentVolumeClaim == nil {
 				continue
 			}
 			pvcKey := pod.Namespace + "/" + v.PersistentVolumeClaim.ClaimName
 			checkName := fmt.Sprintf("pvc-ref/%s/%s", podKey(pod), v.Name)
-			if _, ok := p.pvcs[pvcKey]; ok {
+			if pvcKeySet[pvcKey] {
 				items = append(items, CheckItem{
 					Name:    checkName,
 					Status:  "pass",
@@ -823,13 +861,37 @@ func (p *MicroKubeProvider) checkPVCs(ctx context.Context) []CheckItem {
 // checkDeployments verifies each deployment has the correct number of running pods.
 func (p *MicroKubeProvider) checkDeployments() []CheckItem {
 	var items []CheckItem
+
+	// Snapshot deployments and pods under lock
+	p.mu.RLock()
+	type deployEntry struct {
+		key    string
+		deploy *Deployment
+	}
+	deploySnap := make([]deployEntry, 0, len(p.deployments))
 	for key, deploy := range p.deployments {
+		deploySnap = append(deploySnap, deployEntry{key: key, deploy: deploy})
+	}
+	podsSnap := make([]*corev1.Pod, 0, len(p.pods))
+	for _, pod := range p.pods {
+		podsSnap = append(podsSnap, pod)
+	}
+	p.mu.RUnlock()
+
+	for _, entry := range deploySnap {
+		key := entry.key
+		deploy := entry.deploy
 		replicas := deploy.Spec.Replicas
 		if replicas <= 0 {
 			replicas = 1
 		}
-		ownedPods := p.deploymentPods(deploy)
-		actual := int32(len(ownedPods))
+		// Count owned pods from snapshot (avoids calling deploymentPods which reads p.pods)
+		var actual int32
+		for _, pod := range podsSnap {
+			if pod.Namespace == deploy.Namespace && pod.Annotations[annotationOwnerDeployment] == deploy.Name {
+				actual++
+			}
+		}
 
 		if actual == replicas {
 			items = append(items, CheckItem{
@@ -935,7 +997,15 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 	// Build set of veths from ALL desired sources (tracked + NATS + boot-order)
 	expectedVeths := make(map[string]bool)
 
+	// Snapshot tracked pods under lock
+	p.mu.RLock()
+	trackedPodsSnap := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		trackedPodsSnap = append(trackedPodsSnap, pod)
+	}
+	p.mu.RUnlock()
+
+	for _, pod := range trackedPodsSnap {
 		for i := range pod.Spec.Containers {
 			expectedVeths[vethName(pod, i)] = true
 		}
@@ -1004,8 +1074,14 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 	// 3. Boot-order manifest
 	expectedContainers := make(map[string]bool)
 
-	// Source 1: tracked pods
+	// Source 1: tracked pods (snapshot under lock)
+	p.mu.RLock()
+	trackedPodsSnap := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		trackedPodsSnap = append(trackedPodsSnap, pod)
+	}
+	p.mu.RUnlock()
+	for _, pod := range trackedPodsSnap {
 		for _, c := range pod.Spec.Containers {
 			expectedContainers[sanitizeName(pod, c.Name)] = true
 		}
@@ -1031,7 +1107,7 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 		}
 	}
 
-	// Source 4: deployment-expected containers
+	// Source 4: deployment-expected containers (takes p.mu.RLock internally)
 	for name := range p.deploymentExpectedContainers() {
 		expectedContainers[name] = true
 	}
@@ -1186,6 +1262,14 @@ func (p *MicroKubeProvider) checkNetworkHealth(ctx context.Context) []CheckItem 
 		actualMap[port.Name] = port
 	}
 
+	// Snapshot networkFailures under lock
+	p.mu.RLock()
+	netFailSnap := make(map[string]int, len(p.networkFailures))
+	for k, v := range p.networkFailures {
+		netFailSnap[k] = v
+	}
+	p.mu.RUnlock()
+
 	// Collect all desired pods from all sources
 	allPods := p.allDesiredPods(ctx)
 
@@ -1228,7 +1312,7 @@ func (p *MicroKubeProvider) checkNetworkHealth(ctx context.Context) []CheckItem 
 				continue
 			}
 
-			failCount := p.networkFailures[key]
+			failCount := netFailSnap[key]
 			if failCount > 0 {
 				items = append(items, CheckItem{
 					Name:    checkName,
@@ -1258,6 +1342,14 @@ func (p *MicroKubeProvider) checkNetworkHealth(ctx context.Context) []CheckItem 
 func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 	log := p.deps.Logger
 
+	// Snapshot pods under lock for DNS pod lookup
+	p.mu.RLock()
+	podsSnap := make(map[string]*corev1.Pod, len(p.pods))
+	for k, v := range p.pods {
+		podsSnap[k] = v
+	}
+	p.mu.RUnlock()
+
 	// Collect all dead DNS pods first
 	type deadDNS struct {
 		netName string
@@ -1278,7 +1370,7 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 		}
 
 		podKey := netName + "/dns"
-		pod, exists := p.pods[podKey]
+		pod, exists := podsSnap[podKey]
 		if !exists {
 			log.Warnw("DNS pod not tracked, cannot restart", "pod", podKey)
 			continue
@@ -1386,11 +1478,19 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 	allPods := p.allDesiredPods(ctx)
 	repaired := 0
 
+	// Snapshot redeploying set under lock
+	p.mu.RLock()
+	redeploySnap := make(map[string]bool, len(p.redeploying))
+	for k, v := range p.redeploying {
+		redeploySnap[k] = v
+	}
+	p.mu.RUnlock()
+
 	for _, pod := range allPods {
 		key := podKey(pod)
 
 		// Skip pods currently being redeployed
-		if p.redeploying[key] {
+		if redeploySnap[key] {
 			continue
 		}
 
@@ -1419,8 +1519,10 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 		}
 
 		if broken {
+			p.mu.Lock()
 			p.networkFailures[key]++
 			failCount := p.networkFailures[key]
+			p.mu.Unlock()
 			p.deps.Logger.Warnw("container has broken network",
 				"pod", key, "failures", failCount, "threshold", networkHealthThreshold)
 
@@ -1439,12 +1541,16 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 					continue
 				}
 
+				p.mu.Lock()
 				delete(p.networkFailures, key)
+				p.mu.Unlock()
 				repaired++
 			}
 		} else {
 			// Network is healthy — reset failure counter
+			p.mu.Lock()
 			delete(p.networkFailures, key)
+			p.mu.Unlock()
 		}
 	}
 
@@ -1456,8 +1562,14 @@ func (p *MicroKubeProvider) allDesiredPods(ctx context.Context) []*corev1.Pod {
 	seen := make(map[string]bool)
 	var result []*corev1.Pod
 
-	// Source 1: tracked pods
+	// Source 1: tracked pods (snapshot under lock)
+	p.mu.RLock()
+	trackedSnap := make(map[string]*corev1.Pod, len(p.pods))
 	for key, pod := range p.pods {
+		trackedSnap[key] = pod
+	}
+	p.mu.RUnlock()
+	for key, pod := range trackedSnap {
 		if !seen[key] {
 			seen[key] = true
 			result = append(result, pod)
@@ -1497,12 +1609,28 @@ func (p *MicroKubeProvider) allDesiredPods(ctx context.Context) []*corev1.Pod {
 func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 	var items []CheckItem
 
+	// Snapshot BMHs under lock
+	p.mu.RLock()
+	type bmhEntry struct {
+		key string
+		bmh *BareMetalHost
+	}
+	bmhSnap := make([]bmhEntry, 0, len(p.bareMetalHosts))
+	bmhKeySet := make(map[string]bool, len(p.bareMetalHosts))
+	for key, bmh := range p.bareMetalHosts {
+		bmhSnap = append(bmhSnap, bmhEntry{key: key, bmh: bmh})
+		bmhKeySet[key] = true
+	}
+	p.mu.RUnlock()
+
 	// Per-BMH checks: each BMH is a physical server
 	bootMACs := make(map[string][]string) // MAC -> list of "ns/name"
 	bmcMACs := make(map[string][]string)
 	hostnames := make(map[string][]string) // hostname -> list of "ns/name"
 
-	for key, bmh := range p.bareMetalHosts {
+	for _, entry := range bmhSnap {
+		key := entry.key
+		bmh := entry.bmh
 		if mac := strings.ToUpper(bmh.Spec.BootMACAddress); mac != "" && mac != "00:00:00:00:00:00" {
 			bootMACs[mac] = append(bootMACs[mac], key)
 		}
@@ -1628,7 +1756,7 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 		for _, k := range natsKeys {
 			natsSet[k] = true
 		}
-		for key := range p.bareMetalHosts {
+		for key := range bmhKeySet {
 			storeKey := strings.Replace(key, "/", ".", 1)
 			if !natsSet[storeKey] {
 				items = append(items, CheckItem{
@@ -1853,7 +1981,15 @@ func (p *MicroKubeProvider) checkSmokeTests() []CheckItem {
 func (p *MicroKubeProvider) checkPodLiveness(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot pods under lock
+	p.mu.RLock()
+	podsSnap := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		podsSnap = append(podsSnap, pod)
+	}
+	p.mu.RUnlock()
+
+	for _, pod := range podsSnap {
 		for i, c := range pod.Spec.Containers {
 			// Only check containers that declare TCP ports
 			tcpPorts := collectTCPPorts(c)

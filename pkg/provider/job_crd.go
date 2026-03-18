@@ -884,6 +884,18 @@ func jobListToTable(items []Job) *metav1.Table {
 func (p *MicroKubeProvider) checkJobCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot jobs under lock
+	p.mu.RLock()
+	type jobEntry struct {
+		key string
+		job *Job
+	}
+	jobSnap := make([]jobEntry, 0, len(p.jobs))
+	for key, job := range p.jobs {
+		jobSnap = append(jobSnap, jobEntry{key: key, job: job})
+	}
+	p.mu.RUnlock()
+
 	if p.deps.Store != nil && p.deps.Store.Jobs != nil {
 		storeKeys, err := p.deps.Store.Jobs.Keys(ctx, "")
 		if err == nil {
@@ -892,17 +904,17 @@ func (p *MicroKubeProvider) checkJobCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for key, job := range p.jobs {
-				storeKey := job.Namespace + "." + job.Name
+			for _, entry := range jobSnap {
+				storeKey := entry.job.Namespace + "." + entry.job.Name
 				if storeSet[storeKey] {
 					items = append(items, CheckItem{
-						Name:    fmt.Sprintf("job/%s", key),
+						Name:    fmt.Sprintf("job/%s", entry.key),
 						Status:  "pass",
-						Message: fmt.Sprintf("Job CRD synced with NATS (phase=%s)", job.Status.Phase),
+						Message: fmt.Sprintf("Job CRD synced with NATS (phase=%s)", entry.job.Status.Phase),
 					})
 				} else {
 					items = append(items, CheckItem{
-						Name:    fmt.Sprintf("job/%s", key),
+						Name:    fmt.Sprintf("job/%s", entry.key),
 						Status:  "fail",
 						Message: "Job CRD in memory but not in NATS store",
 					})

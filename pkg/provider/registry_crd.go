@@ -857,6 +857,16 @@ func (p *MicroKubeProvider) handleManagedRegistryTransition(ctx context.Context,
 func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot registries under lock
+	p.mu.RLock()
+	regNameSet := make(map[string]bool, len(p.registries))
+	regSnap := make([]*Registry, 0, len(p.registries))
+	for name, reg := range p.registries {
+		regNameSet[name] = true
+		regSnap = append(regSnap, reg)
+	}
+	p.mu.RUnlock()
+
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.Registries != nil {
 		storeKeys, err := p.deps.Store.Registries.Keys(ctx, "")
@@ -866,7 +876,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for name := range p.registries {
+			for name := range regNameSet {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("registry-crd/%s", name),
@@ -894,7 +904,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 	}
 
 	// Liveness per registry
-	for _, reg := range p.registries {
+	for _, reg := range regSnap {
 		if reg.Spec.StaticIP == "" {
 			continue
 		}
