@@ -512,7 +512,7 @@ func (m *Manager) rewriteLocalhost(imageRef string) string {
 	for _, addr := range m.registryCfg.LocalAddresses[1:] {
 		if strings.HasPrefix(imageRef, addr+"/") {
 			rewritten := primary + "/" + strings.TrimPrefix(imageRef, addr+"/")
-			m.log.Infow("rewrote old registry address", "original", imageRef, "rewritten", rewritten)
+			m.log.Debugw("rewrote old registry address", "original", imageRef, "rewritten", rewritten)
 			return rewritten
 		}
 	}

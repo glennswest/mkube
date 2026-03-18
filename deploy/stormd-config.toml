@@ -6,11 +6,11 @@ name = "kube.gt.lo"
 log_dir = "/var/stormd/logs"
 
 [api]
-bind = "0.0.0.0:8090"
+bind = "0.0.0.0:9080"
 
 [ssh]
 enabled = true
-bind = "0.0.0.0:2222"
+bind = "0.0.0.0:22"
 host_key = "/var/stormd/host_key"
 password = "stormd"
 

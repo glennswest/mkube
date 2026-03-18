@@ -241,10 +241,9 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 // WrapHandler returns an http.Handler that wraps the given handler with:
 // 1. Panic recovery — catches panics and returns 500 instead of crashing
 // 2. Mutex serialization — prevents concurrent map access crashes
-// Write handlers (POST/PUT/PATCH/DELETE) acquire a write lock.
-// Read handlers (GET/HEAD) acquire a read lock.
-// Watch requests (?watch=true) skip locking — they are long-lived streaming
-// connections and watch handlers use their own polling/snapshot logic.
+// WrapHandler wraps the HTTP mux with panic recovery.
+// Fine-grained locking is handled inside individual handler functions
+// and the functions they call (CreatePod, GetPod, reconcile, etc.).
 func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Panic recovery — never let a handler crash the process
@@ -260,18 +259,6 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			}
 		}()
 
-		// Watch requests are long-lived streams — skip mutex to avoid blocking writes.
-		isWatch := r.URL.Query().Get("watch") == "true"
-		if !isWatch {
-			switch r.Method {
-			case http.MethodGet, http.MethodHead:
-				p.mu.RLock()
-				defer p.mu.RUnlock()
-			default:
-				p.mu.Lock()
-				defer p.mu.Unlock()
-			}
-		}
 		h.ServeHTTP(w, r)
 	})
 }

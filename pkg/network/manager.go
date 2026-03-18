@@ -165,7 +165,7 @@ func (m *Manager) InitDNSZones(ctx context.Context) {
 			continue
 		}
 		ns.zoneID = zoneID
-		m.log.Infow("DNS zone ready", "network", name, "zone", ns.def.DNS.Zone, "zoneID", zoneID)
+		m.log.Debugw("DNS zone ready", "network", name, "zone", ns.def.DNS.Zone, "zoneID", zoneID)
 
 		// Fetch existing records once to avoid creating duplicates on restart,
 		// and remove any duplicate A records that have accumulated.

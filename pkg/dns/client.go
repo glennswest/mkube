@@ -652,7 +652,7 @@ func (c *Client) UpsertDHCPReservation(ctx context.Context, endpoint string, res
 		if patchResp.StatusCode != http.StatusOK {
 			return fmt.Errorf("patching DHCP reservation: HTTP %d: %s", patchResp.StatusCode, string(body))
 		}
-		c.log.Infow("DHCP reservation updated", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
+		c.log.Debugw("DHCP reservation updated", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
 		return nil
 	}
 

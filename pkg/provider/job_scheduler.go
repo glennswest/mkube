@@ -313,7 +313,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 						bmhKey := bmh.Namespace + "." + bmh.Name
 						_, _ = p.deps.Store.BareMetalHosts.PutJSON(ctx, bmhKey, bmh)
 					}
-					log.Infow("powering off idle host",
+					log.Infow("powered off idle host",
 						"bmh", bmh.Name,
 						"pool", pool,
 						"idleTimeout", runner.Spec.IdleTimeout,
