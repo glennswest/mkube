@@ -156,7 +156,7 @@ func (m *Manager) InitDNSZones(ctx context.Context) {
 		// External DNS servers are not guaranteed reachable from this node and
 		// would cause timeout delays during boot and reconcile.
 		if ns.def.ExternalDNS {
-			m.log.Infow("skipping external DNS network", "network", name, "endpoint", ns.def.DNS.Endpoint)
+			m.log.Debugw("skipping external DNS network", "network", name, "endpoint", ns.def.DNS.Endpoint)
 			continue
 		}
 		zoneID, err := m.dns.EnsureZone(ctx, ns.def.DNS.Endpoint, ns.def.DNS.Zone)
@@ -455,10 +455,19 @@ func (m *Manager) resolveNetwork(name string) (*networkState, error) {
 // ─── Sync ───────────────────────────────────────────────────────────────────
 
 func (m *Manager) syncExistingAllocations(ctx context.Context) error {
+	// ListPorts does I/O — call without holding the lock
 	ports, err := m.driver.ListPorts(ctx)
 	if err != nil {
 		return err
 	}
+
+	// Collect results, then write under lock
+	type syncEntry struct {
+		name     string
+		poolName string
+		ip       net.IP
+	}
+	var entries []syncEntry
 
 	for _, p := range ports {
 		if p.Address == "" {
@@ -478,17 +487,24 @@ func (m *Manager) syncExistingAllocations(ctx context.Context) error {
 			continue
 		}
 
-		m.ipam.Record(poolName, p.Name, ip)
-		m.allocs[p.Name] = &allocation{
-			networkName: poolName,
-			ip:          ip,
-			hostname:    extractHostname(p.Name),
-		}
-		m.log.Debugw("synced existing allocation", "veth", p.Name, "ip", ip, "network", poolName)
+		entries = append(entries, syncEntry{name: p.Name, poolName: poolName, ip: ip})
 	}
 
+	// Write allocations under lock to prevent concurrent map access
+	m.mu.Lock()
+	for _, e := range entries {
+		m.ipam.Record(e.poolName, e.name, e.ip)
+		m.allocs[e.name] = &allocation{
+			networkName: e.poolName,
+			ip:          e.ip,
+			hostname:    extractHostname(e.name),
+		}
+		m.log.Debugw("synced existing allocation", "veth", e.name, "ip", e.ip, "network", e.poolName)
+	}
+	m.mu.Unlock()
+
 	total := len(m.ipam.AllAllocations())
-	m.log.Infow("synced existing allocations", "count", total)
+	m.log.Debugw("synced existing allocations", "count", total)
 	return nil
 }
 

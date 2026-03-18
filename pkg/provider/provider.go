@@ -1572,7 +1572,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			return fmt.Errorf("loading manifests: %w", err)
 		}
 	}
-	log.Infow("RECONCILE: step 1 load manifests", "pods", len(desiredPods), "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 1 load manifests", "pods", len(desiredPods), "ms", time.Since(stepStart).Milliseconds())
 
 	// 1b. Ensure boot-order pods exist in NATS so infrastructure (DNS)
 	// is always in the desired state. Only adds pods that are completely
@@ -1668,7 +1668,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	for _, c := range actual {
 		actualByName[c.Name] = c
 	}
-	log.Infow("RECONCILE: step 2 list containers", "count", len(actual), "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 2 list containers", "count", len(actual), "ms", time.Since(stepStart).Milliseconds())
 
 	// 2c. Auto-recover stopped/faulted containers.
 	// Containers that are stopped but belong to tracked pods with start-on-boot=yes
@@ -2061,7 +2061,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
-	log.Infow("RECONCILE: step 3 create/track pods", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 3 create/track pods", "ms", time.Since(stepStart).Milliseconds())
 
 	// 4. Re-sync IPAM allocations from actual veths on the device.
 	// Pods tracked via the "already exists" path above don't call
@@ -2071,7 +2071,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	if err := p.deps.NetworkMgr.ResyncAllocations(ctx); err != nil {
 		log.Warnw("failed to re-sync IPAM allocations", "error", err)
 	}
-	log.Infow("RECONCILE: step 4 IPAM resync", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 4 IPAM resync", "ms", time.Since(stepStart).Milliseconds())
 
 	// 4b. Validate static IP pods have the correct veth IP.
 	// The "already exists" path above tracks pods but never calls
@@ -2122,12 +2122,12 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 5. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
 	stepStart = time.Now()
 	p.syncConfigMapsToDisk(ctx)
-	log.Infow("RECONCILE: step 5 sync configmaps", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 5 sync configmaps", "ms", time.Since(stepStart).Milliseconds())
 
 	// 6. Ensure DNS zones exist and records are seeded from config
 	stepStart = time.Now()
 	p.deps.NetworkMgr.InitDNSZones(ctx)
-	log.Infow("RECONCILE: step 6 init DNS zones", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 6 init DNS zones", "ms", time.Since(stepStart).Milliseconds())
 
 	// 6a2. Ensure managed networks have DNS pods (auto-recreate if deleted)
 	p.reconcileManagedDNSPods(ctx)
@@ -2135,12 +2135,12 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 6b. Reconcile DHCP pools/reservations/forwarders via microdns REST API
 	stepStart = time.Now()
 	p.reconcileDNSConfig(ctx)
-	log.Infow("RECONCILE: step 6b reconcile DNS config", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 6b reconcile DNS config", "ms", time.Since(stepStart).Milliseconds())
 
 	// 7. Re-register DNS aliases for all tracked pods so they survive DNS container restarts
 	stepStart = time.Now()
 	p.reregisterPodDNS(ctx)
-	log.Infow("RECONCILE: step 7 reregister DNS", "ms", time.Since(stepStart).Milliseconds())
+	log.Debugw("RECONCILE: step 7 reregister DNS", "ms", time.Since(stepStart).Milliseconds())
 
 	// 8. Async consistency check for orphaned veths/IPAM
 	p.CheckConsistencyAsync("reconcile")
@@ -2148,7 +2148,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 9. Infrastructure health checks (registry, mkube-update)
 	p.checkInfraHealth(ctx)
 
-	log.Infow("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", len(p.pods))
+	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", len(p.pods))
 	return nil
 }
 

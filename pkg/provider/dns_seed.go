@@ -39,7 +39,7 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 		}
 	}
 
-	log.Infow("microdns healthy, seeding DNS config", "endpoint", endpoint)
+	log.Debugw("microdns healthy, seeding DNS config", "endpoint", endpoint)
 
 	// 1. Create DHCP pool from network's DHCP spec (if local — no serverNetwork)
 	if net.Spec.DHCP.Enabled && net.Spec.DHCP.ServerNetwork == "" {
@@ -73,7 +73,7 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 	// 5. Create DNS forward zones for all peer networks
 	p.seedDNSForwarders(ctx, dnsClient, endpoint, net)
 
-	log.Infow("DNS config seeded successfully", "endpoint", endpoint)
+	log.Debugw("DNS config seeded successfully", "endpoint", endpoint)
 
 	// Run smoke test inline — seedDNSConfig is already called from a goroutine.
 	// Using a background context so seed timeout doesn't kill the smoke test.
@@ -255,7 +255,7 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 		}
 	}
 
-	log.Infow("seeded DNS A records from DHCP reservations",
+	log.Debugw("seeded DNS A records from DHCP reservations",
 		"endpoint", endpoint, "count", len(entries))
 }
 
