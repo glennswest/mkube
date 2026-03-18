@@ -274,7 +274,7 @@ func (p *MicroKubeProvider) startDHCPSubscription(ctx context.Context) {
 			network = parts[1]
 		}
 
-		log.Infow("NATS lease event received",
+		log.Debugw("NATS lease event received",
 			"type", evt.Type,
 			"network", network,
 			"ip", evt.IPAddr,
@@ -348,7 +348,7 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 		if err := p.deps.Store.Publish(subject, data); err != nil {
 			log.Warnw("failed to publish DHCP event", "subject", subject, "error", err)
 		} else {
-			log.Infow("published DHCP event",
+			log.Debugw("published DHCP event",
 				"subject", subject,
 				"network", network,
 				"type", networkType,

@@ -317,7 +317,7 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 		if net.Spec.DHCP.Enabled || p.networkHasDHCPFromSnapshot(net.Name, rdcNetsSnap) {
 			pools, err := dnsClient.ListDHCPPools(ctx, endpoint)
 			if err == nil && len(pools) == 0 {
-				p.deps.Logger.Infow("microdns has empty DHCP pools, re-seeding",
+				p.deps.Logger.Debugw("microdns has empty DHCP pools, re-seeding",
 					"network", net.Name, "endpoint", endpoint)
 				needsSeed = true
 			}
@@ -431,7 +431,7 @@ func (p *MicroKubeProvider) reservationDNSRecordsMissing(ctx context.Context, cl
 	// If any reservation hostname is missing from DNS, needs re-seed
 	for _, h := range expectedHostnames {
 		if !existing[h] {
-			p.deps.Logger.Infow("reservation DNS A record missing, triggering re-seed",
+			p.deps.Logger.Debugw("reservation DNS A record missing, triggering re-seed",
 				"network", net.Name, "hostname", h, "endpoint", endpoint)
 			return true
 		}
