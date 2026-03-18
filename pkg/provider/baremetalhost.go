@@ -297,6 +297,21 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 		bmh.Spec.BMC.Password = existing.Spec.BMC.Password
 	}
 
+	// Detect manual power-on via PUT
+	wasOnline := existing.Spec.Online != nil && *existing.Spec.Online
+	isOnline := bmh.Spec.Online != nil && *bmh.Spec.Online
+	if isOnline && !wasOnline {
+		if bmh.Annotations == nil {
+			bmh.Annotations = make(map[string]string)
+		}
+		bmh.Annotations["bmh.mkube.io/manual-power"] = time.Now().UTC().Format(time.RFC3339)
+		p.deps.Logger.Infow("manual power-on detected, scheduler will not override",
+			"bmh", name, "annotation", "bmh.mkube.io/manual-power")
+	}
+	if !isOnline && wasOnline {
+		delete(bmh.Annotations, "bmh.mkube.io/manual-power")
+	}
+
 	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
 		storeKey := ns + "." + name
 		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, &bmh); err != nil {
@@ -355,6 +370,23 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	}
 	if merged.Spec.BMC.Password == "" && existing.Spec.BMC.Password != "" {
 		merged.Spec.BMC.Password = existing.Spec.BMC.Password
+	}
+
+	// Detect manual power-on: user set spec.online=true via PATCH.
+	// Add annotation so the scheduler doesn't immediately power it back off.
+	wasOnline := existing.Spec.Online != nil && *existing.Spec.Online
+	isOnline := merged.Spec.Online != nil && *merged.Spec.Online
+	if isOnline && !wasOnline {
+		if merged.Annotations == nil {
+			merged.Annotations = make(map[string]string)
+		}
+		merged.Annotations["bmh.mkube.io/manual-power"] = time.Now().UTC().Format(time.RFC3339)
+		p.deps.Logger.Infow("manual power-on detected, scheduler will not override",
+			"bmh", name, "annotation", "bmh.mkube.io/manual-power")
+	}
+	// Clear manual-power annotation when user powers off
+	if !isOnline && wasOnline {
+		delete(merged.Annotations, "bmh.mkube.io/manual-power")
 	}
 
 	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {

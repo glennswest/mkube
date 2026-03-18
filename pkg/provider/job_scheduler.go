@@ -146,6 +146,8 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 					}
 					online := true
 					b.Spec.Online = &online
+					// Clear manual-power annotation — scheduler takes power control
+					delete(b.Annotations, "bmh.mkube.io/manual-power")
 				})
 				break
 			}
@@ -305,6 +307,10 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 			}
 			for bmhKey, bmh := range p.bareMetalHosts {
 				if bmh.Name == hr.Spec.BMHRef && bmh.Spec.Online != nil && *bmh.Spec.Online {
+					// Skip hosts manually powered on by user
+					if bmh.Annotations != nil && bmh.Annotations["bmh.mkube.io/manual-power"] != "" {
+						continue
+					}
 					_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
 						offline := false
 						b.Spec.Online = &offline
