@@ -1,0 +1,7 @@
+FROM registry.gt.lo:5000/stormdbase:latest
+COPY mkube-agent /app/mkube-agent
+COPY config.toml /etc/stormd/config.toml
+VOLUME ["/data"]
+EXPOSE 9080 8080 22
+ENTRYPOINT ["/stormd"]
+CMD ["--config", "/etc/stormd/config.toml"]

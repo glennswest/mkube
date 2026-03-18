@@ -13,7 +13,8 @@ STORMD    := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
         build-registry build-installer build-update build-agent build-all \
         deploy-update deploy-installer \
         build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube \
-        build-test test-integration
+        build-test test-integration \
+        build-agent-image push-agent deploy-agent
 
 ## Build the Go binary for the target architecture
 build:
@@ -139,6 +140,20 @@ build-test:
 ## Run live integration tests against rose1
 test-integration: build-test
 	./dist/mkube-test --api $(MKUBE_API)
+
+## Build mkube-agent container image (x86_64, stormdbase)
+build-agent-image: build-agent
+	cp dist/mkube-agent cmd/mkube-agent/mkube-agent
+	podman build --format docker --platform linux/amd64 -f cmd/mkube-agent/Containerfile -t $(REGISTRY)/mkube-agent:edge cmd/mkube-agent/
+	rm -f cmd/mkube-agent/mkube-agent
+
+## Push mkube-agent container image to local registry
+push-agent:
+	podman push --tls-verify=false $(REGISTRY)/mkube-agent:edge
+
+## Build + push mkube-agent container
+deploy-agent: build-agent-image push-agent
+	@echo "Pushed $(REGISTRY)/mkube-agent:edge"
 
 ## Generate mocks for testing
 mocks:

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-18
+- **feat:** mkube-agent container image — Containerfile using stormdbase (process manager with SSH, logging, liveness checks) for x86_64. Makefile targets: `build-agent-image`, `push-agent`, `deploy-agent`. stormd supervises the agent process with auto-restart on exit.
 - **feat:** Namespace `Owner` field — maps namespace to identity username via `vkube.io/owner` annotation. Containers inherit namespace owner's SSH keys through cloudid.
 - **fix:** Managed registry pods missing PVC volume for data — `deployManagedRegistry` created pods with a `data` volumeMount but no matching Volume definition (no PVC). Registry storage was ephemeral and would be lost on container recreation. Added PVC-backed volume (`registry-{name}-data`) matching the DNS pod pattern. Extended `fixOrphanedVolumeMounts` migration to detect and repair existing registry pods loaded from NATS.
 

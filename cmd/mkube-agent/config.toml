@@ -1,0 +1,28 @@
+# stormd supervisor config for mkube-agent container
+# stormd is PID 1, mkube-agent is a supervised child process
+
+[general]
+name = "mkube-agent"
+log_dir = "/var/stormd/logs"
+
+[api]
+bind = "0.0.0.0:9080"
+
+[ssh]
+enabled = true
+bind = "0.0.0.0:22"
+host_key = "/var/stormd/host_key"
+password = "changeme"
+
+[stormlog.terminal]
+rows = 50
+cols = 120
+scrollback = 10000
+
+[[process]]
+name = "agent"
+command = "/app/mkube-agent"
+on_failure = "restart"
+on_exit = "restart"
+restart_delay_secs = 2
+max_restarts = 0
