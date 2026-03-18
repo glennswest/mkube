@@ -153,7 +153,13 @@ func (p *MicroKubeProvider) rebuildDHCPIndex() {
 	}
 
 	// Include Network CRDs (these take precedence — overwrite static entries)
+	p.networksMu.RLock()
+	netCRDSnap := make([]*Network, 0, len(p.networks))
 	for _, crd := range p.networks {
+		netCRDSnap = append(netCRDSnap, crd)
+	}
+	p.networksMu.RUnlock()
+	for _, crd := range netCRDSnap {
 		if crd.Spec.CIDR != "" {
 			_, subnet, err := net.ParseCIDR(crd.Spec.CIDR)
 			if err == nil {
@@ -205,12 +211,14 @@ func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 		}
 	}
 	if !hasAny {
+		p.networksMu.RLock()
 		for _, n := range p.networks {
 			if n.Spec.DHCP.Enabled {
 				hasAny = true
 				break
 			}
 		}
+		p.networksMu.RUnlock()
 	}
 	if !hasAny {
 		p.deps.Logger.Info("DHCP watcher disabled (no networks have DHCP enabled)")
@@ -317,9 +325,11 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 
 	// Look up network type
 	networkType := ""
+	p.networksMu.RLock()
 	if net, ok := p.networks[network]; ok {
 		networkType = string(net.Spec.Type)
 	}
+	p.networksMu.RUnlock()
 
 	evt := mkubeDHCPEvent{
 		Type:        eventType,
@@ -369,7 +379,13 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	}
 
 	// Poll Network CRD networks
+	p.networksMu.RLock()
+	crdNets := make([]*Network, 0, len(p.networks))
 	for _, n := range p.networks {
+		crdNets = append(crdNets, n)
+	}
+	p.networksMu.RUnlock()
+	for _, n := range crdNets {
 		if !n.Spec.DHCP.Enabled {
 			continue
 		}

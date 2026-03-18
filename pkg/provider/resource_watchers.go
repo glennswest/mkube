@@ -175,18 +175,18 @@ func (p *MicroKubeProvider) runNetworkWatch(ctx context.Context) error {
 				if err := json.Unmarshal(evt.Value, &net); err != nil {
 					continue
 				}
-				p.mu.Lock()
+				p.networksMu.Lock()
 				p.networks[net.Name] = &net
+				p.networksMu.Unlock()
 				p.rebuildDHCPIndex()
-				p.mu.Unlock()
 				p.triggerNetworkReseed(net.Name)
 				p.triggerReconcile()
 			case store.EventDelete:
 				_, name := parseStoreKey(evt.Key)
-				p.mu.Lock()
+				p.networksMu.Lock()
 				delete(p.networks, name)
+				p.networksMu.Unlock()
 				p.rebuildDHCPIndex()
-				p.mu.Unlock()
 				p.triggerReconcile()
 			}
 		}
@@ -305,9 +305,9 @@ func (p *MicroKubeProvider) runJobRunnerWatch(ctx context.Context) error {
 // Uses an atomic guard to prevent unbounded goroutine growth when events arrive
 // faster than seeds complete.
 func (p *MicroKubeProvider) triggerNetworkReseed(networkName string) {
-	p.mu.RLock()
+	p.networksMu.RLock()
 	net, ok := p.networks[networkName]
-	p.mu.RUnlock()
+	p.networksMu.RUnlock()
 	if !ok || !net.Spec.Managed || net.Spec.ExternalDNS {
 		return
 	}

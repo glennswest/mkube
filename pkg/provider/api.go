@@ -920,7 +920,9 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 // and returns the result synchronously (with 30s timeout).
 func (p *MicroKubeProvider) handleNetworkSmokeTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	p.networksMu.RLock()
 	net, ok := p.networks[name]
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -1296,9 +1298,11 @@ func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.
 		nsSet[pvc.Namespace] = true
 	}
 	// Include network names as namespaces (for DNS/DHCP proxy resources)
+	p.networksMu.RLock()
 	for name := range p.networks {
 		nsSet[name] = true
 	}
+	p.networksMu.RUnlock()
 	// Always include "default"
 	nsSet["default"] = true
 
@@ -1344,7 +1348,10 @@ func (p *MicroKubeProvider) handleGetNamespace(w http.ResponseWriter, r *http.Re
 	}
 	// Check if it's a network name (used as namespace for DNS/DHCP proxy resources)
 	if !found {
-		if _, ok := p.networks[name]; ok {
+		p.networksMu.RLock()
+		_, netOK := p.networks[name]
+		p.networksMu.RUnlock()
+		if netOK {
 			found = true
 		}
 	}

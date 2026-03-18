@@ -1348,7 +1348,10 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 
 			// Re-seed DHCP pools/reservations/forwarders — the database
 			// may be empty after restart (redb ephemeral).
-			if _, ok := p.networks[dead.netName]; ok {
+			p.networksMu.RLock()
+			_, netExists := p.networks[dead.netName]
+			p.networksMu.RUnlock()
+			if netExists {
 				p.triggerNetworkReseed(dead.netName)
 			}
 		} else {
@@ -1510,7 +1513,10 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 
 		// Validate data network reference
 		if net := bmh.Spec.Network; net != "" {
-			if _, ok := p.networks[net]; !ok {
+			p.networksMu.RLock()
+			n, netOK := p.networks[net]
+			p.networksMu.RUnlock()
+			if !netOK {
 				items = append(items, CheckItem{
 					Name:    "bmh/" + bmh.Name + "/network",
 					Status:  "fail",
@@ -1519,7 +1525,7 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 			} else {
 				// Check DHCP reservation exists in the network
 				found := false
-				if n, ok := p.networks[net]; ok && bmh.Spec.BootMACAddress != "" {
+				if bmh.Spec.BootMACAddress != "" {
 					for _, r := range n.Spec.DHCP.Reservations {
 						if strings.EqualFold(r.MAC, bmh.Spec.BootMACAddress) {
 							found = true
@@ -1546,7 +1552,10 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 
 		// Validate IPMI network reference
 		if net := bmh.Spec.BMC.Network; net != "" {
-			if _, ok := p.networks[net]; !ok {
+			p.networksMu.RLock()
+			n, netOK := p.networks[net]
+			p.networksMu.RUnlock()
+			if !netOK {
 				items = append(items, CheckItem{
 					Name:    "bmh/" + bmh.Name + "/bmc-network",
 					Status:  "fail",
@@ -1554,7 +1563,7 @@ func (p *MicroKubeProvider) checkBMHs() []CheckItem {
 				})
 			} else {
 				found := false
-				if n, ok := p.networks[net]; ok && bmh.Spec.BMC.MAC != "" {
+				if bmh.Spec.BMC.MAC != "" {
 					for _, r := range n.Spec.DHCP.Reservations {
 						if strings.EqualFold(r.MAC, bmh.Spec.BMC.MAC) {
 							found = true
@@ -1643,7 +1652,14 @@ func (p *MicroKubeProvider) checkMicroDNSServices(ctx context.Context) []CheckIt
 		return nil
 	}
 
+	p.networksMu.RLock()
+	dnsNetSnap := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
+		dnsNetSnap = append(dnsNetSnap, net)
+	}
+	p.networksMu.RUnlock()
+
+	for _, net := range dnsNetSnap {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
 		}
@@ -1704,11 +1720,13 @@ func (p *MicroKubeProvider) checkMicroDNSServices(ctx context.Context) []CheckIt
 			} else {
 				// Count expected reservations from this network + relayed peers
 				expected := len(net.Spec.DHCP.Reservations)
+				p.networksMu.RLock()
 				for _, peer := range p.networks {
 					if peer.Name != net.Name && peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
 						expected += len(peer.Spec.DHCP.Reservations)
 					}
 				}
+				p.networksMu.RUnlock()
 
 				status := "pass"
 				msg := fmt.Sprintf("%d reservation(s) active", len(reservations))
@@ -1736,6 +1754,7 @@ func (p *MicroKubeProvider) checkMicroDNSServices(ctx context.Context) []CheckIt
 		}
 
 		var missing []string
+		p.networksMu.RLock()
 		for _, peer := range p.networks {
 			if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 				continue
@@ -1744,6 +1763,7 @@ func (p *MicroKubeProvider) checkMicroDNSServices(ctx context.Context) []CheckIt
 				missing = append(missing, peer.Spec.DNS.Zone)
 			}
 		}
+		p.networksMu.RUnlock()
 
 		if len(missing) > 0 {
 			items = append(items, CheckItem{
@@ -1798,7 +1818,13 @@ func (p *MicroKubeProvider) checkSmokeTests() []CheckItem {
 	}
 
 	// Flag networks with no smoke test result at all
+	p.networksMu.RLock()
+	smokeNetSnap := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
+		smokeNetSnap = append(smokeNetSnap, net)
+	}
+	p.networksMu.RUnlock()
+	for _, net := range smokeNetSnap {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
 		}

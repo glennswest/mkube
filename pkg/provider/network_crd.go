@@ -154,7 +154,9 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read network from store", "key", key, "error", err)
 			continue
 		}
+		p.networksMu.Lock()
 		p.networks[net.Name] = &net
+		p.networksMu.Unlock()
 
 		// Register with IPAM if not already known (CRD-only networks like
 		// g8/g9 are not in config.yaml and need dynamic registration)
@@ -172,6 +174,8 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 	// Ensure managed networks have their DNS pods deployed.
 	// On restart, the pod store entry may have been lost (e.g. if the pod
 	// was not tracked in p.pods when teardown ran, or if NATS lost the key).
+	var managedNets []*Network
+	p.networksMu.RLock()
 	for _, net := range p.networks {
 		if !net.Spec.Managed || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
@@ -188,6 +192,10 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 				continue // exists in store, reconciler will pick it up
 			}
 		}
+		managedNets = append(managedNets, net)
+	}
+	p.networksMu.RUnlock()
+	for _, net := range managedNets {
 		p.deps.Logger.Infow("managed network missing DNS pod, deploying", "network", net.Name)
 		if err := p.deployManagedDNS(ctx, net); err != nil {
 			p.deps.Logger.Warnw("failed to deploy managed DNS on load", "network", net.Name, "error", err)
@@ -198,6 +206,8 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 // reconcileManagedDNSPods checks all managed networks and recreates DNS pods
 // that are missing (e.g. deleted manually or lost during restart).
 func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
+	p.networksMu.RLock()
+	var missing []*Network
 	for _, net := range p.networks {
 		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
 			continue
@@ -206,6 +216,10 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 		if _, ok := p.pods[podMapKey]; ok {
 			continue // pod tracked in memory
 		}
+		missing = append(missing, net)
+	}
+	p.networksMu.RUnlock()
+	for _, net := range missing {
 		p.deps.Logger.Infow("managed network missing DNS pod, recreating", "network", net.Name)
 		if err := p.deployManagedDNS(ctx, net); err != nil {
 			p.deps.Logger.Warnw("failed to recreate managed DNS pod", "network", net.Name, "error", err)
@@ -219,7 +233,13 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 // while mkube was down or before ConfigMap sync code existed).
 func (p *MicroKubeProvider) ReconcileNetworkConfigMaps(ctx context.Context) {
 	updated := 0
+	p.networksMu.RLock()
+	netSnap := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
+		netSnap = append(netSnap, net)
+	}
+	p.networksMu.RUnlock()
+	for _, net := range netSnap {
 		hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
 		if !hasDNS {
 			continue
@@ -277,7 +297,9 @@ func (p *MicroKubeProvider) MigrateNetworkConfig(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to migrate network", "name", nd.Name, "error", err)
 			continue
 		}
+		p.networksMu.Lock()
 		p.networks[net.Name] = &net
+		p.networksMu.Unlock()
 		p.deps.Logger.Infow("migrated network", "name", net.Name, "type", net.Spec.Type)
 	}
 }
@@ -379,9 +401,15 @@ func (p *MicroKubeProvider) handleListNetworks(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	items := make([]Network, 0, len(p.networks))
+	p.networksMu.RLock()
+	snapshot := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
-		enriched := net.DeepCopy()
+		snapshot = append(snapshot, net.DeepCopy())
+	}
+	p.networksMu.RUnlock()
+
+	items := make([]Network, 0, len(snapshot))
+	for _, enriched := range snapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 		p.enrichNetworkStatus(r.Context(), enriched)
 		items = append(items, *enriched)
@@ -401,13 +429,17 @@ func (p *MicroKubeProvider) handleListNetworks(w http.ResponseWriter, r *http.Re
 func (p *MicroKubeProvider) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	p.networksMu.RLock()
 	net, ok := p.networks[name]
+	var enriched *Network
+	if ok {
+		enriched = net.DeepCopy()
+	}
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
-
-	enriched := net.DeepCopy()
 	enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 	p.enrichNetworkStatus(r.Context(), enriched)
 
@@ -435,10 +467,13 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	p.networksMu.Lock()
 	if _, exists := p.networks[net.Name]; exists {
+		p.networksMu.Unlock()
 		http.Error(w, fmt.Sprintf("network %q already exists", net.Name), http.StatusConflict)
 		return
 	}
+	p.networksMu.Unlock()
 
 	net.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 	if net.CreationTimestamp.IsZero() {
@@ -461,7 +496,9 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 		net.Spec.Bridge = "bridge-" + net.Name
 	}
 
+	p.networksMu.Lock()
 	p.networks[net.Name] = &net
+	p.networksMu.Unlock()
 
 	// Register with IPAM so pods on this network can allocate IPs
 	if err := p.deps.NetworkMgr.RegisterNetwork(networkToNetworkDef(&net)); err != nil {
@@ -490,12 +527,19 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	p.networksMu.RLock()
 	old, ok := p.networks[name]
+	var wasManaged bool
+	var oldTS metav1.Time
+	if ok {
+		wasManaged = old.Spec.Managed
+		oldTS = old.CreationTimestamp
+	}
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
-	wasManaged := old.Spec.Managed
 
 	var net Network
 	if err := json.NewDecoder(r.Body).Decode(&net); err != nil {
@@ -507,7 +551,7 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 
 	// Preserve creation timestamp from existing
 	if net.CreationTimestamp.IsZero() {
-		net.CreationTimestamp = old.CreationTimestamp
+		net.CreationTimestamp = oldTS
 	}
 
 	if p.deps.Store != nil && p.deps.Store.Networks != nil {
@@ -517,7 +561,9 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	p.networksMu.Lock()
 	p.networks[name] = &net
+	p.networksMu.Unlock()
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, &net)
@@ -533,16 +579,21 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	p.networksMu.RLock()
 	existing, ok := p.networks[name]
+	var merged *Network
+	var wasManaged bool
+	if ok {
+		wasManaged = existing.Spec.Managed
+		merged = existing.DeepCopy()
+	}
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
 	}
-	wasManaged := existing.Spec.Managed
 
 	// Start from existing, overlay the patch
-	merged := existing.DeepCopy()
-
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("reading body: %v", err), http.StatusBadRequest)
@@ -563,7 +614,9 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	p.networksMu.Lock()
 	p.networks[name] = merged
+	p.networksMu.Unlock()
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, merged)
@@ -579,7 +632,9 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	p.networksMu.RLock()
 	net, ok := p.networks[name]
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -613,7 +668,9 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	p.networksMu.Lock()
 	delete(p.networks, name)
+	p.networksMu.Unlock()
 
 	// Unregister from IPAM and network manager
 	if p.deps.NetworkMgr != nil {
@@ -633,7 +690,9 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handleGetNetworkConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	p.networksMu.RLock()
 	net, ok := p.networks[name]
+	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -664,12 +723,14 @@ func (p *MicroKubeProvider) generateMinimalTOML(net *Network) string {
 	hasDHCP := net.Spec.DHCP.Enabled && net.Spec.DHCP.ServerNetwork == ""
 	if !hasDHCP {
 		// Check if any peer relays to this network
+		p.networksMu.RLock()
 		for _, peer := range p.networks {
 			if peer.Name != net.Name && peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
 				hasDHCP = true
 				break
 			}
 		}
+		p.networksMu.RUnlock()
 	}
 	if hasDHCP {
 		// Build reverse zone from CIDR for DNS registration
@@ -780,12 +841,12 @@ func (p *MicroKubeProvider) handleWatchNetworks(w http.ResponseWriter, r *http.R
 
 	// Send existing Network objects as ADDED events (snapshot under read lock)
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
+	p.networksMu.RLock()
 	netSnapshot := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
 		netSnapshot = append(netSnapshot, net.DeepCopy())
 	}
-	p.mu.RUnlock()
+	p.networksMu.RUnlock()
 	for _, enriched := range netSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 		p.enrichNetworkStatus(ctx, enriched)
@@ -1185,6 +1246,16 @@ func (p *MicroKubeProvider) handleManagedDNSTransition(ctx context.Context, wasM
 func (p *MicroKubeProvider) checkNetworkCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	// Snapshot network names and values for consistency checking
+	p.networksMu.RLock()
+	netNames := make([]string, 0, len(p.networks))
+	netSnap := make([]*Network, 0, len(p.networks))
+	for name, net := range p.networks {
+		netNames = append(netNames, name)
+		netSnap = append(netSnap, net)
+	}
+	p.networksMu.RUnlock()
+
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.Networks != nil {
 		storeKeys, err := p.deps.Store.Networks.Keys(ctx, "")
@@ -1194,7 +1265,7 @@ func (p *MicroKubeProvider) checkNetworkCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for name := range p.networks {
+			for _, name := range netNames {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("network-crd/%s", name),
@@ -1222,8 +1293,8 @@ func (p *MicroKubeProvider) checkNetworkCRDs(ctx context.Context) []CheckItem {
 		}
 	}
 
-	// DNS liveness per managed network
-	for _, net := range p.networks {
+	// DNS liveness per managed network (using snapshot from above)
+	for _, net := range netSnap {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Server == "" || net.Spec.DNS.Zone == "" {
 			continue
 		}

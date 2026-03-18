@@ -236,7 +236,10 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 	}
 
 	// Validate network exists
-	if _, exists := p.networks[reg.Spec.Network]; !exists {
+	p.networksMu.RLock()
+	_, netExists := p.networks[reg.Spec.Network]
+	p.networksMu.RUnlock()
+	if !netExists {
 		http.Error(w, fmt.Sprintf("network %q not found", reg.Spec.Network), http.StatusBadRequest)
 		return
 	}
@@ -262,7 +265,9 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 		reg.Spec.ListenAddr = ":5000"
 	}
 	if reg.Spec.Hostname == "" {
+		p.networksMu.RLock()
 		net := p.networks[reg.Spec.Network]
+		p.networksMu.RUnlock()
 		reg.Spec.Hostname = fmt.Sprintf("registry-%s.%s", reg.Name, net.Spec.DNS.Zone)
 	}
 	if reg.Spec.WatchPollSeconds == 0 {

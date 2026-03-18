@@ -185,7 +185,13 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 		return
 	}
 
+	p.networksMu.RLock()
+	infraNetSnap := make([]*Network, 0, len(p.networks))
 	for _, netObj := range p.networks {
+		infraNetSnap = append(infraNetSnap, netObj)
+	}
+	p.networksMu.RUnlock()
+	for _, netObj := range infraNetSnap {
 		if netObj.Spec.ExternalDNS || netObj.Spec.DNS.Zone == "" || netObj.Spec.DNS.Server == "" {
 			continue
 		}

@@ -112,6 +112,7 @@ type MicroKubeProvider struct {
 	deployments     map[string]*Deployment                  // namespace/name -> deployment
 	pvcs            map[string]*corev1.PersistentVolumeClaim // namespace/name -> PVC
 	networks        map[string]*Network                     // name -> Network (cluster-scoped)
+	networksMu      sync.RWMutex                            // protects networks map independently
 	registries      map[string]*Registry                    // name -> Registry (cluster-scoped)
 	iscsiCdroms     map[string]*ISCSICdrom                  // name -> ISCSICdrom (cluster-scoped)
 	iscsiDisks      map[string]*ISCSIDisk                   // name -> ISCSIDisk (cluster-scoped)
@@ -1623,7 +1624,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// Override static-config-derived DNS ConfigMaps with Network CRD
 	// versions for migrated networks. Network CRDs are the source of
 	// truth for DHCP reservations and DNS config once migrated.
+	p.networksMu.RLock()
+	bootNetSnap := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
+		bootNetSnap = append(bootNetSnap, net)
+	}
+	p.networksMu.RUnlock()
+	for _, net := range bootNetSnap {
 		hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
 		if !hasDNS {
 			continue
