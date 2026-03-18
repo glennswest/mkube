@@ -232,10 +232,21 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 		log.Warnw("initial reconcile failed", "error", err)
 	}
 
+	// Periodic full reconcile — catches image digest changes, container
+	// health, stopped containers, and anything the event-driven paths miss.
+	// Without this, image pushes are only detected via push-notify webhook
+	// or registry SSE events, both of which may not fire for external pushes.
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-ticker.C:
+			if err := p.reconcile(ctx); err != nil {
+				log.Errorw("reconciliation error (periodic)", "error", err)
+			}
 		case <-p.kickReconcile:
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (kick-triggered)", "error", err)
