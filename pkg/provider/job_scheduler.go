@@ -129,26 +129,24 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 		}
 
 		// Set BMH provisioning config and power on
-		for _, bmh := range p.bareMetalHosts {
+		for bmhKey, bmh := range p.bareMetalHosts {
 			if bmh.Name == bmhName {
-				// cloudid Template takes precedence over legacy BootConfigRef
-				if runner.Spec.Template != "" {
-					bmh.Spec.Template = runner.Spec.Template
-				} else {
-					bmh.Spec.BootConfigRef = runner.Spec.BootConfigRef
-				}
-				if runner.Spec.Image != "" {
-					bmh.Spec.Image = runner.Spec.Image
-				}
-				online := true
-				bmh.Spec.Online = &online
 				job.Status.HostIP = bmh.Spec.IP
-
-				// Persist BMH changes
-				if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-					bmhKey := bmh.Namespace + "." + bmh.Name
-					_, _ = p.deps.Store.BareMetalHosts.PutJSON(ctx, bmhKey, bmh)
-				}
+				runnerTemplate := runner.Spec.Template
+				runnerBootConfigRef := runner.Spec.BootConfigRef
+				runnerImage := runner.Spec.Image
+				_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+					if runnerTemplate != "" {
+						b.Spec.Template = runnerTemplate
+					} else {
+						b.Spec.BootConfigRef = runnerBootConfigRef
+					}
+					if runnerImage != "" {
+						b.Spec.Image = runnerImage
+					}
+					online := true
+					b.Spec.Online = &online
+				})
 				break
 			}
 		}
@@ -305,14 +303,12 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 			if hr.Spec.Pool != pool || hr.Status.ActiveJob != "" {
 				continue
 			}
-			for _, bmh := range p.bareMetalHosts {
+			for bmhKey, bmh := range p.bareMetalHosts {
 				if bmh.Name == hr.Spec.BMHRef && bmh.Spec.Online != nil && *bmh.Spec.Online {
-					offline := false
-					bmh.Spec.Online = &offline
-					if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-						bmhKey := bmh.Namespace + "." + bmh.Name
-						_, _ = p.deps.Store.BareMetalHosts.PutJSON(ctx, bmhKey, bmh)
-					}
+					_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+						offline := false
+						b.Spec.Online = &offline
+					})
 					log.Infow("powering off idle host",
 						"bmh", bmh.Name,
 						"pool", pool,
@@ -338,17 +334,15 @@ func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log 
 			if hr.Spec.Pool != pool || hr.Status.ActiveJob != "" {
 				continue
 			}
-			for _, bmh := range p.bareMetalHosts {
+			for bmhKey, bmh := range p.bareMetalHosts {
 				if bmh.Name != hr.Spec.BMHRef {
 					continue
 				}
 				if bmh.Spec.Online == nil || !*bmh.Spec.Online {
-					online := true
-					bmh.Spec.Online = &online
-					if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-						bmhKey := bmh.Namespace + "." + bmh.Name
-						_, _ = p.deps.Store.BareMetalHosts.PutJSON(ctx, bmhKey, bmh)
-					}
+					_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+						online := true
+						b.Spec.Online = &online
+					})
 					log.Infow("powering on host for scheduled work hours",
 						"bmh", bmh.Name,
 						"pool", pool,

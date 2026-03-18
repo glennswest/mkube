@@ -425,25 +425,15 @@ func (p *MicroKubeProvider) handleRefreshBMH(w http.ResponseWriter, r *http.Requ
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.bareMetalHosts[key]
-	if !ok {
-		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
-		return
-	}
-
-	// Set refresh annotation with current timestamp
-	if existing.Annotations == nil {
-		existing.Annotations = make(map[string]string)
-	}
-	existing.Annotations["bmh.mkube.io/refresh"] = time.Now().UTC().Format(time.RFC3339)
-
-	// Persist to NATS so the watch fires
-	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-		storeKey := ns + "." + name
-		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, existing); err != nil {
-			http.Error(w, fmt.Sprintf("persisting refresh: %v", err), http.StatusInternalServerError)
-			return
+	ts := time.Now().UTC().Format(time.RFC3339)
+	if err := p.updateBMHFields(r.Context(), key, func(bmh *BareMetalHost) {
+		if bmh.Annotations == nil {
+			bmh.Annotations = make(map[string]string)
 		}
+		bmh.Annotations["bmh.mkube.io/refresh"] = ts
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("persisting refresh: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	podWriteJSON(w, http.StatusOK, map[string]string{
@@ -458,18 +448,14 @@ func (p *MicroKubeProvider) handleRefreshAllBMH(w http.ResponseWriter, r *http.R
 	var names []string
 
 	for key, bmh := range p.bareMetalHosts {
-		if bmh.Annotations == nil {
-			bmh.Annotations = make(map[string]string)
-		}
-		bmh.Annotations["bmh.mkube.io/refresh"] = ts
-
-		if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-			parts := strings.SplitN(key, "/", 2)
-			storeKey := parts[0] + "." + parts[1]
-			if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, bmh); err != nil {
-				p.deps.Logger.Warnw("failed to persist refresh for BMH", "key", key, "error", err)
-				continue
+		if err := p.updateBMHFields(r.Context(), key, func(b *BareMetalHost) {
+			if b.Annotations == nil {
+				b.Annotations = make(map[string]string)
 			}
+			b.Annotations["bmh.mkube.io/refresh"] = ts
+		}); err != nil {
+			p.deps.Logger.Warnw("failed to persist refresh for BMH", "key", key, "error", err)
+			continue
 		}
 		names = append(names, bmh.Name)
 	}
@@ -479,6 +465,36 @@ func (p *MicroKubeProvider) handleRefreshAllBMH(w http.ResponseWriter, r *http.R
 		"message": fmt.Sprintf("refresh requested for %d hosts", len(names)),
 		"hosts":   names,
 	})
+}
+
+// updateBMHFields atomically applies field-level updates to a BMH without
+// overwriting the entire object. This prevents the read-merge-write race where
+// internal reconciliation (job scheduler, consistency checks) can clobber a
+// concurrent PATCH from the user (e.g. spec.online=true gets overwritten).
+//
+// The mutate function receives the live in-memory BMH and should only modify
+// the specific fields it owns. The updated object is then persisted to NATS.
+func (p *MicroKubeProvider) updateBMHFields(ctx context.Context, key string, mutate func(bmh *BareMetalHost)) error {
+	bmh, ok := p.bareMetalHosts[key]
+	if !ok {
+		return fmt.Errorf("BareMetalHost %s not found", key)
+	}
+
+	// Apply the mutation to the live object (already under p.mu from WrapHandler
+	// or caller must hold p.mu for background goroutines)
+	mutate(bmh)
+
+	// Persist to NATS
+	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) == 2 {
+			storeKey := parts[0] + "." + parts[1]
+			if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bmh); err != nil {
+				return fmt.Errorf("persisting BMH update: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // ─── BMH → Network CRD Sync ─────────────────────────────────────────────────

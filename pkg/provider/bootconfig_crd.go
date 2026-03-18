@@ -490,18 +490,12 @@ func (p *MicroKubeProvider) handleBootComplete(w http.ResponseWriter, r *http.Re
 	}
 
 	// Set image to localboot
-	merged := matchedBMH.DeepCopy()
-	merged.Spec.Image = "localboot"
-
-	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
-		storeKey := matchedBMH.Namespace + "." + matchedBMH.Name
-		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, merged); err != nil {
-			http.Error(w, fmt.Sprintf("persisting BMH update: %v", err), http.StatusInternalServerError)
-			return
-		}
+	if err := p.updateBMHFields(r.Context(), matchedKey, func(b *BareMetalHost) {
+		b.Spec.Image = "localboot"
+	}); err != nil {
+		http.Error(w, fmt.Sprintf("persisting BMH update: %v", err), http.StatusInternalServerError)
+		return
 	}
-
-	p.bareMetalHosts[matchedKey] = merged
 	p.deps.Logger.Infow("boot-complete: switched to localboot", "bmh", matchedBMH.Name, "ip", sourceIP)
 
 	w.Header().Set("Content-Type", "application/json")
