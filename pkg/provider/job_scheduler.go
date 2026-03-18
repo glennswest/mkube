@@ -128,10 +128,11 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 			}
 		}
 
-		// Set BMH provisioning config and power on
+		// Set BMH provisioning config and power on (only if not already online)
 		for bmhKey, bmh := range p.bareMetalHosts {
 			if bmh.Name == bmhName {
 				job.Status.HostIP = bmh.Spec.IP
+				alreadyOnline := bmh.Spec.Online != nil && *bmh.Spec.Online
 				runnerTemplate := runner.Spec.Template
 				runnerBootConfigRef := runner.Spec.BootConfigRef
 				runnerImage := runner.Spec.Image
@@ -144,11 +145,17 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 					if runnerImage != "" {
 						b.Spec.Image = runnerImage
 					}
-					online := true
-					b.Spec.Online = &online
+					if !alreadyOnline {
+						online := true
+						b.Spec.Online = &online
+					}
 					// Clear manual-power annotation — scheduler takes power control
 					delete(b.Annotations, "bmh.mkube.io/manual-power")
 				})
+				if alreadyOnline {
+					log.Infow("host already online, skipping power-on (agent should pick up job)",
+						"bmh", bmhName, "job", jobKey(job))
+				}
 				break
 			}
 		}

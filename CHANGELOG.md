@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-18
+- **fix:** Job scheduler no longer reboots hosts that are already online — if the BMH is already powered on (agent running), the scheduler skips the power-on and lets the agent pick up the job via its next poll. Previously every job submission triggered a reboot even when the host was already up.
 - **docs:** README updated for template-based job runner (`template: fcos/agent-runner` replaces `bootConfigRef: coreos-agent`), migration instructions, BMH reboot annotation
 - **feat:** mkube-agent container image — Containerfile using stormdbase (process manager with SSH, logging, liveness checks) for x86_64. Makefile targets: `build-agent-image`, `push-agent`, `deploy-agent`. stormd supervises the agent process with auto-restart on exit.
 - **feat:** Namespace `Owner` field — maps namespace to identity username via `vkube.io/owner` annotation. Containers inherit namespace owner's SSH keys through cloudid.
