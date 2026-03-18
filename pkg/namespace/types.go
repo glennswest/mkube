@@ -19,6 +19,7 @@ type Namespace struct {
 	Zone       string         `json:"zone" yaml:"zone"`             // zone name (= domain)
 	Network    string         `json:"network" yaml:"network"`       // "gt"
 	Mode       NetworkingMode `json:"mode" yaml:"mode"`             // "open" or "nested"
+	Owner      string         `json:"owner" yaml:"owner"`           // identity username (e.g., "gwest")
 	Containers []string       `json:"containers" yaml:"containers"` // container names in this namespace
 }
 

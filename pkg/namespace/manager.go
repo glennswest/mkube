@@ -173,7 +173,7 @@ func (m *Manager) GetNamespace(name string) (*Namespace, error) {
 }
 
 // CreateNamespace creates a namespace, auto-creating its zone via ZoneResolver if needed.
-func (m *Manager) CreateNamespace(ctx context.Context, name, domain, networkName string, mode NetworkingMode, dedicated bool) (*Namespace, error) {
+func (m *Manager) CreateNamespace(ctx context.Context, name, domain, networkName string, mode NetworkingMode, dedicated bool, owner string) (*Namespace, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -211,6 +211,7 @@ func (m *Manager) CreateNamespace(ctx context.Context, name, domain, networkName
 		Zone:    domain,
 		Network: networkName,
 		Mode:    mode,
+		Owner:   owner,
 	}
 
 	m.state.Namespaces[name] = ns

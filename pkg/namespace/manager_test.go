@@ -176,7 +176,7 @@ func TestCreateNamespace(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	ns, err := mgr.CreateNamespace(ctx, "kube", "kube.gt.lo", "gt", ModeNested, false)
+	ns, err := mgr.CreateNamespace(ctx, "kube", "kube.gt.lo", "gt", ModeNested, false, "")
 	if err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestCreateNamespaceDefaults(t *testing.T) {
 	}
 
 	// Create with all defaults (empty domain, network, mode)
-	ns, err := mgr.CreateNamespace(ctx, "infra", "", "", "", false)
+	ns, err := mgr.CreateNamespace(ctx, "infra", "", "", "", false, "")
 	if err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestCreateNamespaceDuplicate(t *testing.T) {
 	}
 
 	// "gt" already exists from bootstrap
-	_, err := mgr.CreateNamespace(ctx, "gt", "gt.lo", "gt", ModeOpen, false)
+	_, err := mgr.CreateNamespace(ctx, "gt", "gt.lo", "gt", ModeOpen, false, "")
 	if err == nil {
 		t.Fatal("expected error creating duplicate namespace")
 	}
@@ -252,7 +252,7 @@ func TestDeleteNamespace(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	_, err := mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false)
+	_, err := mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestDeleteNamespaceWithContainers(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	_, err := mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false)
+	_, err := mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestStatePersistence(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	_, err := mgr1.CreateNamespace(ctx, "persist", "persist.gt.lo", "gt", ModeNested, false)
+	_, err := mgr1.CreateNamespace(ctx, "persist", "persist.gt.lo", "gt", ModeNested, false, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestK8sAPIDeleteNamespace(t *testing.T) {
 	}
 
 	// Create a namespace first
-	_, _ = mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false)
+	_, _ = mgr.CreateNamespace(ctx, "test", "test.gt.lo", "gt", "", false, "")
 
 	mux := http.NewServeMux()
 	mgr.RegisterRoutes(mux)

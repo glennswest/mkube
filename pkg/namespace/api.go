@@ -15,6 +15,7 @@ const (
 	annNetwork      = "vkube.io/network"
 	annMode         = "vkube.io/mode"
 	annDedicatedDNS = "vkube.io/dedicated-dns"
+	annOwner        = "vkube.io/owner"
 )
 
 // RegisterRoutes registers namespace API handlers on the provided mux.
@@ -66,9 +67,9 @@ func (m *Manager) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, domain, network, mode, dedicated := fromK8sNamespace(&k8sNS, m)
+	name, domain, network, mode, dedicated, owner := fromK8sNamespace(&k8sNS, m)
 
-	ns, err := m.CreateNamespace(r.Context(), name, domain, network, mode, dedicated)
+	ns, err := m.CreateNamespace(r.Context(), name, domain, network, mode, dedicated, owner)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "already exists") {
@@ -110,6 +111,9 @@ func toK8sNamespace(ns *Namespace) corev1.Namespace {
 		annNetwork: ns.Network,
 		annMode:    string(ns.Mode),
 	}
+	if ns.Owner != "" {
+		annotations[annOwner] = ns.Owner
+	}
 
 	phase := corev1.NamespaceActive
 	if len(ns.Containers) == 0 {
@@ -133,7 +137,7 @@ func toK8sNamespace(ns *Namespace) corev1.Namespace {
 	}
 }
 
-func fromK8sNamespace(k8sNS *corev1.Namespace, m *Manager) (name, domain, network string, mode NetworkingMode, dedicated bool) {
+func fromK8sNamespace(k8sNS *corev1.Namespace, m *Manager) (name, domain, network string, mode NetworkingMode, dedicated bool, owner string) {
 	name = k8sNS.Name
 
 	ann := k8sNS.Annotations
@@ -143,6 +147,7 @@ func fromK8sNamespace(k8sNS *corev1.Namespace, m *Manager) (name, domain, networ
 
 	domain = ann[annDomain]
 	network = ann[annNetwork]
+	owner = ann[annOwner]
 
 	if modeStr, ok := ann[annMode]; ok {
 		mode = NetworkingMode(modeStr)
