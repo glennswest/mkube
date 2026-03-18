@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-18
+- **fix:** Managed registry pods missing PVC volume for data — `deployManagedRegistry` created pods with a `data` volumeMount but no matching Volume definition (no PVC). Registry storage was ephemeral and would be lost on container recreation. Added PVC-backed volume (`registry-{name}-data`) matching the DNS pod pattern. Extended `fixOrphanedVolumeMounts` migration to detect and repair existing registry pods loaded from NATS.
+
 ### 2026-03-17
 - **fix:** Concurrent map access in provider core — 20+ unprotected map accesses across reconcile(), GetPod, GetPods, CreatePod, UpdatePod, DeletePod, blueGreenUpdate, NotifyPods, watchPods, handleLifecycleFailed, reregisterPodDNS, syncConfigMapsToDisk, checkPodPortHealth, checkInfraHealth, seedDHCPPool, resolveConfigMapVolume. Maps affected: `pods`, `configMaps`, `iscsiCdroms`, `redeploying`, `createFailures`, `restartBackoff`. All now use targeted lock/unlock or snapshot-then-iterate pattern to avoid holding locks during I/O. Prevents `fatal error: concurrent map read and map write` between reconciler, API handlers, lifecycle callbacks, and background goroutines.
 - **fix:** Concurrent map access in consistency checker — all check functions now use snapshot-then-release pattern. The consistency checker runs in a separate goroutine via `CheckConsistencyAsync`, racing with API handlers, NATS watchers, and the reconciler on shared maps. Crash site was `buildExpectedDNSRecords` iterating `p.bareMetalHosts` without lock. Applied snapshot-under-lock to 15+ map accesses across 8 files: `bareMetalHosts`, `registries`, `iscsiCdroms`, `iscsiDisks`, `bootConfigs`, `hostReservations`, `jobRunners`, `jobs`, `pods`, `pvcs`, `deployments`, `redeploying`, `networkFailures`. Lock is never held during I/O operations (NATS queries, DNS probes, HTTP health checks).

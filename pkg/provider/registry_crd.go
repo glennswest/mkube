@@ -710,6 +710,14 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 						},
 					},
 				},
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: "registry-" + reg.Name + "-data",
+						},
+					},
+				},
 			},
 			Containers: []corev1.Container{
 				{
