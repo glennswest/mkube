@@ -219,7 +219,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		// Register state change callback for immediate pod status updates
 		// and reconcile kicks when containers stop/fail.
 		deps.LifecycleMgr.OnStateChanged = func(containerName, oldStatus, newStatus string) {
-			p.deps.Logger.Infow("container state changed",
+			p.deps.Logger.Debugw("container state changed",
 				"container", containerName, "from", oldStatus, "to", newStatus)
 
 			// Find owning pod and push immediate status update
@@ -2977,7 +2977,7 @@ func (p *MicroKubeProvider) registerPodAliases(ctx context.Context, pod *corev1.
 		if regErr := p.deps.NetworkMgr.RegisterDNS(ctx, networkName, a.hostname, ip); regErr != nil {
 			log.Warnw("failed to register DNS alias", "alias", a.hostname, "ip", ip, "error", regErr)
 		} else {
-			log.Infow("DNS alias registered", "alias", a.hostname, "container", a.containerName, "ip", ip)
+			log.Debugw("DNS alias registered", "alias", a.hostname, "container", a.containerName, "ip", ip)
 		}
 
 		// Register in namespace zone (clean stale + register)

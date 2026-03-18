@@ -341,10 +341,13 @@ func (p *MicroKubeProvider) checkPodPortHealth(ctx context.Context) {
 			failures := podHealthFailures[healthKey]
 			infraMu.Unlock()
 
-			p.deps.Logger.Warnw("pod ports unreachable on running container",
-				"pod", pod.Name, "container", c.Name,
-				"ip", podIP, "consecutiveFailures", failures,
-				"threshold", podHealthFailureThreshold)
+			// Only log on first failure and at threshold to avoid per-cycle spam
+			if failures == 1 || failures == podHealthFailureThreshold {
+				p.deps.Logger.Warnw("pod ports unreachable on running container",
+					"pod", pod.Name, "container", c.Name,
+					"ip", podIP, "consecutiveFailures", failures,
+					"threshold", podHealthFailureThreshold)
+			}
 
 			if failures >= podHealthFailureThreshold {
 				p.deps.Logger.Errorw("pod container dead beyond threshold, restarting",
