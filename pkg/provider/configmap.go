@@ -155,7 +155,10 @@ func (p *MicroKubeProvider) resolveConfigMapVolume(pod *corev1.Pod, volumeName s
 			return nil
 		}
 		key := pod.Namespace + "/" + v.ConfigMap.Name
-		if cm, ok := p.configMaps[key]; ok {
+		p.mu.RLock()
+		cm, ok := p.configMaps[key]
+		p.mu.RUnlock()
+		if ok {
 			return cm.Data
 		}
 		return nil

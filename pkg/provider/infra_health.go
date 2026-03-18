@@ -235,7 +235,9 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 				"network", netObj.Name, "failures", failures)
 
 			podKey := netObj.Name + "/dns"
+			p.mu.RLock()
 			pod, exists := p.pods[podKey]
+			p.mu.RUnlock()
 			if exists {
 				p.recordEvent(pod, "DNSCriticalFailure",
 					fmt.Sprintf("DNS fully dead for %d consecutive checks, forcing recreation", failures),
@@ -281,7 +283,13 @@ const podHealthFailureThreshold = 3
 // checkPodPortHealth probes declared TCP ports on all tracked running pods.
 // On consecutive failures, restarts the container.
 func (p *MicroKubeProvider) checkPodPortHealth(ctx context.Context) {
+	p.mu.RLock()
+	podSnap := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		podSnap = append(podSnap, pod)
+	}
+	p.mu.RUnlock()
+	for _, pod := range podSnap {
 		for i, c := range pod.Spec.Containers {
 			tcpPorts := collectTCPPorts(c)
 			if len(tcpPorts) == 0 {

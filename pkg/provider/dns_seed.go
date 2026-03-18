@@ -123,7 +123,10 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 	// All PXE clients on data networks boot baremetalservices by default
 	// unless overridden by a per-reservation root_path.
 	if source.Spec.Type == NetworkTypeData {
-		if cdrom, ok := p.iscsiCdroms["baremetalservices"]; ok && cdrom.Status.TargetIQN != "" {
+		p.mu.RLock()
+		cdrom, ok := p.iscsiCdroms["baremetalservices"]
+		p.mu.RUnlock()
+		if ok && cdrom.Status.TargetIQN != "" {
 			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
 			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
 		}
