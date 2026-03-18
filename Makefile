@@ -144,7 +144,7 @@ test-integration: build-test
 ## Build mkube-agent container image (x86_64, stormdbase)
 build-agent-image: build-agent
 	cp dist/mkube-agent cmd/mkube-agent/mkube-agent
-	podman build --format docker --platform linux/amd64 -f cmd/mkube-agent/Containerfile -t $(REGISTRY)/mkube-agent:edge cmd/mkube-agent/
+	podman build --format docker --platform linux/amd64 --tls-verify=false -f cmd/mkube-agent/Containerfile -t $(REGISTRY)/mkube-agent:edge cmd/mkube-agent/
 	rm -f cmd/mkube-agent/mkube-agent
 
 ## Push mkube-agent container image to local registry
