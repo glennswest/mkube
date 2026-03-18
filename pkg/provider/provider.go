@@ -1808,7 +1808,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 		delete(actualByName, name)
 		// Untrack the pod so step 3 sees it as missing
+		p.mu.Lock()
 		delete(p.pods, podKey(ownerPod))
+		p.mu.Unlock()
 		globalStats.RecordRecreate(name)
 		p.recordEvent(ownerPod, "RecoveryRecreate",
 			fmt.Sprintf("Container %s destroyed for recreation after persistent fault: %s", name, comment), "Warning")
@@ -1838,7 +1840,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				_ = p.deps.NetworkMgr.ReleaseInterface(ctx, veth)
 			}
 			// Untrack if still in memory
+			p.mu.Lock()
 			delete(p.pods, podKey(pod))
+			p.mu.Unlock()
 		}
 	}
 

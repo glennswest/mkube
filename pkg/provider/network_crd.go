@@ -154,7 +154,9 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read network from store", "key", key, "error", err)
 			continue
 		}
+		p.mu.Lock()
 		p.networks[net.Name] = &net
+		p.mu.Unlock()
 
 		// Register with IPAM if not already known (CRD-only networks like
 		// g8/g9 are not in config.yaml and need dynamic registration)
@@ -231,6 +233,10 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 // while mkube was down or before ConfigMap sync code existed).
 func (p *MicroKubeProvider) ReconcileNetworkConfigMaps(ctx context.Context) {
 	updated := 0
+	// Lock protects p.networks, p.configMaps, and p.pods (via generateMinimalTOML).
+	// Only called from SetStore (background goroutine), never from HTTP handlers.
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, net := range p.networks {
 		hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
 		if !hasDNS {
@@ -289,7 +295,9 @@ func (p *MicroKubeProvider) MigrateNetworkConfig(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to migrate network", "name", nd.Name, "error", err)
 			continue
 		}
+		p.mu.Lock()
 		p.networks[net.Name] = &net
+		p.mu.Unlock()
 		p.deps.Logger.Infow("migrated network", "name", net.Name, "type", net.Spec.Type)
 	}
 }
