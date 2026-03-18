@@ -314,7 +314,7 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 
 		// Check if DHCP pools exist — empty means needs re-seed
 		needsSeed := false
-		if net.Spec.DHCP.Enabled || p.networkHasDHCP(net.Name) {
+		if net.Spec.DHCP.Enabled || p.networkHasDHCPFromSnapshot(net.Name, rdcNetsSnap) {
 			pools, err := dnsClient.ListDHCPPools(ctx, endpoint)
 			if err == nil && len(pools) == 0 {
 				p.deps.Logger.Infow("microdns has empty DHCP pools, re-seeding",

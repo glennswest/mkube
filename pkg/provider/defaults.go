@@ -178,10 +178,37 @@ func (p *MicroKubeProvider) networkHasDHCP(name string) bool {
 			return true
 		}
 	}
-	// Check Network CRDs
-	// NOTE: caller must hold p.mu (Lock or RLock) when from background goroutines.
+	// Check Network CRDs — caller must hold p.mu when from background goroutines.
 	// HTTP handlers are protected by WrapHandler.
 	for _, net := range p.networks {
+		if !net.Spec.DHCP.Enabled {
+			continue
+		}
+		if net.Name == name && net.Spec.DHCP.ServerNetwork == "" {
+			return true
+		}
+		if net.Spec.DHCP.ServerNetwork == name {
+			return true
+		}
+	}
+	return false
+}
+
+// networkHasDHCPFromSnapshot is the lock-free variant of networkHasDHCP for
+// use in background goroutines that already hold a networks snapshot.
+func (p *MicroKubeProvider) networkHasDHCPFromSnapshot(name string, netsSnap []*Network) bool {
+	for _, net := range p.deps.Config.Networks {
+		if !net.DNS.DHCP.Enabled {
+			continue
+		}
+		if net.Name == name && net.DNS.DHCP.ServerNetwork == "" {
+			return true
+		}
+		if net.DNS.DHCP.ServerNetwork == name {
+			return true
+		}
+	}
+	for _, net := range netsSnap {
 		if !net.Spec.DHCP.Enabled {
 			continue
 		}
