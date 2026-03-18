@@ -481,22 +481,6 @@ func hostReservationListToTable(items []HostReservation) *metav1.Table {
 func (p *MicroKubeProvider) checkHostReservationCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
-	// Snapshot hostReservations and bareMetalHosts under lock
-	p.mu.RLock()
-	type hrEntry struct {
-		key string
-		hr  *HostReservation
-	}
-	hrSnap := make([]hrEntry, 0, len(p.hostReservations))
-	for key, hr := range p.hostReservations {
-		hrSnap = append(hrSnap, hrEntry{key: key, hr: hr})
-	}
-	bmhSnap := make([]*BareMetalHost, 0, len(p.bareMetalHosts))
-	for _, bmh := range p.bareMetalHosts {
-		bmhSnap = append(bmhSnap, bmh)
-	}
-	p.mu.RUnlock()
-
 	if p.deps.Store != nil && p.deps.Store.HostReservations != nil {
 		storeKeys, err := p.deps.Store.HostReservations.Keys(ctx, "")
 		if err == nil {
@@ -505,17 +489,17 @@ func (p *MicroKubeProvider) checkHostReservationCRDs(ctx context.Context) []Chec
 				storeSet[k] = true
 			}
 
-			for _, entry := range hrSnap {
-				storeKey := entry.hr.Namespace + "." + entry.hr.Name
+			for key, hr := range p.hostReservations {
+				storeKey := hr.Namespace + "." + hr.Name
 				if storeSet[storeKey] {
 					items = append(items, CheckItem{
-						Name:    fmt.Sprintf("hostreservation/%s", entry.key),
+						Name:    fmt.Sprintf("hostreservation/%s", key),
 						Status:  "pass",
 						Message: "HostReservation CRD synced with NATS",
 					})
 				} else {
 					items = append(items, CheckItem{
-						Name:    fmt.Sprintf("hostreservation/%s", entry.key),
+						Name:    fmt.Sprintf("hostreservation/%s", key),
 						Status:  "fail",
 						Message: "HostReservation CRD in memory but not in NATS store",
 					})
@@ -534,19 +518,19 @@ func (p *MicroKubeProvider) checkHostReservationCRDs(ctx context.Context) []Chec
 	}
 
 	// Verify BMH refs
-	for _, entry := range hrSnap {
+	for key, hr := range p.hostReservations {
 		found := false
-		for _, bmh := range bmhSnap {
-			if bmh.Name == entry.hr.Spec.BMHRef {
+		for _, bmh := range p.bareMetalHosts {
+			if bmh.Name == hr.Spec.BMHRef {
 				found = true
 				break
 			}
 		}
 		if !found {
 			items = append(items, CheckItem{
-				Name:    fmt.Sprintf("hostreservation-ref/%s", entry.key),
+				Name:    fmt.Sprintf("hostreservation-ref/%s", key),
 				Status:  "warn",
-				Message: fmt.Sprintf("references BMH %q which does not exist", entry.hr.Spec.BMHRef),
+				Message: fmt.Sprintf("references BMH %q which does not exist", hr.Spec.BMHRef),
 			})
 		}
 	}

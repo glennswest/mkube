@@ -648,20 +648,6 @@ func bootConfigListToTable(configs []BootConfig) *metav1.Table {
 func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
-	// Snapshot bootConfigs and bareMetalHosts under lock
-	p.mu.RLock()
-	bcNameSet := make(map[string]bool, len(p.bootConfigs))
-	bcSnap := make([]*BootConfig, 0, len(p.bootConfigs))
-	for name, bc := range p.bootConfigs {
-		bcNameSet[name] = true
-		bcSnap = append(bcSnap, bc)
-	}
-	bmhSnap := make([]*BareMetalHost, 0, len(p.bareMetalHosts))
-	for _, bmh := range p.bareMetalHosts {
-		bmhSnap = append(bmhSnap, bmh)
-	}
-	p.mu.RUnlock()
-
 	// Verify memory <-> NATS sync
 	if p.deps.Store != nil && p.deps.Store.BootConfigs != nil {
 		storeKeys, err := p.deps.Store.BootConfigs.Keys(ctx, "")
@@ -671,7 +657,7 @@ func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem
 				storeSet[k] = true
 			}
 
-			for name := range bcNameSet {
+			for name := range p.bootConfigs {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("bootconfig/%s", name),
@@ -699,10 +685,10 @@ func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem
 	}
 
 	// Verify assignedTo references are valid BMHs
-	for _, bc := range bcSnap {
+	for _, bc := range p.bootConfigs {
 		for _, bmhName := range bc.Status.AssignedTo {
 			found := false
-			for _, bmh := range bmhSnap {
+			for _, bmh := range p.bareMetalHosts {
 				if bmh.Name == bmhName && bmh.Spec.BootConfigRef == bc.Name {
 					found = true
 					break

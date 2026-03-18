@@ -179,20 +179,16 @@ func (p *MicroKubeProvider) networkHasDHCP(name string) bool {
 		}
 	}
 	// Check Network CRDs
-	p.networksMu.RLock()
 	for _, net := range p.networks {
 		if !net.Spec.DHCP.Enabled {
 			continue
 		}
 		if net.Name == name && net.Spec.DHCP.ServerNetwork == "" {
-			p.networksMu.RUnlock()
 			return true
 		}
 		if net.Spec.DHCP.ServerNetwork == name {
-			p.networksMu.RUnlock()
 			return true
 		}
 	}
-	p.networksMu.RUnlock()
 	return false
 }

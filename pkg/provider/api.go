@@ -241,9 +241,10 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 // WrapHandler returns an http.Handler that wraps the given handler with:
 // 1. Panic recovery — catches panics and returns 500 instead of crashing
 // 2. Mutex serialization — prevents concurrent map access crashes
-// WrapHandler wraps the HTTP mux with panic recovery.
-// Fine-grained locking is handled inside individual handler functions
-// and the functions they call (CreatePod, GetPod, reconcile, etc.).
+// Write handlers (POST/PUT/PATCH/DELETE) acquire a write lock.
+// Read handlers (GET/HEAD) acquire a read lock.
+// Watch requests (?watch=true) skip locking — they are long-lived streaming
+// connections and watch handlers use their own polling/snapshot logic.
 func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Panic recovery — never let a handler crash the process
@@ -259,6 +260,18 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			}
 		}()
 
+		// Watch requests are long-lived streams — skip mutex to avoid blocking writes.
+		isWatch := r.URL.Query().Get("watch") == "true"
+		if !isWatch {
+			switch r.Method {
+			case http.MethodGet, http.MethodHead:
+				p.mu.RLock()
+				defer p.mu.RUnlock()
+			default:
+				p.mu.Lock()
+				defer p.mu.Unlock()
+			}
+		}
 		h.ServeHTTP(w, r)
 	})
 }
@@ -522,7 +535,10 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 			fmt.Sprintf("/api/v1/logs/%s/%s/%s", ns, name, containerName)
 		req, err := http.NewRequestWithContext(r.Context(), "GET", logsURL, nil)
 		if err == nil {
-			logsClient := &http.Client{Timeout: 10 * time.Second, Transport: oneshotTransport}
+			logsClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+				MaxConnsPerHost:   1,
+				DisableKeepAlives: true,
+			}}
 			resp, err := logsClient.Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
 				defer resp.Body.Close()
@@ -907,9 +923,7 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 // and returns the result synchronously (with 30s timeout).
 func (p *MicroKubeProvider) handleNetworkSmokeTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	p.networksMu.RLock()
 	net, ok := p.networks[name]
-	p.networksMu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -1285,11 +1299,9 @@ func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.
 		nsSet[pvc.Namespace] = true
 	}
 	// Include network names as namespaces (for DNS/DHCP proxy resources)
-	p.networksMu.RLock()
 	for name := range p.networks {
 		nsSet[name] = true
 	}
-	p.networksMu.RUnlock()
 	// Always include "default"
 	nsSet["default"] = true
 
@@ -1335,10 +1347,7 @@ func (p *MicroKubeProvider) handleGetNamespace(w http.ResponseWriter, r *http.Re
 	}
 	// Check if it's a network name (used as namespace for DNS/DHCP proxy resources)
 	if !found {
-		p.networksMu.RLock()
-		_, netOK := p.networks[name]
-		p.networksMu.RUnlock()
-		if netOK {
+		if _, ok := p.networks[name]; ok {
 			found = true
 		}
 	}

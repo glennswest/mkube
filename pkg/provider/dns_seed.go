@@ -47,19 +47,13 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 	}
 
 	// 2. Relay topology: create pools for peer networks that relay to this one
-	p.networksMu.RLock()
-	var relayPeers []*Network
 	for _, peer := range p.networks {
 		if peer.Name == net.Name {
 			continue
 		}
 		if peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
-			relayPeers = append(relayPeers, peer)
+			p.seedDHCPPool(ctx, dnsClient, endpoint, peer, net)
 		}
-	}
-	p.networksMu.RUnlock()
-	for _, peer := range relayPeers {
-		p.seedDHCPPool(ctx, dnsClient, endpoint, peer, net)
 	}
 
 	// 3. Upsert all DHCP reservations (local + relayed networks)
@@ -123,10 +117,7 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 	// All PXE clients on data networks boot baremetalservices by default
 	// unless overridden by a per-reservation root_path.
 	if source.Spec.Type == NetworkTypeData {
-		p.mu.RLock()
-		cdrom, ok := p.iscsiCdroms["baremetalservices"]
-		p.mu.RUnlock()
-		if ok && cdrom.Status.TargetIQN != "" {
+		if cdrom, ok := p.iscsiCdroms["baremetalservices"]; ok && cdrom.Status.TargetIQN != "" {
 			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
 			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
 		}
@@ -151,27 +142,16 @@ func (p *MicroKubeProvider) seedDHCPReservations(ctx context.Context, client *dn
 	}
 
 	// Reservations from networks that relay to this one
-	p.networksMu.RLock()
-	var relayedReservations []struct {
-		peerName string
-		res      dns.DHCPReservation
-	}
 	for _, peer := range p.networks {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
 		}
 		for _, r := range peer.Spec.DHCP.Reservations {
-			relayedReservations = append(relayedReservations, struct {
-				peerName string
-				res      dns.DHCPReservation
-			}{peer.Name, networkReservationToDNS(r)})
-		}
-	}
-	p.networksMu.RUnlock()
-	for _, rr := range relayedReservations {
-		if err := client.UpsertDHCPReservation(ctx, endpoint, rr.res); err != nil {
-			log.Warnw("failed to upsert relayed DHCP reservation",
-				"mac", rr.res.MAC, "sourceNetwork", rr.peerName, "endpoint", endpoint, "error", err)
+			res := networkReservationToDNS(r)
+			if err := client.UpsertDHCPReservation(ctx, endpoint, res); err != nil {
+				log.Warnw("failed to upsert relayed DHCP reservation",
+					"mac", r.MAC, "sourceNetwork", peer.Name, "endpoint", endpoint, "error", err)
+			}
 		}
 	}
 }
@@ -212,7 +192,6 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 		}
 	}
 
-	p.networksMu.RLock()
 	for _, peer := range p.networks {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
@@ -223,7 +202,6 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 			}
 		}
 	}
-	p.networksMu.RUnlock()
 
 	if len(entries) == 0 {
 		return
@@ -264,22 +242,17 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 func (p *MicroKubeProvider) seedDNSForwarders(ctx context.Context, client *dns.Client, endpoint string, net *Network) {
 	log := p.deps.Logger
 
-	p.networksMu.RLock()
-	var forwarders []dns.DNSForwarder
 	for _, peer := range p.networks {
 		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 			continue
 		}
-		forwarders = append(forwarders, dns.DNSForwarder{
+		fwd := dns.DNSForwarder{
 			Zone:    peer.Spec.DNS.Zone,
 			Servers: []string{peer.Spec.DNS.Server + ":53"},
-		})
-	}
-	p.networksMu.RUnlock()
-	for _, fwd := range forwarders {
+		}
 		if err := client.EnsureDNSForwarder(ctx, endpoint, fwd); err != nil {
 			log.Warnw("failed to create DNS forwarder",
-				"zone", fwd.Zone, "endpoint", endpoint, "error", err)
+				"zone", peer.Spec.DNS.Zone, "endpoint", endpoint, "error", err)
 		}
 	}
 }
@@ -288,15 +261,7 @@ func (p *MicroKubeProvider) seedDNSForwarders(ctx context.Context, client *dns.C
 // and re-seeds any that have empty DHCP pool databases (e.g. after microdns
 // restart with a clean database). Also verifies forward zones match topology.
 func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
-	// Snapshot networks under lock for iteration
-	p.networksMu.RLock()
-	netSnap := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
-		netSnap = append(netSnap, net)
-	}
-	p.networksMu.RUnlock()
-
-	for _, net := range netSnap {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
 		}
@@ -357,26 +322,19 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 			existingZones[f.Zone] = true
 		}
 
-		// Snapshot peers for missing-forwarder check
-		p.networksMu.RLock()
-		var missingFwds []dns.DNSForwarder
 		for _, peer := range p.networks {
 			if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 				continue
 			}
 			if !existingZones[peer.Spec.DNS.Zone] {
-				missingFwds = append(missingFwds, dns.DNSForwarder{
+				fwd := dns.DNSForwarder{
 					Zone:    peer.Spec.DNS.Zone,
 					Servers: []string{peer.Spec.DNS.Server + ":53"},
-				})
-			}
-		}
-		p.networksMu.RUnlock()
-
-		for _, fwd := range missingFwds {
-			if err := dnsClient.EnsureDNSForwarder(ctx, endpoint, fwd); err != nil {
-				p.deps.Logger.Warnw("failed to add missing forwarder",
-					"zone", fwd.Zone, "endpoint", endpoint, "error", err)
+				}
+				if err := dnsClient.EnsureDNSForwarder(ctx, endpoint, fwd); err != nil {
+					p.deps.Logger.Warnw("failed to add missing forwarder",
+						"zone", peer.Spec.DNS.Zone, "endpoint", endpoint, "error", err)
+				}
 			}
 		}
 	}
@@ -392,7 +350,6 @@ func (p *MicroKubeProvider) reservationDNSRecordsMissing(ctx context.Context, cl
 			expectedHostnames = append(expectedHostnames, r.Hostname)
 		}
 	}
-	p.networksMu.RLock()
 	for _, peer := range p.networks {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
@@ -403,7 +360,6 @@ func (p *MicroKubeProvider) reservationDNSRecordsMissing(ctx context.Context, cl
 			}
 		}
 	}
-	p.networksMu.RUnlock()
 
 	if len(expectedHostnames) == 0 {
 		return false

@@ -513,10 +513,7 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway
 		if bmh.Spec.Image != "" {
 			if cdrom, ok := p.iscsiCdroms[bmh.Spec.Image]; ok && cdrom.Status.TargetIQN != "" {
-				p.networksMu.RLock()
-				net, netOK := p.networks[bmh.Spec.Network]
-				p.networksMu.RUnlock()
-				if netOK {
+				if net, ok := p.networks[bmh.Spec.Network]; ok {
 					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
 					log.Infow("BMH reservation root_path set", "bmh", bmh.Name, "image", bmh.Spec.Image, "root_path", res.RootPath)
 				}
@@ -558,9 +555,7 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networkName string, res NetworkDHCPReservation, bmhName string) {
 	log := p.deps.Logger
 
-	p.networksMu.RLock()
 	net, ok := p.networks[networkName]
-	p.networksMu.RUnlock()
 	if !ok {
 		log.Warnw("BMH references unknown network", "bmh", bmhName, "network", networkName)
 		return
@@ -631,9 +626,7 @@ func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, netwo
 		return
 	}
 
-	p.networksMu.RLock()
 	net, ok := p.networks[networkName]
-	p.networksMu.RUnlock()
 	if !ok {
 		return
 	}

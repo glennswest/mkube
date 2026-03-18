@@ -236,10 +236,7 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 	}
 
 	// Validate network exists
-	p.networksMu.RLock()
-	_, netExists := p.networks[reg.Spec.Network]
-	p.networksMu.RUnlock()
-	if !netExists {
+	if _, exists := p.networks[reg.Spec.Network]; !exists {
 		http.Error(w, fmt.Sprintf("network %q not found", reg.Spec.Network), http.StatusBadRequest)
 		return
 	}
@@ -265,9 +262,7 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 		reg.Spec.ListenAddr = ":5000"
 	}
 	if reg.Spec.Hostname == "" {
-		p.networksMu.RLock()
 		net := p.networks[reg.Spec.Network]
-		p.networksMu.RUnlock()
 		reg.Spec.Hostname = fmt.Sprintf("registry-%s.%s", reg.Name, net.Spec.DNS.Zone)
 	}
 	if reg.Spec.WatchPollSeconds == 0 {
@@ -503,7 +498,10 @@ func (p *MicroKubeProvider) enrichRegistryStatus(ctx context.Context, reg *Regis
 
 // probeHTTP performs a simple HTTP GET health check.
 func probeHTTP(host, port, path string, timeout time.Duration) bool {
-	client := &http.Client{Timeout: timeout, Transport: oneshotTransport}
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{
+		MaxConnsPerHost:   1,
+		DisableKeepAlives: true,
+	}}
 	url := fmt.Sprintf("http://%s:%s%s", host, port, path)
 	resp, err := client.Get(url)
 	if err != nil {
@@ -857,16 +855,6 @@ func (p *MicroKubeProvider) handleManagedRegistryTransition(ctx context.Context,
 func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
-	// Snapshot registries under lock
-	p.mu.RLock()
-	regNameSet := make(map[string]bool, len(p.registries))
-	regSnap := make([]*Registry, 0, len(p.registries))
-	for name, reg := range p.registries {
-		regNameSet[name] = true
-		regSnap = append(regSnap, reg)
-	}
-	p.mu.RUnlock()
-
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.Registries != nil {
 		storeKeys, err := p.deps.Store.Registries.Keys(ctx, "")
@@ -876,7 +864,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for name := range regNameSet {
+			for name := range p.registries {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("registry-crd/%s", name),
@@ -904,7 +892,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 	}
 
 	// Liveness per registry
-	for _, reg := range regSnap {
+	for _, reg := range p.registries {
 		if reg.Spec.StaticIP == "" {
 			continue
 		}
