@@ -10,6 +10,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	goruntime "runtime"
 	"syscall"
 	"time"
 
@@ -105,6 +106,18 @@ func run(cmd *cobra.Command, args []string) error {
 	// ── Context with signal handling ────────────────────────────────
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// ── SIGUSR1: dump all goroutine stacks for deadlock diagnosis ──
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGUSR1)
+	go func() {
+		for range sigCh {
+			buf := make([]byte, 64*1024*1024) // 64MB buffer
+			n := goruntime.Stack(buf, true)    // true = all goroutines
+			log.Warnw("SIGUSR1 received — goroutine dump", "bytes", n)
+			os.Stderr.Write(buf[:n])
+		}
+	}()
 
 	if cfg.IsProxmox() {
 		return runProxmox(ctx, cfg, log)
