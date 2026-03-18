@@ -607,11 +607,16 @@ curl -s -X POST http://192.168.200.2:8082/api/v1/namespaces/default/jobs/my-buil
 # Build the agent binary (static linux/amd64)
 make build-agent    # → dist/mkube-agent (5.7 MB)
 
+# Build + push agent container image (stormdbase with SSH, logging, liveness)
+make deploy-agent   # → registry.gt.lo:5000/mkube-agent:edge
+
 # Or build everything including the agent
 make build-all
 ```
 
-The agent binary needs to be served to booting hosts. The BootConfig ignition downloads it from mkube during PXE boot.
+The agent is available in two deployment modes:
+- **Binary via Ignition** — BootConfig downloads `mkube-agent` from mkube during PXE boot (systemd oneshot service)
+- **Container via stormdbase** — `registry.gt.lo:5000/mkube-agent:edge` includes SSH (port 22), management API (port 9080), log capture, and auto-restart on exit
 
 ### Job Guide: Build, Submit, and Get Results
 
@@ -798,6 +803,21 @@ curl -s http://192.168.200.2:8082/api/v1/namespaces/default/jobs/quick-test/logs
 ### Overflow
 
 Set `allowOverflow: true` on the JobRunner to let the scheduler use any unreserved BMH when reserved hosts are busy. Overflow hosts are used only when all pool-reserved hosts have active jobs.
+
+## BMH Operations
+
+### Reboot a Server
+
+```bash
+# Reboot immediately (bmh-operator powers off then on)
+mk annotate bmh/server1 bmh.mkube.io/reboot="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+
+# Power off
+mk patch bmh server1 --type=merge -p '{"spec":{"online":false}}'
+
+# Power on
+mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
+```
 
 ## Custom Annotations
 
