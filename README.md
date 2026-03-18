@@ -426,57 +426,31 @@ Run transient workloads (builds, tests, provisioning scripts) on bare metal host
 
 ### Setup
 
-One-time setup to enable job scheduling on a host. Apply the provided manifest or create resources individually:
+One-time setup to enable job scheduling on a host. Apply the provided manifest:
 
 ```bash
-# Option A: Apply the bundled setup manifest (creates all 3 resources)
 mk apply -f deploy/job-scheduling-setup.yaml
-
-# Option B: Create resources individually
 ```
 
-**1. Create a BootConfig with mkube-agent ignition:**
+This creates:
+1. **JobRunner** `build-runner` — pool=`build`, uses cloudid template `fcos/agent-runner`, powers off after 5 min idle
+2. **HostReservation** `server1` — reserves server1 for the `build` pool
 
-```yaml
-apiVersion: v1
-kind: BootConfig
-metadata:
-  name: coreos-agent
-spec:
-  format: ignition
-  description: CoreOS with mkube-agent for job execution
-  data:
-    config.ign: |
-      {
-        "ignition": {"version": "3.4.0"},
-        "storage": {
-          "directories": [{"path": "/data", "mode": 493}],
-          "files": [
-            {
-              "path": "/usr/local/bin/mkube-agent",
-              "mode": 493,
-              "contents": {
-                "source": "http://192.168.200.2:8082/api/v1/bootconfigs/coreos-agent/files/mkube-agent"
-              }
-            },
-            {
-              "path": "/etc/mkube-agent.env",
-              "mode": 420,
-              "contents": {"inline": "MKUBE_API=http://192.168.200.2:8082"}
-            }
-          ]
-        },
-        "systemd": {
-          "units": [{
-            "name": "mkube-agent.service",
-            "enabled": true,
-            "contents": "[Unit]\nDescription=mkube job agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironmentFile=/etc/mkube-agent.env\nExecStart=/usr/local/bin/mkube-agent\nWorkingDirectory=/data\n\n[Install]\nWantedBy=multi-user.target\n"
-          }]
-        }
-      }
+The cloudid template `fcos/agent-runner` runs mkube-agent as a container (`registry.gt.lo:5000/mkube-agent:edge` via podman) with SSH access, log capture, and auto-restart.
+
+#### Migrating from bootConfigRef to template
+
+If you previously used `bootConfigRef: coreos-agent` (bare binary via ignition), switch to the containerized template:
+
+```bash
+mk apply -f deploy/job-scheduling-setup.yaml
 ```
 
-**2. Create a JobRunner (defines the pool):**
+This changes the runner from `bootConfigRef: coreos-agent` to `template: fcos/agent-runner`. The template approach uses cloudid for variable substitution and runs the agent inside a stormdbase container instead of as a bare systemd service.
+
+#### Manual setup (create resources individually)
+
+**1. Create a JobRunner (defines the pool):**
 
 ```yaml
 apiVersion: v1
@@ -485,13 +459,13 @@ metadata:
   name: build-runner
 spec:
   pool: build                  # pool name — jobs target this
-  bootConfigRef: coreos-agent  # ignition config for booting hosts
+  template: fcos/agent-runner  # cloudid template (containerized agent)
   idleTimeout: 300             # power off after 5 min idle
   reclaimPolicy: PowerOff      # PowerOff (default) or Retain
   maxConcurrent: 1             # max simultaneous jobs (0 = unlimited)
 ```
 
-**3. Reserve a host for the pool:**
+**2. Reserve a host for the pool:**
 
 ```yaml
 apiVersion: v1
@@ -635,8 +609,8 @@ Verify the pool is ready:
 ```bash
 # Check runner exists and has reserved hosts
 mk get jr
-# NAME           POOL    BOOT-CONFIG    HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
-# build-runner   build   coreos-agent   1       0        0           0        300s           2d
+# NAME           POOL    BOOT-CONFIG              HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
+# build-runner   build   tpl:fcos/agent-runner    1       0        0           0        300s           2d
 
 # Check host reservation is active
 mk get hres -A
