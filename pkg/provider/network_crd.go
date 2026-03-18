@@ -198,12 +198,24 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 // reconcileManagedDNSPods checks all managed networks and recreates DNS pods
 // that are missing (e.g. deleted manually or lost during restart).
 func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
+	// Snapshot networks and pods under lock (called from reconciler goroutine)
+	p.mu.RLock()
+	mdnNets := make([]*Network, 0, len(p.networks))
 	for _, net := range p.networks {
+		mdnNets = append(mdnNets, net)
+	}
+	podKeys := make(map[string]bool, len(p.pods))
+	for k := range p.pods {
+		podKeys[k] = true
+	}
+	p.mu.RUnlock()
+
+	for _, net := range mdnNets {
 		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
 			continue
 		}
 		podMapKey := net.Name + "/dns"
-		if _, ok := p.pods[podMapKey]; ok {
+		if podKeys[podMapKey] {
 			continue // pod tracked in memory
 		}
 		p.deps.Logger.Infow("managed network missing DNS pod, recreating", "network", net.Name)

@@ -180,6 +180,8 @@ func (p *MicroKubeProvider) natsURL() string {
 	}
 
 	// Look up NATS container IP from tracked pods
+	// NOTE: caller must hold p.mu (Lock or RLock) — called from reconciler
+	// (under p.mu.Lock) and HTTP handlers (under WrapHandler).
 	for _, pod := range p.pods {
 		if pod.Namespace == "gt" && pod.Name == "nats" {
 			if ip := pod.Status.PodIP; ip != "" {

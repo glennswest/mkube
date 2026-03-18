@@ -179,6 +179,8 @@ func (p *MicroKubeProvider) networkHasDHCP(name string) bool {
 		}
 	}
 	// Check Network CRDs
+	// NOTE: caller must hold p.mu (Lock or RLock) when from background goroutines.
+	// HTTP handlers are protected by WrapHandler.
 	for _, net := range p.networks {
 		if !net.Spec.DHCP.Enabled {
 			continue

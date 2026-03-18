@@ -139,7 +139,9 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadPVCsFromStore(context.Background())
 	p.LoadNetworksFromStore(context.Background())
 	p.MigrateNetworkConfig(context.Background())
+	p.mu.Lock()
 	p.rebuildDHCPIndex()
+	p.mu.Unlock()
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
 	p.LoadConfigMapsFromStore(context.Background())
@@ -1601,6 +1603,8 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// Store ConfigMaps from manifest, then re-apply generated defaults
 	// so that config-derived ConfigMaps (DNS, DHCP) always reflect the
 	// live mkube config rather than stale copies persisted in NATS.
+	// Lock protects configMaps writes and networks iteration (background goroutine).
+	p.mu.Lock()
 	for _, cm := range manifestCMs {
 		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
 	}
@@ -1620,6 +1624,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			cm.Data["microdns.toml"] = p.generateMinimalTOML(net)
 		}
 	}
+	p.mu.Unlock()
 
 	// 1c. Stamp vkube.io/node on pods that lack it (one-time migration for clustering)
 	var allClusterPods []*corev1.Pod // unfiltered, used for stale container cleanup
@@ -1679,6 +1684,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	for name, ct := range actualByName {
 		if ct.IsRunning() {
 			// Track running state for backoff reset
+			p.mu.Lock()
 			if rs, ok := p.restartBackoff[name]; ok && rs.attempts > 0 {
 				rs.lastRunning = time.Now()
 				if time.Since(rs.lastAttempt) > recoveryStableWindow {
@@ -1687,6 +1693,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 					rs.backoff = 0
 				}
 			}
+			p.mu.Unlock()
 			continue
 		}
 		if ct.StartOnBoot != "true" {
@@ -1711,11 +1718,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 
 		// Check restart backoff
+		p.mu.Lock()
 		rs := p.restartBackoff[name]
 		if rs == nil {
 			rs = &containerRestartState{}
 			p.restartBackoff[name] = rs
 		}
+		p.mu.Unlock()
 		if rs.backoff > 0 && time.Since(rs.lastAttempt) < rs.backoff {
 			log.Debugw("RECOVERY: container stopped but in backoff, skipping",
 				"container", name, "backoff", rs.backoff,
@@ -1844,11 +1853,16 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	stepStart = time.Now()
 	for _, pod := range desiredPods {
 		key := podKey(pod)
-		if _, tracked := p.pods[key]; tracked {
+		p.mu.RLock()
+		tracked := p.pods[key] != nil
+		isRedeploying := p.redeploying[key]
+		priorFailures := p.createFailures[key]
+		p.mu.RUnlock()
+		if tracked {
 			continue
 		}
 		// Skip pods currently being redeployed by the redeploy API
-		if p.redeploying[key] {
+		if isRedeploying {
 			log.Debugw("skipping pod during redeploy", "pod", key)
 			continue
 		}
@@ -1866,25 +1880,30 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		if !allExist {
 			// If this pod has failed creation before, force-release stale
 			// IPAM + veth state that may be blocking it.
-			if p.createFailures[key] >= 2 {
+			if priorFailures >= 2 {
 				log.Warnw("SELF-HEAL: pod stuck in CreateFailed, releasing stale network state",
-					"pod", key, "failures", p.createFailures[key])
+					"pod", key, "failures", priorFailures)
 				for i := range pod.Spec.Containers {
 					vn := vethName(pod, i)
 					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vn)
 				}
 			}
-			log.Infow("creating missing pod", "pod", key, "priorFailures", p.createFailures[key])
+			log.Infow("creating missing pod", "pod", key, "priorFailures", priorFailures)
+			p.mu.Lock()
 			if err := p.CreatePod(ctx, pod); err != nil {
 				p.createFailures[key]++
+				p.mu.Unlock()
 				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", p.createFailures[key])
 				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
 			} else {
 				delete(p.createFailures, key)
+				p.mu.Unlock()
 			}
 		} else {
 			// Track already-existing pods
+			p.mu.Lock()
 			p.pods[key] = pod.DeepCopy()
+			p.mu.Unlock()
 			p.recordEvent(pod, "Reconciled", fmt.Sprintf("Existing pod %s/%s tracked on node %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
 
 			// For pods with image-policy=auto, check if the registry has a
@@ -1939,8 +1958,18 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 3b. Check tracked pods for missing containers (orphan detection).
 	// If a container was manually removed or orphaned, untrack and recreate.
 	// Skip pods currently being redeployed to avoid racing with the redeploy goroutine.
-	for key, pod := range p.pods {
-		if p.redeploying[key] {
+	p.mu.RLock()
+	podsSnap3b := make(map[string]*corev1.Pod, len(p.pods))
+	for k, v := range p.pods {
+		podsSnap3b[k] = v
+	}
+	redeploySnap3b := make(map[string]bool, len(p.redeploying))
+	for k, v := range p.redeploying {
+		redeploySnap3b[k] = v
+	}
+	p.mu.RUnlock()
+	for key, pod := range podsSnap3b {
+		if redeploySnap3b[key] {
 			continue
 		}
 		for _, c := range pod.Spec.Containers {
@@ -1948,7 +1977,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			if _, exists := actualByName[name]; !exists {
 				log.Warnw("tracked pod has missing container, recreating",
 					"pod", key, "container", name)
+				p.mu.Lock()
 				delete(p.pods, key)
+				p.mu.Unlock()
 				if err := p.CreatePod(ctx, pod); err != nil {
 					log.Errorw("failed to recreate pod with missing container",
 						"pod", key, "error", err)
@@ -1972,8 +2003,18 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// image to see the new digest and miss the change.
 	imageToStale := make(map[string][]staleEntry)
 	checkedImages := make(map[string]bool) // image ref → changed?
-	for key, pod := range p.pods {
-		if p.redeploying[key] {
+	p.mu.RLock()
+	podsSnap3c := make(map[string]*corev1.Pod, len(p.pods))
+	for k, v := range p.pods {
+		podsSnap3c[k] = v
+	}
+	redeploySnap3c := make(map[string]bool, len(p.redeploying))
+	for k, v := range p.redeploying {
+		redeploySnap3c[k] = v
+	}
+	p.mu.RUnlock()
+	for key, pod := range podsSnap3c {
+		if redeploySnap3c[key] {
 			continue
 		}
 		if pod.Annotations[annotationImagePolicy] != "auto" || pod.Annotations[annotationFile] != "" {
@@ -2033,12 +2074,22 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// AllocateInterface, so a stale veth with a wrong IP is silently
 	// accepted. Fix that now by checking static-IP annotations against
 	// actual veth state.
-	for key, pod := range p.pods {
+	p.mu.RLock()
+	podsSnap4b := make(map[string]*corev1.Pod, len(p.pods))
+	for k, v := range p.pods {
+		podsSnap4b[k] = v
+	}
+	redeploySnap4b := make(map[string]bool, len(p.redeploying))
+	for k, v := range p.redeploying {
+		redeploySnap4b[k] = v
+	}
+	p.mu.RUnlock()
+	for key, pod := range podsSnap4b {
 		staticIP := pod.Annotations[annotationStaticIP]
 		if staticIP == "" {
 			continue
 		}
-		if p.redeploying[key] {
+		if redeploySnap4b[key] {
 			continue
 		}
 		for i := range pod.Spec.Containers {
@@ -2050,7 +2101,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			if ip != staticIP {
 				log.Warnw("static IP mismatch on tracked pod, recreating",
 					"pod", key, "expected", staticIP, "actual", ip, "veth", veth)
+				p.mu.Lock()
 				delete(p.pods, key)
+				p.mu.Unlock()
 				if err := p.DeletePod(ctx, pod); err != nil {
 					log.Errorw("failed to delete pod for static IP repair", "pod", key, "error", err)
 				}
@@ -2105,7 +2158,15 @@ func (p *MicroKubeProvider) syncConfigMapsToDisk(ctx context.Context) {
 	// Track which pods need recreation due to ConfigMap changes
 	podsToRecreate := make(map[string]*corev1.Pod)
 
+	// Snapshot pods under lock (called from reconciler goroutine)
+	p.mu.RLock()
+	podsSnapCM := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		podsSnapCM = append(podsSnapCM, pod)
+	}
+	p.mu.RUnlock()
+
+	for _, pod := range podsSnapCM {
 		for _, container := range pod.Spec.Containers {
 			name := sanitizeName(pod, container.Name)
 			for _, vm := range container.VolumeMounts {
@@ -2295,7 +2356,14 @@ func (p *MicroKubeProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Snapshot pods under lock (background goroutine)
+				p.mu.RLock()
+				notifySnap := make([]*corev1.Pod, 0, len(p.pods))
 				for _, pod := range p.pods {
+					notifySnap = append(notifySnap, pod)
+				}
+				p.mu.RUnlock()
+				for _, pod := range notifySnap {
 					if cb != nil {
 						status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name)
 						if err == nil {
@@ -2502,26 +2570,47 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 			key := podKey(pod)
 			desiredKeys[key] = true
 
-			if _, tracked := p.pods[key]; !tracked {
+			p.mu.RLock()
+			_, tracked := p.pods[key]
+			p.mu.RUnlock()
+			if !tracked {
 				log.Infow("new pod scheduled", "pod", key)
-				if err := p.CreatePod(ctx, pod); err != nil {
+				p.mu.Lock()
+				err := p.CreatePod(ctx, pod)
+				p.mu.Unlock()
+				if err != nil {
 					log.Errorw("failed to create pod", "pod", key, "error", err)
 				}
 			}
 		}
 
-		// Remove pods no longer scheduled here
-		for key, pod := range p.pods {
+		// Remove pods no longer scheduled here — snapshot first
+		p.mu.RLock()
+		wpSnap := make(map[string]*corev1.Pod, len(p.pods))
+		for k, v := range p.pods {
+			wpSnap[k] = v
+		}
+		p.mu.RUnlock()
+		for key, pod := range wpSnap {
 			if !desiredKeys[key] {
 				log.Infow("pod removed from node", "pod", key)
-				if err := p.DeletePod(ctx, pod); err != nil {
+				p.mu.Lock()
+				err := p.DeletePod(ctx, pod)
+				p.mu.Unlock()
+				if err != nil {
 					log.Errorw("failed to delete pod", "pod", key, "error", err)
 				}
 			}
 		}
 
 		// Push status updates for tracked pods
+		p.mu.RLock()
+		wpStatusSnap := make([]*corev1.Pod, 0, len(p.pods))
 		for _, pod := range p.pods {
+			wpStatusSnap = append(wpStatusSnap, pod)
+		}
+		p.mu.RUnlock()
+		for _, pod := range wpStatusSnap {
 			if p.notifyPodStatus != nil {
 				status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name)
 				if err == nil {
@@ -2910,7 +2999,15 @@ func (p *MicroKubeProvider) reregisterPodDNS(ctx context.Context) {
 		defer dc.EndBatch()
 	}
 
+	// Snapshot pods under lock (called from reconciler goroutine)
+	p.mu.RLock()
+	dnsPodsSnap := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
+		dnsPodsSnap = append(dnsPodsSnap, pod)
+	}
+	p.mu.RUnlock()
+
+	for _, pod := range dnsPodsSnap {
 		networkName := pod.Annotations[annotationNetwork]
 		namespaceName := pod.Namespace
 
@@ -3041,26 +3138,43 @@ func (p *MicroKubeProvider) handleLifecycleFailed(containerName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Find the pod that owns this container
+	// Find the pod that owns this container — snapshot under lock (lifecycle callback goroutine)
+	p.mu.RLock()
+	var foundKey string
+	var foundPod *corev1.Pod
 	for key, pod := range p.pods {
 		if p.redeploying[key] {
 			continue
 		}
 		for _, c := range pod.Spec.Containers {
 			if sanitizeName(pod, c.Name) == containerName {
-				log.Infow("found owning pod, recreating", "pod", key)
-				if err := p.DeletePod(ctx, pod); err != nil {
-					log.Errorw("failed to delete pod for lifecycle recovery", "pod", key, "error", err)
-					return
-				}
-				if err := p.CreatePod(ctx, pod); err != nil {
-					log.Errorw("failed to recreate pod for lifecycle recovery", "pod", key, "error", err)
-					return
-				}
-				log.Infow("pod recreated after lifecycle failure", "pod", key)
-				return
+				foundKey = key
+				foundPod = pod
+				break
 			}
 		}
+		if foundPod != nil {
+			break
+		}
+	}
+	p.mu.RUnlock()
+
+	if foundPod != nil {
+		log.Infow("found owning pod, recreating", "pod", foundKey)
+		p.mu.Lock()
+		if err := p.DeletePod(ctx, foundPod); err != nil {
+			p.mu.Unlock()
+			log.Errorw("failed to delete pod for lifecycle recovery", "pod", foundKey, "error", err)
+			return
+		}
+		if err := p.CreatePod(ctx, foundPod); err != nil {
+			p.mu.Unlock()
+			log.Errorw("failed to recreate pod for lifecycle recovery", "pod", foundKey, "error", err)
+			return
+		}
+		p.mu.Unlock()
+		log.Infow("pod recreated after lifecycle failure", "pod", foundKey)
+		return
 	}
 
 	log.Warnw("no tracked pod found for failed container")

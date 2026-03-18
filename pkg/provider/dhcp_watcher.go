@@ -153,6 +153,8 @@ func (p *MicroKubeProvider) rebuildDHCPIndex() {
 	}
 
 	// Include Network CRDs (these take precedence — overwrite static entries)
+	// NOTE: caller must hold p.mu (Lock or RLock) when from background goroutines.
+	// HTTP handlers are protected by WrapHandler.
 	for _, crd := range p.networks {
 		if crd.Spec.CIDR != "" {
 			_, subnet, err := net.ParseCIDR(crd.Spec.CIDR)
@@ -194,7 +196,9 @@ func (p *MicroKubeProvider) rebuildDHCPIndex() {
 // polls each DHCP-enabled microdns as a fallback consistency check.
 func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 	// Rebuild index from CRDs (covers networks loaded from NATS)
+	p.mu.Lock()
 	p.rebuildDHCPIndex()
+	p.mu.Unlock()
 
 	// Check if any network has DHCP enabled (static config or CRDs)
 	hasAny := false
@@ -205,12 +209,14 @@ func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 		}
 	}
 	if !hasAny {
+		p.mu.RLock()
 		for _, n := range p.networks {
 			if n.Spec.DHCP.Enabled {
 				hasAny = true
 				break
 			}
 		}
+		p.mu.RUnlock()
 	}
 	if !hasAny {
 		p.deps.Logger.Info("DHCP watcher disabled (no networks have DHCP enabled)")
@@ -369,7 +375,13 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	}
 
 	// Poll Network CRD networks
+	p.mu.RLock()
+	pollNetsSnap := make([]*Network, 0, len(p.networks))
 	for _, n := range p.networks {
+		pollNetsSnap = append(pollNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, n := range pollNetsSnap {
 		if !n.Spec.DHCP.Enabled {
 			continue
 		}

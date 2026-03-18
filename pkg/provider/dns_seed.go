@@ -47,7 +47,13 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 	}
 
 	// 2. Relay topology: create pools for peer networks that relay to this one
-	for _, peer := range p.networks {
+	p.mu.RLock()
+	seedNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		seedNetsSnap = append(seedNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, peer := range seedNetsSnap {
 		if peer.Name == net.Name {
 			continue
 		}
@@ -117,7 +123,10 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 	// All PXE clients on data networks boot baremetalservices by default
 	// unless overridden by a per-reservation root_path.
 	if source.Spec.Type == NetworkTypeData {
-		if cdrom, ok := p.iscsiCdroms["baremetalservices"]; ok && cdrom.Status.TargetIQN != "" {
+		p.mu.RLock()
+		cdrom, ok := p.iscsiCdroms["baremetalservices"]
+		p.mu.RUnlock()
+		if ok && cdrom.Status.TargetIQN != "" {
 			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
 			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
 		}
@@ -142,7 +151,13 @@ func (p *MicroKubeProvider) seedDHCPReservations(ctx context.Context, client *dn
 	}
 
 	// Reservations from networks that relay to this one
-	for _, peer := range p.networks {
+	p.mu.RLock()
+	resNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		resNetsSnap = append(resNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, peer := range resNetsSnap {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
 		}
@@ -192,7 +207,13 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 		}
 	}
 
-	for _, peer := range p.networks {
+	p.mu.RLock()
+	dnsRecNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		dnsRecNetsSnap = append(dnsRecNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, peer := range dnsRecNetsSnap {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
 		}
@@ -242,7 +263,13 @@ func (p *MicroKubeProvider) seedReservationDNSRecords(ctx context.Context, clien
 func (p *MicroKubeProvider) seedDNSForwarders(ctx context.Context, client *dns.Client, endpoint string, net *Network) {
 	log := p.deps.Logger
 
-	for _, peer := range p.networks {
+	p.mu.RLock()
+	fwdNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		fwdNetsSnap = append(fwdNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, peer := range fwdNetsSnap {
 		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 			continue
 		}
@@ -261,7 +288,14 @@ func (p *MicroKubeProvider) seedDNSForwarders(ctx context.Context, client *dns.C
 // and re-seeds any that have empty DHCP pool databases (e.g. after microdns
 // restart with a clean database). Also verifies forward zones match topology.
 func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
-	for _, net := range p.networks {
+	// Snapshot networks under lock (called from reconciler goroutine)
+	p.mu.RLock()
+	rdcNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		rdcNetsSnap = append(rdcNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, net := range rdcNetsSnap {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
 		}
@@ -322,7 +356,13 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 			existingZones[f.Zone] = true
 		}
 
-		for _, peer := range p.networks {
+		p.mu.RLock()
+		fwdCheckSnap := make([]*Network, 0, len(p.networks))
+		for _, n := range p.networks {
+			fwdCheckSnap = append(fwdCheckSnap, n)
+		}
+		p.mu.RUnlock()
+		for _, peer := range fwdCheckSnap {
 			if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 				continue
 			}
@@ -350,7 +390,13 @@ func (p *MicroKubeProvider) reservationDNSRecordsMissing(ctx context.Context, cl
 			expectedHostnames = append(expectedHostnames, r.Hostname)
 		}
 	}
-	for _, peer := range p.networks {
+	p.mu.RLock()
+	rdmNetsSnap := make([]*Network, 0, len(p.networks))
+	for _, n := range p.networks {
+		rdmNetsSnap = append(rdmNetsSnap, n)
+	}
+	p.mu.RUnlock()
+	for _, peer := range rdmNetsSnap {
 		if peer.Name == net.Name || !peer.Spec.DHCP.Enabled || peer.Spec.DHCP.ServerNetwork != net.Name {
 			continue
 		}
