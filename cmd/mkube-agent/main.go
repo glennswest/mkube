@@ -20,7 +20,7 @@ var (
 )
 
 const (
-	defaultBuildImage = "registry.gt.lo:5000/fedoradev:latest"
+	defaultBuildImage = "registry.gt.lo:5000/rawhidedev:latest"
 	defaultRegistry   = "registry.gt.lo:5000"
 )
 
