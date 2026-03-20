@@ -1,4 +1,11 @@
-FROM registry.gt.lo:5000/stormdbase:latest
+# Multi-stage: grab stormd from stormdbase
+FROM registry.gt.lo:5000/stormdbase:latest AS stormd
+
+# Agent container — needs podman + git to run build containers
+FROM fedora:rawhide
+RUN dnf install -y podman fuse-overlayfs git && dnf clean all
+RUN mkdir -p /var/stormd/logs /data
+COPY --from=stormd /stormd /stormd
 COPY mkube-agent /app/mkube-agent
 COPY config.toml /etc/stormd/config.toml
 VOLUME ["/data"]
