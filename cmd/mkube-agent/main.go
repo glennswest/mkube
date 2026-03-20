@@ -171,13 +171,26 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	log.Printf("image pulled successfully")
 
 	// Build the command to run inside the container.
+	// If GIT_TOKEN is set, configure git credential helper for HTTPS clones of private repos.
 	// Clone the repo, cd into it, run the build script.
-	buildCmd := fmt.Sprintf(
-		"set -e; git clone %s /build && cd /build && chmod +x ./%s && ./%s",
-		shellQuote(job.Spec.Repo),
-		shellQuote(job.Spec.BuildScript),
-		shellQuote(job.Spec.BuildScript),
+	var parts []string
+	parts = append(parts, "set -e")
+
+	// Configure git auth if GIT_TOKEN is provided
+	if token := job.Spec.Env["GIT_TOKEN"]; token != "" {
+		parts = append(parts,
+			`git config --global credential.helper 'store --file /tmp/.git-credentials'`,
+			fmt.Sprintf(`echo 'https://x-access-token:%s@github.com' > /tmp/.git-credentials`, token),
+		)
+	}
+
+	parts = append(parts,
+		fmt.Sprintf("git clone %s /build", shellQuote(job.Spec.Repo)),
+		"cd /build",
+		fmt.Sprintf("chmod +x ./%s", shellQuote(job.Spec.BuildScript)),
+		fmt.Sprintf("./%s", shellQuote(job.Spec.BuildScript)),
 	)
+	buildCmd := strings.Join(parts, " && ")
 
 	// Construct podman run args
 	args := []string{
