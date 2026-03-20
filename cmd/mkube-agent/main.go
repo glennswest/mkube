@@ -19,6 +19,11 @@ var (
 	commit  = "none"
 )
 
+const (
+	defaultBuildImage = "registry.gt.lo:5000/fedoradev:latest"
+	defaultRegistry   = "registry.gt.lo:5000"
+)
+
 // agentJob mirrors the Job type from mkube, with only the fields the agent needs.
 type agentJob struct {
 	Metadata struct {
@@ -26,8 +31,11 @@ type agentJob struct {
 		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 	Spec struct {
-		Script string            `json:"script"`
-		Env    map[string]string `json:"env"`
+		Repo        string            `json:"repo"`
+		BuildScript string            `json:"buildScript"`
+		BuildImage  string            `json:"buildImage"`
+		Script      string            `json:"script"`
+		Env         map[string]string `json:"env"`
 	} `json:"spec"`
 }
 
@@ -56,8 +64,19 @@ func main() {
 		heartbeat(apiURL, ctx)
 	}()
 
-	// Execute script
-	exitCode, execErr := executeScript(apiURL, job)
+	// Execute job — build container mode or legacy inline script
+	var exitCode int
+	var execErr error
+	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
+		log.Printf("build container mode: repo=%s script=%s", job.Spec.Repo, job.Spec.BuildScript)
+		exitCode, execErr = executeBuildContainer(apiURL, job)
+	} else if job.Spec.Script != "" {
+		log.Printf("legacy inline script mode")
+		exitCode, execErr = executeScript(apiURL, job)
+	} else {
+		execErr = fmt.Errorf("job has neither repo+buildScript nor script")
+		exitCode = 1
+	}
 
 	// Stop heartbeat
 	close(ctx)
@@ -134,9 +153,94 @@ func heartbeat(apiURL string, stop <-chan struct{}) {
 	}
 }
 
-// executeScript writes the script to a temp file and executes it.
+// executeBuildContainer runs the job in a disposable build container via podman.
+// Flow: pull image → podman run (git clone repo, run buildScript) → stream logs → dispose.
+func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
+	image := job.Spec.BuildImage
+	if image == "" {
+		image = defaultBuildImage
+	}
+
+	// Pull the build image
+	log.Printf("pulling build image: %s", image)
+	pullCmd := exec.Command("podman", "pull", "--tls-verify=false", image)
+	pullOut, err := pullCmd.CombinedOutput()
+	if err != nil {
+		return 1, fmt.Errorf("pulling image %s: %v\n%s", image, err, string(pullOut))
+	}
+	log.Printf("image pulled successfully")
+
+	// Build the command to run inside the container.
+	// Clone the repo, cd into it, run the build script.
+	buildCmd := fmt.Sprintf(
+		"set -e; git clone %s /build && cd /build && chmod +x ./%s && ./%s",
+		shellQuote(job.Spec.Repo),
+		shellQuote(job.Spec.BuildScript),
+		shellQuote(job.Spec.BuildScript),
+	)
+
+	// Construct podman run args
+	args := []string{
+		"run", "--rm",
+		"--name", fmt.Sprintf("build-%s-%s", job.Metadata.Namespace, job.Metadata.Name),
+	}
+
+	// Pass environment variables
+	for k, v := range job.Spec.Env {
+		args = append(args, "-e", k+"="+v)
+	}
+
+	// Mount /data as /output inside the container for artifact collection
+	args = append(args, "-v", "/data:/output")
+
+	// Give the build container access to podman socket if available,
+	// so build scripts can build and push container images.
+	if _, err := os.Stat("/run/podman/podman.sock"); err == nil {
+		args = append(args,
+			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
+			"--security-opt", "label=disable",
+		)
+	}
+
+	args = append(args, image, "bash", "-c", buildCmd)
+
+	log.Printf("running: podman %s", strings.Join(args, " "))
+
+	cmd := exec.Command("podman", args...)
+
+	// Capture output
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	// Stream logs in background
+	go streamLogs(apiURL, pr)
+
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		return 1, fmt.Errorf("starting build container: %w", err)
+	}
+
+	err = cmd.Wait()
+	pw.Close()
+
+	// Give log streamer a moment to flush
+	time.Sleep(500 * time.Millisecond)
+
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return 1, err
+		}
+	}
+
+	return exitCode, nil
+}
+
+// executeScript runs an inline script directly (legacy mode).
 func executeScript(apiURL string, job *agentJob) (int, error) {
-	// Write script
 	scriptPath := "/tmp/job.sh"
 	if err := os.WriteFile(scriptPath, []byte(job.Spec.Script), 0755); err != nil {
 		return 1, fmt.Errorf("writing script: %w", err)
@@ -255,4 +359,9 @@ func reportComplete(apiURL string, exitCode int, execErr error) {
 		return
 	}
 	resp.Body.Close()
+}
+
+// shellQuote wraps a string in single quotes for safe shell interpolation.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }

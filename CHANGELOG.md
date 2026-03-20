@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-03-19
+- **feat:** Build container job model — mkube-agent now supports repo+buildScript mode. Jobs specify a git repo URL, a build script name, and a build container image (fedoradev or rawhidedev). Agent pulls the image via podman, runs `git clone` + build script in a disposable container, streams logs, and disposes the container on completion. Legacy inline script mode preserved for backward compatibility.
+- **feat:** JobSpec new fields — `repo` (git URL), `buildScript` (script in repo to run), `buildImage` (container image, defaults to `registry.gt.lo:5000/fedoradev:latest`). Validation accepts either repo+buildScript or script (legacy). Job table shows Build-Image column.
+
 ### 2026-03-18
 - **fix:** DHCP pools missing `dns_servers` and `domain_search` options — `seedDHCPPool` now updates existing pools instead of skipping them, ensuring DNS server (option 6) and domain search (option 119) are always set. Added `domain_search` field to DHCPPool struct and proxy. Fixed `UpdateDHCPPool` to use PATCH (microdns returns 405 on PUT).
 - **fix:** Job scheduler no longer reboots hosts that are already online — if the BMH is already powered on (agent running), the scheduler skips the power-on and lets the agent pick up the job via its next poll. Previously every job submission triggered a reboot even when the host was already up.

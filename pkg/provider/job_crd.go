@@ -29,14 +29,17 @@ type Job struct {
 
 // JobSpec defines the desired state of a Job.
 type JobSpec struct {
-	Pool      string            `json:"pool"`                // target pool
-	Priority  int               `json:"priority,omitempty"`  // higher = first (default 0)
-	Script    string            `json:"script"`              // bash script to execute
-	Image     string            `json:"image,omitempty"`     // optional container image
-	Env       map[string]string `json:"env,omitempty"`       // environment variables
-	Timeout   int               `json:"timeout,omitempty"`   // max running seconds (0=no limit)
-	Labels    map[string]string `json:"labels,omitempty"`    // constraint labels
-	Artifacts []ArtifactSpec    `json:"artifacts,omitempty"` // files to collect after completion
+	Pool        string            `json:"pool"`                  // target pool
+	Priority    int               `json:"priority,omitempty"`    // higher = first (default 0)
+	Repo        string            `json:"repo,omitempty"`        // git repo URL to clone
+	BuildScript string            `json:"buildScript,omitempty"` // script name in repo to execute
+	BuildImage  string            `json:"buildImage,omitempty"`  // build container image (e.g. registry.gt.lo:5000/fedoradev:latest)
+	Script      string            `json:"script,omitempty"`      // legacy: inline bash script (ignored if repo+buildScript set)
+	Image       string            `json:"image,omitempty"`       // optional container image (legacy)
+	Env         map[string]string `json:"env,omitempty"`         // environment variables
+	Timeout     int               `json:"timeout,omitempty"`     // max running seconds (0=no limit)
+	Labels      map[string]string `json:"labels,omitempty"`      // constraint labels
+	Artifacts   []ArtifactSpec    `json:"artifacts,omitempty"`   // files to collect after completion
 }
 
 // ArtifactSpec defines a file to collect from the host after job completion.
@@ -235,8 +238,15 @@ func (p *MicroKubeProvider) handleCreateJob(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "spec.pool is required", http.StatusBadRequest)
 		return
 	}
-	if job.Spec.Script == "" {
-		http.Error(w, "spec.script is required", http.StatusBadRequest)
+	// Require either repo+buildScript (build container mode) or script (legacy inline mode)
+	hasBuild := job.Spec.Repo != "" && job.Spec.BuildScript != ""
+	hasScript := job.Spec.Script != ""
+	if !hasBuild && !hasScript {
+		http.Error(w, "spec.repo + spec.buildScript are required (or spec.script for legacy inline mode)", http.StatusBadRequest)
+		return
+	}
+	if hasBuild && job.Spec.Repo != "" && job.Spec.BuildScript == "" {
+		http.Error(w, "spec.buildScript is required when spec.repo is set", http.StatusBadRequest)
 		return
 	}
 
@@ -809,6 +819,7 @@ func jobListToTable(items []Job) *metav1.Table {
 			{Name: "Pool", Type: "string"},
 			{Name: "Priority", Type: "integer"},
 			{Name: "Status", Type: "string"},
+			{Name: "Build-Image", Type: "string"},
 			{Name: "Host", Type: "string"},
 			{Name: "Duration", Type: "string"},
 			{Name: "Exit", Type: "string"},
@@ -850,6 +861,19 @@ func jobListToTable(items []Job) *metav1.Table {
 			exitCode = fmt.Sprintf("%d", *job.Status.ExitCode)
 		}
 
+		buildImage := job.Spec.BuildImage
+		if buildImage == "" {
+			if job.Spec.Repo != "" {
+				buildImage = "(default)"
+			} else {
+				buildImage = "-"
+			}
+		}
+		// Shorten image ref for display
+		if idx := strings.LastIndex(buildImage, "/"); idx >= 0 {
+			buildImage = buildImage[idx+1:]
+		}
+
 		raw, _ := json.Marshal(map[string]interface{}{
 			"kind":       "PartialObjectMetadata",
 			"apiVersion": "meta.k8s.io/v1",
@@ -867,6 +891,7 @@ func jobListToTable(items []Job) *metav1.Table {
 				job.Spec.Pool,
 				job.Spec.Priority,
 				job.Status.Phase,
+				buildImage,
 				host,
 				duration,
 				exitCode,
