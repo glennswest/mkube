@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-21
+- **fix:** RWMutex deadlock causing mkube crash loop — `RunJobScheduler` held `p.mu.Lock()` for the entire `schedulerTick()` duration (NATS writes, BMH updates). Meanwhile, API handlers held `p.mu.RLock()` during `enrichPod` → `GetPodStatus` → RouterOS HTTP calls. Go's RWMutex blocks new readers when a writer is pending, so the scheduler's write-lock attempt blocked ALL API requests — including `/healthz`. After 3 failed health checks, stormd killed mkube. Two fixes: (1) Exempt `/healthz`, `/version`, `/apis` from the global mutex — they only read immutable startup data. (2) Scheduler deferred-write pattern — in-memory mutations happen under the lock (fast), NATS writes are flushed outside the lock via `schedulerDeferred`. Lock hold time reduced from seconds to microseconds.
+
 ### 2026-03-19
 - **fix:** Container veth binding crash loop — `stopAndRemoveContainer` only tried `RemoveContainer` once. If RouterOS rejected removal (container still stopping), the old container kept holding the veth. Subsequent `CreateContainer` with the same veth failed with `400: input does not match any value of interface`, causing a crash loop. Fixed: retry removal up to 7 times with progressive backoff (500ms→3s), re-issue stop on "running" errors. `cutoverContainer` and auto-recovery now check removal result and force-release veth via `forceReleaseVeth` if the container couldn't be removed. Also fixed empty-ID bug when callers pass `""` as container ID — now auto-resolves from GetContainer.
 - **feat:** Build container job model — mkube-agent now supports repo+buildScript mode. Jobs specify a git repo URL, a build script name, and a build container image (fedoradev or rawhidedev). Agent pulls the image via podman, runs `git clone` + build script in a disposable container, streams logs, and disposes the container on completion. Legacy inline script mode preserved for backward compatibility.

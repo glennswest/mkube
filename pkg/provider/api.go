@@ -260,6 +260,15 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			}
 		}()
 
+		// Endpoints that don't access shared state — skip mutex entirely.
+		// /healthz must NEVER be blocked by lock contention, otherwise stormd
+		// kills mkube when a long-running operation holds the write lock.
+		switch r.URL.Path {
+		case "/healthz", "/version", "/apis":
+			h.ServeHTTP(w, r)
+			return
+		}
+
 		// Watch requests are long-lived streams — skip mutex to avoid blocking writes.
 		isWatch := r.URL.Query().Get("watch") == "true"
 		if !isWatch {

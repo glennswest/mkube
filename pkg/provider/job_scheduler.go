@@ -4,14 +4,51 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
 const (
-	schedulerInterval      = 10 * time.Second
-	provisioningTimeout    = 10 * time.Minute
-	heartbeatTimeout       = 90 * time.Second
+	schedulerInterval   = 10 * time.Second
+	provisioningTimeout = 10 * time.Minute
+	heartbeatTimeout    = 90 * time.Second
 )
+
+// schedulerDeferred collects NATS writes to perform outside the lock.
+// The scheduler does all in-memory mutations under p.mu.Lock(), then
+// releases the lock and flushes these writes. This prevents the write
+// lock from being held during I/O, which was causing a deadlock:
+// scheduler Lock() + slow NATS → blocks all API RLock() → healthz blocked → stormd kills mkube.
+type schedulerDeferred struct {
+	jobs []*Job
+	hrs  []*HostReservation
+	bmhs []bmhPersist
+}
+
+type bmhPersist struct {
+	key string
+	bmh *BareMetalHost
+}
+
+func (sd *schedulerDeferred) flush(ctx context.Context, p *MicroKubeProvider) {
+	for _, job := range sd.jobs {
+		p.persistJob(ctx, job)
+	}
+	for _, hr := range sd.hrs {
+		p.persistHostReservation(ctx, hr)
+	}
+	for _, bw := range sd.bmhs {
+		if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
+			parts := strings.SplitN(bw.key, "/", 2)
+			if len(parts) == 2 {
+				storeKey := parts[0] + "." + parts[1]
+				if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bw.bmh); err != nil {
+					p.deps.Logger.Warnw("scheduler: deferred BMH persist failed", "key", bw.key, "error", err)
+				}
+			}
+		}
+	}
+}
 
 // RunJobScheduler starts the job scheduling loop. It runs alongside the reconciler.
 func (p *MicroKubeProvider) RunJobScheduler(ctx context.Context) {
@@ -28,41 +65,59 @@ func (p *MicroKubeProvider) RunJobScheduler(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.mu.Lock()
-			p.schedulerTick(ctx)
+			deferred := p.schedulerTick(ctx)
 			p.mu.Unlock()
+			deferred.flush(ctx, p)
 		case <-p.kickScheduler:
 			p.mu.Lock()
-			p.schedulerTick(ctx)
+			deferred := p.schedulerTick(ctx)
 			p.mu.Unlock()
+			deferred.flush(ctx, p)
 		}
 	}
 }
 
 // schedulerTick performs one scheduling cycle. Must be called with p.mu held.
-func (p *MicroKubeProvider) schedulerTick(ctx context.Context) {
+// Returns deferred NATS writes to flush outside the lock.
+func (p *MicroKubeProvider) schedulerTick(ctx context.Context) schedulerDeferred {
 	log := p.deps.Logger.Named("scheduler")
+	var d schedulerDeferred
 
 	// 1. Schedule pending jobs
-	p.schedulePendingJobs(ctx, log)
+	p.schedulePendingJobs(ctx, log, &d)
 
 	// 2. Check provisioning timeouts
-	p.checkProvisioningTimeouts(ctx, log)
+	p.checkProvisioningTimeouts(ctx, log, &d)
 
 	// 3. Check running timeouts
-	p.checkRunningTimeouts(ctx, log)
+	p.checkRunningTimeouts(ctx, log, &d)
 
 	// 4. Check heartbeat timeouts
-	p.checkHeartbeatTimeouts(ctx, log)
+	p.checkHeartbeatTimeouts(ctx, log, &d)
 
 	// 5. Handle idle runner power-off
-	p.checkIdleRunners(ctx, log)
+	p.checkIdleRunners(ctx, log, &d)
 
 	// 6. Power on hosts during scheduled work hours
-	p.ensureScheduledHostsOnline(ctx, log)
+	p.ensureScheduledHostsOnline(ctx, log, &d)
+
+	return d
+}
+
+// deferBMHUpdate applies an in-memory mutation to a BMH (fast, under lock)
+// and queues the NATS write for later flushing outside the lock.
+func (p *MicroKubeProvider) deferBMHUpdate(d *schedulerDeferred, key string, mutate func(bmh *BareMetalHost)) error {
+	bmh, ok := p.bareMetalHosts[key]
+	if !ok {
+		return fmt.Errorf("BareMetalHost %s not found", key)
+	}
+	mutate(bmh)
+	d.bmhs = append(d.bmhs, bmhPersist{key: key, bmh: bmh})
+	return nil
 }
 
 // schedulePendingJobs assigns pending jobs to available hosts.
-func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	// Collect pending jobs sorted by priority DESC, creation time ASC
 	var pending []*Job
 	for _, job := range p.jobs {
@@ -123,7 +178,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 		for _, hr := range p.hostReservations {
 			if hr.Spec.BMHRef == bmhName {
 				hr.Status.ActiveJob = jobKey(job)
-				p.persistHostReservation(ctx, hr)
+				d.hrs = append(d.hrs, hr)
 				break
 			}
 		}
@@ -136,7 +191,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 				runnerTemplate := runner.Spec.Template
 				runnerBootConfigRef := runner.Spec.BootConfigRef
 				runnerImage := runner.Spec.Image
-				_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+				_ = p.deferBMHUpdate(d, bmhKey, func(b *BareMetalHost) {
 					if runnerTemplate != "" {
 						b.Spec.Template = runnerTemplate
 					} else {
@@ -162,7 +217,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 
 		// Transition to Provisioning
 		job.Status.Phase = "Provisioning"
-		p.persistJob(ctx, job)
+		d.jobs = append(d.jobs, job)
 
 		log.Infow("job scheduled",
 			"job", jobKey(job),
@@ -198,8 +253,22 @@ func (p *MicroKubeProvider) findAvailableHost(pool string, allowOverflow bool) s
 	return ""
 }
 
+// releaseJobHostDeferred clears the host reservation for a completed/failed job.
+func (p *MicroKubeProvider) releaseJobHostDeferred(job *Job, d *schedulerDeferred) {
+	if job.Status.BMHRef == "" {
+		return
+	}
+	for _, hr := range p.hostReservations {
+		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Status.ActiveJob == jobKey(job) {
+			hr.Status.ActiveJob = ""
+			d.hrs = append(d.hrs, hr)
+			break
+		}
+	}
+}
+
 // checkProvisioningTimeouts fails jobs stuck in Provisioning too long.
-func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	for _, job := range p.jobs {
 		if job.Status.Phase != "Provisioning" {
 			continue
@@ -210,15 +279,15 @@ func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log i
 			job.Status.Phase = "Failed"
 			job.Status.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			job.Status.ErrorMessage = "provisioning timeout exceeded"
-			p.releaseJobHost(ctx, job)
-			p.persistJob(ctx, job)
+			p.releaseJobHostDeferred(job, d)
+			d.jobs = append(d.jobs, job)
 			log.Infow("job provisioning timeout", "job", jobKey(job))
 		}
 	}
 }
 
 // checkRunningTimeouts fails jobs exceeding their spec.timeout.
-func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	for _, job := range p.jobs {
 		if job.Status.Phase != "Running" || job.Spec.Timeout <= 0 {
 			continue
@@ -234,15 +303,15 @@ func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interf
 			job.Status.Phase = "TimedOut"
 			job.Status.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			job.Status.ErrorMessage = fmt.Sprintf("exceeded timeout of %ds", job.Spec.Timeout)
-			p.releaseJobHost(ctx, job)
-			p.persistJob(ctx, job)
+			p.releaseJobHostDeferred(job, d)
+			d.jobs = append(d.jobs, job)
 			log.Infow("job timed out", "job", jobKey(job), "timeout", job.Spec.Timeout)
 		}
 	}
 }
 
 // checkHeartbeatTimeouts fails jobs with stale heartbeats.
-func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	for _, job := range p.jobs {
 		if job.Status.Phase != "Running" || job.Status.LastHeartbeat == "" {
 			continue
@@ -255,8 +324,8 @@ func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log inte
 			job.Status.Phase = "Failed"
 			job.Status.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 			job.Status.ErrorMessage = "heartbeat timeout — agent may have crashed"
-			p.releaseJobHost(ctx, job)
-			p.persistJob(ctx, job)
+			p.releaseJobHostDeferred(job, d)
+			d.jobs = append(d.jobs, job)
 			log.Infow("job heartbeat timeout", "job", jobKey(job))
 		}
 	}
@@ -264,7 +333,7 @@ func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log inte
 
 // checkIdleRunners powers off idle hosts after the idle timeout expires.
 // Hosts in pools with an active schedule are not powered off during scheduled hours.
-func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	now := time.Now()
 	for _, runner := range p.jobRunners {
 		if runner.Spec.IdleTimeout <= 0 || runner.Spec.ReclaimPolicy == "Retain" {
@@ -318,7 +387,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 					if bmh.Annotations != nil && bmh.Annotations["bmh.mkube.io/manual-power"] != "" {
 						continue
 					}
-					_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+					_ = p.deferBMHUpdate(d, bmhKey, func(b *BareMetalHost) {
 						offline := false
 						b.Spec.Online = &offline
 					})
@@ -334,7 +403,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 }
 
 // ensureScheduledHostsOnline powers on reserved hosts during active schedule hours.
-func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log interface{ Infow(string, ...interface{}) }) {
+func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	now := time.Now()
 	for _, runner := range p.jobRunners {
 		if runner.Spec.Schedule == nil || !runner.Spec.Schedule.IsActive(now) {
@@ -352,7 +421,7 @@ func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log 
 					continue
 				}
 				if bmh.Spec.Online == nil || !*bmh.Spec.Online {
-					_ = p.updateBMHFields(ctx, bmhKey, func(b *BareMetalHost) {
+					_ = p.deferBMHUpdate(d, bmhKey, func(b *BareMetalHost) {
 						online := true
 						b.Spec.Online = &online
 					})
