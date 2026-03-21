@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-19
+- **fix:** Container veth binding crash loop — `stopAndRemoveContainer` only tried `RemoveContainer` once. If RouterOS rejected removal (container still stopping), the old container kept holding the veth. Subsequent `CreateContainer` with the same veth failed with `400: input does not match any value of interface`, causing a crash loop. Fixed: retry removal up to 7 times with progressive backoff (500ms→3s), re-issue stop on "running" errors. `cutoverContainer` and auto-recovery now check removal result and force-release veth via `forceReleaseVeth` if the container couldn't be removed. Also fixed empty-ID bug when callers pass `""` as container ID — now auto-resolves from GetContainer.
 - **feat:** Build container job model — mkube-agent now supports repo+buildScript mode. Jobs specify a git repo URL, a build script name, and a build container image (fedoradev or rawhidedev). Agent pulls the image via podman, runs `git clone` + build script in a disposable container, streams logs, and disposes the container on completion. Legacy inline script mode preserved for backward compatibility.
 - **feat:** JobSpec new fields — `repo` (git URL), `buildScript` (script in repo to run), `buildImage` (container image, defaults to `registry.gt.lo:5000/fedoradev:latest`). Validation accepts either repo+buildScript or script (legacy). Job table shows Build-Image column.
 

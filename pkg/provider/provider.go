@@ -618,25 +618,68 @@ func (p *MicroKubeProvider) waitForStopped(ctx context.Context, name string, tim
 }
 
 // stopAndRemoveContainer stops a running container, waits for it to stop,
-// then removes it. Used for pre-creation cleanup of stale containers.
-func (p *MicroKubeProvider) stopAndRemoveContainer(ctx context.Context, name, id string) {
+// then removes it with retry. Returns true if the container was successfully
+// removed, false if it could not be removed after all retries.
+func (p *MicroKubeProvider) stopAndRemoveContainer(ctx context.Context, name, id string) bool {
 	log := p.deps.Logger
 
-	if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil && ct.IsRunning() {
-		_ = p.deps.Runtime.StopContainer(ctx, id)
-		for j := 0; j < 30; j++ {
-			time.Sleep(500 * time.Millisecond)
-			if updated, err := p.deps.Runtime.GetContainer(ctx, name); err != nil || !updated.IsRunning() {
-				break
+	// Resolve the actual container ID if not provided (some callers pass empty ID)
+	if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil {
+		if id == "" {
+			id = ct.ID
+		}
+		if ct.IsRunning() {
+			_ = p.deps.Runtime.StopContainer(ctx, id)
+			for j := 0; j < 30; j++ {
+				time.Sleep(500 * time.Millisecond)
+				if updated, err := p.deps.Runtime.GetContainer(ctx, name); err != nil || !updated.IsRunning() {
+					break
+				}
 			}
 		}
+	} else {
+		// Container not found — already gone
+		return true
 	}
 
-	if err := p.deps.Runtime.RemoveContainer(ctx, id); err != nil {
-		log.Warnw("failed to remove stale container", "name", name, "id", id, "error", err)
-	} else {
-		log.Infow("removed stale container", "name", name, "id", id)
+	// Retry removal with progressive backoff (matches DeletePod robustness).
+	// RouterOS may reject removal if the container hasn't fully stopped yet.
+	backoffs := []time.Duration{
+		500 * time.Millisecond, 1 * time.Second,
+		1 * time.Second, 2 * time.Second,
+		2 * time.Second, 3 * time.Second,
 	}
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		if err := p.deps.Runtime.RemoveContainer(ctx, id); err != nil {
+			// Check if the container is already gone (e.g. removed by another path)
+			if _, gerr := p.deps.Runtime.GetContainer(ctx, name); gerr != nil {
+				log.Infow("container gone after retry", "name", name)
+				return true
+			}
+
+			errMsg := err.Error()
+			if attempt < len(backoffs) {
+				// If still running, re-issue stop before next attempt
+				if strings.Contains(errMsg, "running") {
+					log.Warnw("container still running, re-issuing stop before retry",
+						"name", name, "attempt", attempt+1, "error", err)
+					_ = p.deps.Runtime.StopContainer(ctx, id)
+				} else {
+					log.Warnw("container removal failed, retrying",
+						"name", name, "attempt", attempt+1, "error", err)
+				}
+				time.Sleep(backoffs[attempt])
+			} else {
+				log.Errorw("failed to remove container after all retries",
+					"name", name, "id", id, "attempts", len(backoffs)+1, "error", err)
+				return false
+			}
+		} else {
+			log.Infow("removed container", "name", name, "id", id)
+			return true
+		}
+	}
+	return false
 }
 
 // forceReleaseVeth finds the RouterOS container holding a veth interface,
@@ -925,14 +968,23 @@ func (p *MicroKubeProvider) cutoverContainer(
 ) (string, error) {
 	// Stop and remove old production container
 	if ct, err := p.deps.Runtime.GetContainer(ctx, stg.prodName); err == nil {
-		p.stopAndRemoveContainer(ctx, stg.prodName, ct.ID)
+		if !p.stopAndRemoveContainer(ctx, stg.prodName, ct.ID) {
+			// Container could not be removed — force-release the veth by
+			// finding and removing whatever container holds it.
+			log.Warnw("blue-green: old container not removed, force-releasing veth",
+				"container", stg.prodName, "veth", stg.prodVeth)
+			p.forceReleaseVeth(ctx, stg.prodVeth)
+		}
 	}
 
 	// Remove old mounts
 	_ = p.deps.Runtime.RemoveMountsByList(ctx, stg.prodName)
 
-	// Release old veth + IP
-	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.prodVeth)
+	// Release old veth + IP. If this fails (veth still bound), try force-release.
+	if err := p.deps.NetworkMgr.ReleaseInterface(ctx, stg.prodVeth); err != nil {
+		log.Warnw("blue-green: veth release failed, force-releasing", "veth", stg.prodVeth, "error", err)
+		p.forceReleaseVeth(ctx, stg.prodVeth)
+	}
 
 	// Remove old root-dir (safe — different from staging root-dir).
 	// Normalize paths before comparison to handle leading "/" mismatch —
@@ -1781,7 +1833,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		log.Warnw("RECOVERY: restart failed, destroying for full recreation",
 			"container", name, "comment", comment, "attempt", rs.attempts)
 		globalStats.RecordRestart(false, name, comment)
-		p.stopAndRemoveContainer(ctx, name, ct.ID)
+		removed := p.stopAndRemoveContainer(ctx, name, ct.ID)
 		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 
 		// Release this container's veth + staging veth so IPAM is freed before recreation.
@@ -1789,8 +1841,15 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		for j, c := range ownerPod.Spec.Containers {
 			if sanitizeName(ownerPod, c.Name) == name {
 				prodVeth := vethName(ownerPod, j)
-				if err := p.deps.NetworkMgr.ReleaseInterface(ctx, prodVeth); err != nil {
-					log.Warnw("RECOVERY: error releasing production veth", "veth", prodVeth, "error", err)
+				if !removed {
+					// Container still alive — force-release the veth
+					log.Warnw("RECOVERY: container not removed, force-releasing veth",
+						"container", name, "veth", prodVeth)
+					p.forceReleaseVeth(ctx, prodVeth)
+				} else if err := p.deps.NetworkMgr.ReleaseInterface(ctx, prodVeth); err != nil {
+					log.Warnw("RECOVERY: error releasing production veth, force-releasing",
+						"veth", prodVeth, "error", err)
+					p.forceReleaseVeth(ctx, prodVeth)
 				}
 				// Clean leftover staging resources from failed blue-green updates
 				stgVeth := truncate(prodVeth, 58) + "__stg"
