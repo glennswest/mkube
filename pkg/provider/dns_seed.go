@@ -330,7 +330,7 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 			continue
 		}
 
-		// Check if DHCP pools exist — empty means needs re-seed
+		// Check if DHCP pools need re-seed: empty pools, or domain_search stale
 		needsSeed := false
 		if net.Spec.DHCP.Enabled || p.networkHasDHCPFromSnapshot(net.Name, rdcNetsSnap) {
 			pools, err := dnsClient.ListDHCPPools(ctx, endpoint)
@@ -338,6 +338,20 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 				p.deps.Logger.Debugw("microdns has empty DHCP pools, re-seeding",
 					"network", net.Name, "endpoint", endpoint)
 				needsSeed = true
+			}
+			// Check if domain_search is stale (fewer zones than expected)
+			if !needsSeed && err == nil && len(pools) > 0 {
+				zoneCount := 0
+				for _, n := range rdcNetsSnap {
+					if n.Spec.DNS.Zone != "" {
+						zoneCount++
+					}
+				}
+				if len(pools[0].DomainSearch) < zoneCount {
+					p.deps.Logger.Debugw("domain_search stale, re-seeding",
+						"network", net.Name, "have", len(pools[0].DomainSearch), "want", zoneCount)
+					needsSeed = true
+				}
 			}
 		}
 
