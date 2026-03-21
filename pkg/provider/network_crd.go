@@ -739,7 +739,7 @@ url = %q
 		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 			continue
 		}
-		forwardZones += fmt.Sprintf("%s = [\"%s:53\"]\n", peer.Spec.DNS.Zone, peer.Spec.DNS.Server)
+		forwardZones += fmt.Sprintf("%q = [\"%s:53\"]\n", peer.Spec.DNS.Zone, peer.Spec.DNS.Server)
 	}
 
 	return fmt.Sprintf(`[instance]
