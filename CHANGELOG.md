@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-21
+- **fix:** DHCP domain_search set to ALL zones — `seedDHCPPool` was setting `domain_search` to only the local zone (e.g. `["g10.lo"]`). Every container restart reset this, causing clients to use scoped DNS (option 15 behavior). Now builds the search list from all Network CRDs — local zone first, then peers sorted alphabetically. Clients get full cross-network hostname resolution via option 119.
 - **fix:** RWMutex deadlock causing mkube crash loop — `RunJobScheduler` held `p.mu.Lock()` for the entire `schedulerTick()` duration (NATS writes, BMH updates). Meanwhile, API handlers held `p.mu.RLock()` during `enrichPod` → `GetPodStatus` → RouterOS HTTP calls. Go's RWMutex blocks new readers when a writer is pending, so the scheduler's write-lock attempt blocked ALL API requests — including `/healthz`. After 3 failed health checks, stormd killed mkube. Two fixes: (1) Exempt `/healthz`, `/version`, `/apis` from the global mutex — they only read immutable startup data. (2) Scheduler deferred-write pattern — in-memory mutations happen under the lock (fast), NATS writes are flushed outside the lock via `schedulerDeferred`. Lock hold time reduced from seconds to microseconds.
 
 ### 2026-03-19

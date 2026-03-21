@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/glennswest/mkube/pkg/dns"
@@ -92,6 +93,19 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		leaseTime = 3600
 	}
 
+	// Build domain_search with ALL zones — local zone first, then peers.
+	// This ensures clients can resolve hostnames across all networks without
+	// scoped DNS issues (option 119 instead of option 15).
+	domainSearch := []string{source.Spec.DNS.Zone}
+	p.mu.RLock()
+	for _, net := range p.networks {
+		if net.Spec.DNS.Zone != "" && net.Spec.DNS.Zone != source.Spec.DNS.Zone {
+			domainSearch = append(domainSearch, net.Spec.DNS.Zone)
+		}
+	}
+	p.mu.RUnlock()
+	sort.Strings(domainSearch[1:]) // keep local zone first, sort the rest
+
 	pool := dns.DHCPPool{
 		Name:          source.Name + "-pool",
 		RangeStart:    source.Spec.DHCP.RangeStart,
@@ -100,7 +114,7 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		Gateway:       source.Spec.Gateway,
 		DNSServers:    []string{target.Spec.DNS.Server},
 		Domain:        source.Spec.DNS.Zone,
-		DomainSearch:  []string{source.Spec.DNS.Zone},
+		DomainSearch:  domainSearch,
 		LeaseTimeSecs: leaseTime,
 		NextServer:    source.Spec.DHCP.NextServer,
 		BootFile:      source.Spec.DHCP.BootFile,
