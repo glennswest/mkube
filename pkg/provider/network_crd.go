@@ -666,10 +666,12 @@ func (p *MicroKubeProvider) handleGetNetworkConfig(w http.ResponseWriter, r *htt
 	_, _ = w.Write([]byte(toml))
 }
 
-// generateMinimalTOML produces a minimal microdns TOML config from a Network CRD.
-// It contains only structural config (instance, DNS auth/recursor, API, database,
-// logging). DHCP pools, reservations, and forward zones are seeded via REST API
-// by seedDNSConfig() — not baked into TOML.
+// generateMinimalTOML produces a microdns TOML config from a Network CRD.
+// It contains structural config (instance, DNS auth/recursor, API, database,
+// logging) plus forward zones for all peer networks. Forward zones are baked
+// into the TOML so cross-zone DNS works immediately on container start (no
+// waiting for REST API seeding). DHCP pools and reservations are seeded via
+// REST API by seedDNSConfig().
 func (p *MicroKubeProvider) generateMinimalTOML(net *Network) string {
 	// RouterOS containers use "gateway" mode (DHCP via relay, no raw sockets).
 	dnsMode := "standalone"
@@ -728,6 +730,18 @@ url = %q
 `, natsURL)
 	}
 
+	// Build forward zones from all peer networks so microdns can resolve
+	// cross-zone queries immediately on startup (no REST API seeding gap).
+	// Without this, queries for peer zones during the startup gap get NXDOMAIN
+	// which systemd-resolved caches for the SOA minimum TTL (300s).
+	var forwardZones string
+	for _, peer := range p.networks {
+		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
+			continue
+		}
+		forwardZones += fmt.Sprintf("%s = [\"%s:53\"]\n", peer.Spec.DNS.Zone, peer.Spec.DNS.Server)
+	}
+
 	return fmt.Sprintf(`[instance]
 id = "microdns-%s"
 mode = "%s"
@@ -742,7 +756,7 @@ enabled = true
 listen = "0.0.0.0:53"
 
 [dns.recursor.forward_zones]
-
+%s
 [api.rest]
 enabled = true
 listen = "0.0.0.0:8080"
@@ -753,7 +767,7 @@ path = "/data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s%s`, net.Name, dnsMode, net.Spec.DNS.Zone, dhcpSection, messagingSection)
+%s%s`, net.Name, dnsMode, net.Spec.DNS.Zone, forwardZones, dhcpSection, messagingSection)
 }
 
 // ─── Status Enrichment ──────────────────────────────────────────────────────
