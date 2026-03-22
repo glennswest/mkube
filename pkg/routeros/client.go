@@ -808,6 +808,45 @@ func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
 	return fileDisks, nil
 }
 
+// ─── Physical Disk Discovery ────────────────────────────────────────────────
+
+// PhysicalDisk represents a hardware or RAID disk as returned by /disk.
+type PhysicalDisk struct {
+	ID              string `json:".id"`
+	Slot            string `json:"slot"`
+	Type            string `json:"type"`               // hardware, raid, file
+	Model           string `json:"model,omitempty"`
+	Size            string `json:"size,omitempty"`      // e.g. "953870516224"
+	Free            string `json:"free,omitempty"`      // e.g. "915953082368"
+	Filesystem      string `json:"fs,omitempty"`        // e.g. "ext4"
+	MountPoint      string `json:"mount-point,omitempty"`
+	RaidType        string `json:"raid-type,omitempty"` // e.g. "raid-0", "raid-1"
+	RaidDeviceCount string `json:"raid-device-count,omitempty"`
+	Interface       string `json:"interface,omitempty"` // e.g. "NVMe", "SATA"
+	State           string `json:"state,omitempty"`
+}
+
+// ListPhysicalDisks returns hardware and RAID disks that have a filesystem
+// and mount-point (i.e. are usable for storage). File-type virtual disks
+// are excluded.
+func (c *Client) ListPhysicalDisks(ctx context.Context) ([]PhysicalDisk, error) {
+	var allDisks []PhysicalDisk
+	if err := c.restGET(ctx, "/disk", &allDisks); err != nil {
+		return nil, fmt.Errorf("listing disks: %w", err)
+	}
+	var result []PhysicalDisk
+	for _, d := range allDisks {
+		if d.Type != "hardware" && d.Type != "raid" {
+			continue
+		}
+		if d.MountPoint == "" || d.Filesystem == "" {
+			continue
+		}
+		result = append(result, d)
+	}
+	return result, nil
+}
+
 // ─── REST Helpers ───────────────────────────────────────────────────────────
 
 func (c *Client) restGET(ctx context.Context, path string, result interface{}) error {

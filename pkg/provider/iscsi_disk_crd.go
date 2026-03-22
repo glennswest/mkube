@@ -39,6 +39,7 @@ type ISCSIDiskSpec struct {
 	Format      string `json:"format,omitempty"`      // raw | qcow2 (default: raw)
 	Host        string `json:"host,omitempty"`        // BMH name this disk is bound to
 	Description string `json:"description,omitempty"` // human-readable description
+	StoragePool string `json:"storagePool,omitempty"` // storage pool name (default: default pool)
 }
 
 // ISCSIDiskStatus reports the observed state of an ISCSIDisk.
@@ -75,6 +76,12 @@ const (
 
 // diskCloneMu serializes clone/resize operations to avoid contention on I/O.
 var diskCloneMu sync.Mutex
+
+// diskPoolBasePath returns the pool-aware base path for iSCSI disks.
+func (p *MicroKubeProvider) diskPoolBasePath(disk *ISCSIDisk) string {
+	pool := p.resolveStoragePool(disk.Spec.StoragePool)
+	return pool.disksPath()
+}
 
 // ─── Store Operations ────────────────────────────────────────────────────────
 
@@ -201,7 +208,7 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 	}
 
 	diskFile := disk.Name + "." + disk.Spec.Format
-	diskPath := filepath.Join(diskBasePath, diskFile)
+	diskPath := filepath.Join(p.diskPoolBasePath(&disk), diskFile)
 
 	disk.Status = ISCSIDiskStatus{
 		Phase:      "Pending",
@@ -362,8 +369,11 @@ func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Clone inherits source pool
+	clonePool := src.Spec.StoragePool
 	newDiskFile := req.NewName + "." + src.Spec.Format
-	newDiskPath := filepath.Join(diskBasePath, newDiskFile)
+	cloneDisk := &ISCSIDisk{Spec: ISCSIDiskSpec{StoragePool: clonePool}}
+	newDiskPath := filepath.Join(p.diskPoolBasePath(cloneDisk), newDiskFile)
 
 	newDisk := &ISCSIDisk{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSIDisk"},
@@ -377,6 +387,7 @@ func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.
 			Format:     src.Spec.Format,
 			Host:       req.Host,
 			Description: fmt.Sprintf("Cloned from %s", name),
+			StoragePool: clonePool,
 		},
 		Status: ISCSIDiskStatus{
 			Phase:      "Pending",
@@ -573,7 +584,7 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	log := p.deps.Logger.With("disk", name)
 
 	// Ensure disk directory exists
-	if err := os.MkdirAll(diskBasePath, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
 		p.setDiskError(ctx, name, fmt.Sprintf("creating disk directory: %v", err))
 		return
 	}
@@ -1125,6 +1136,7 @@ func iscsiDiskListToTable(disks []ISCSIDisk) *metav1.Table {
 			{Name: "Phase", Type: "string"},
 			{Name: "Size", Type: "string"},
 			{Name: "Host", Type: "string"},
+			{Name: "Pool", Type: "string"},
 			{Name: "Source", Type: "string"},
 			{Name: "Target IQN", Type: "string"},
 			{Name: "Age", Type: "string"},
@@ -1153,12 +1165,18 @@ func iscsiDiskListToTable(disks []ISCSIDisk) *metav1.Table {
 			},
 		})
 
+		poolName := disk.Spec.StoragePool
+		if poolName == "" {
+			poolName = "—"
+		}
+
 		table.Rows = append(table.Rows, metav1.TableRow{
 			Cells: []interface{}{
 				disk.Name,
 				disk.Status.Phase,
 				size,
 				disk.Spec.Host,
+				poolName,
 				disk.Spec.Source,
 				disk.Status.TargetIQN,
 				age,

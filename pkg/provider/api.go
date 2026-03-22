@@ -187,6 +187,15 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	// JobQueue (computed view)
 	mux.HandleFunc("GET /api/v1/jobqueue", p.handleGetJobQueue)
 
+	// StoragePools (cluster-scoped)
+	mux.HandleFunc("GET /api/v1/storagepools", p.handleListStoragePools)
+	mux.HandleFunc("GET /api/v1/storagepools/{name}", p.handleGetStoragePool)
+	mux.HandleFunc("POST /api/v1/storagepools", p.handleCreateStoragePool)
+	mux.HandleFunc("PUT /api/v1/storagepools/{name}", p.handleUpdateStoragePool)
+	mux.HandleFunc("PATCH /api/v1/storagepools/{name}", p.handlePatchStoragePool)
+	mux.HandleFunc("DELETE /api/v1/storagepools/{name}", p.handleDeleteStoragePool)
+	mux.HandleFunc("POST /api/v1/storagepools/{name}/migrate", p.handleMigrateStoragePool)
+
 	// Agent endpoints (source-IP authenticated)
 	mux.HandleFunc("GET /api/v1/agent/work", p.handleAgentWork)
 	mux.HandleFunc("POST /api/v1/agent/heartbeat", p.handleAgentHeartbeat)
@@ -890,6 +899,13 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Kind:       "Job",
 				ShortNames: []string{"jq"},
 				Verbs:      metav1.Verbs{"get", "list"},
+			},
+			{
+				Name:       "storagepools",
+				Namespaced: false,
+				Kind:       "StoragePool",
+				ShortNames: []string{"sp"},
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 			{
 				Name:       "dnsrecords",

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 2026-03-22 (StoragePool CRD)
+- **feat:** StoragePool CRD — cluster-scoped CRD representing physical storage devices. Auto-discovers RouterOS hardware and RAID disks at boot via `/disk` REST API. Full CRUD API (`mk get sp`), NATS persistence, watch, table format, consistency checks, export/import. Per-pool capacity tracking (total/used/avail), resource counts (disks/PVCs). Default pool support for backward compatibility.
+- **feat:** Pool-aware PVC paths — PVCs can select a storage pool via `storageClassName` or `vkube.io/storage-pool` annotation. Existing PVCs without annotation resolve to the default pool (backward compatible).
+- **feat:** Pool-aware iSCSI disk paths — `ISCSIDiskSpec.StoragePool` field selects which pool hosts the disk file. Clone inherits source pool. Table format shows Pool column.
+- **feat:** Storage migration API — `POST /api/v1/storagepools/{name}/migrate` migrates PVCs or iSCSI disks between pools. PVC migration: stops affected pods, copies data, updates annotation, triggers reconcile. Disk migration: removes iSCSI target, copies file, re-registers target. Both support `purgeSource` option.
+- **feat:** Console Pools tab — Storage page now shows Pools as first tab with per-pool capacity bars (color-coded: green < 75%, orange < 90%, red >= 90%), resource counts, and detail table.
+- **feat:** RouterOS physical disk discovery — `ListPhysicalDisks()` method on RouterOS client returns hardware/RAID disks with mount-points, filtering out virtual file-type disks.
+
 ### 2026-03-22
 - **feat:** Parallel job execution — agent now runs multiple build containers concurrently on the same host. Worker pool with configurable semaphore (MKUBE_MAX_CONCURRENT env, default 4). All agent→server API calls carry job identity (heartbeat body, logs query param, complete body) for proper multiplexing. Server-side handlers accept job identity with backward-compatible fallback to first-match. Scheduler allows multiple Provisioning jobs to same BMH up to maxConcurrent limit.
 - **fix:** Agent container storage on data disk — coreos-agent bootconfig updated with agent-storage-setup.sh that auto-detects the largest non-boot disk, formats as XFS if needed, and mounts at /var/data. Container storage bind-mounted from data disk instead of OS disk. Prevents "no space left on device" during large image pulls.

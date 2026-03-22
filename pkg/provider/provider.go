@@ -106,6 +106,7 @@ type MicroKubeProvider struct {
 	hostReservations map[string]*HostReservation             // namespace/name -> HostReservation
 	jobRunners       map[string]*JobRunner                   // name -> JobRunner (cluster-scoped)
 	jobs             map[string]*Job                         // namespace/name -> Job
+	storagePools     map[string]*StoragePool                 // name -> StoragePool (cluster-scoped)
 	jobLogBuf        *jobLogStore                            // in-memory job log buffers
 	runnerLogBuf     *jobLogStore                            // in-memory runner activity log buffers
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
@@ -153,6 +154,8 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadHostReservationsFromStore(context.Background())
 	p.LoadJobRunnersFromStore(context.Background())
 	p.LoadJobsFromStore(context.Background())
+	p.LoadStoragePoolsFromStore(context.Background())
+	p.DiscoverStoragePools(context.Background())
 	p.startDHCPSubscription(context.Background())
 	go p.RunResourceWatchers(context.Background())
 }
@@ -194,6 +197,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		hostReservations: make(map[string]*HostReservation),
 		jobRunners:       make(map[string]*JobRunner),
 		jobs:             make(map[string]*Job),
+		storagePools:     make(map[string]*StoragePool),
 		jobLogBuf:        newJobLogStore(),
 		runnerLogBuf:     newJobLogStore(),
 		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),

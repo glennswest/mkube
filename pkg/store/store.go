@@ -38,6 +38,7 @@ type Store struct {
 	JobRunners             *Bucket
 	Jobs                   *Bucket
 	JobLogs                *Bucket
+	StoragePools           *Bucket
 }
 
 // SetSyncHook sets a callback invoked after every successful local Put or Delete.
@@ -81,6 +82,8 @@ func (s *Store) BucketByName(name string) *Bucket {
 		return s.Jobs
 	case "JOBLOGS":
 		return s.JobLogs
+	case "STORAGEPOOLS":
+		return s.StoragePools
 	default:
 		return nil
 	}
@@ -227,6 +230,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.JobLogs, err = s.initBucket(ctx, "JOBLOGS", s.replicas, 7*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	s.StoragePools, err = s.initBucket(ctx, "STORAGEPOOLS", s.replicas, 0)
 	if err != nil {
 		return err
 	}

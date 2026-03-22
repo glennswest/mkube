@@ -320,6 +320,34 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Export StoragePools
+	if s.StoragePools != nil {
+		spKeys, err := s.StoragePools.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing storage pools: %w", err)
+		}
+		for _, key := range spKeys {
+			raw, _, err := s.StoragePools.Get(ctx, key)
+			if err != nil {
+				continue
+			}
+			var doc map[string]interface{}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			doc["apiVersion"] = "v1"
+			doc["kind"] = "StoragePool"
+			delete(doc, "status")
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export Jobs
 	if s.Jobs != nil {
 		jobKeys, err := s.Jobs.Keys(ctx, "")

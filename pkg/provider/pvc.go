@@ -72,10 +72,16 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 }
 
 // pvcHostPath returns the host path for a PVC volume.
-// PVC volumes live under /raid1/volumes/pvc/{namespace}_{claimName}
+// Pool selection: annotation vkube.io/storage-pool > storageClassName > default pool.
+// Backward compat: existing PVCs without annotation resolve to default "raid1".
 func (p *MicroKubeProvider) pvcHostPath(pvc *corev1.PersistentVolumeClaim) string {
-	volumesBase := strings.TrimSuffix(p.deps.Config.Storage.BasePath, "/images") + "/volumes/pvc"
-	return fmt.Sprintf("%s/%s_%s", volumesBase, pvc.Namespace, pvc.Name)
+	poolName := p.pvcPoolName(pvc)
+	// Also check storageClassName
+	if poolName == "" && pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName != "" {
+		poolName = *pvc.Spec.StorageClassName
+	}
+	pool := p.resolveStoragePool(poolName)
+	return fmt.Sprintf("%s/%s_%s", pool.volumesPath(), pvc.Namespace, pvc.Name)
 }
 
 // LoadPVCsFromStore loads PVC objects from NATS store into the in-memory map.

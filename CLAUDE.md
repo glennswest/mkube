@@ -266,6 +266,13 @@ Base URL: `http://192.168.200.2:8082`
 | `GET` | `/api/v1/namespaces/{net}/dhcpleases` | DHCP leases (dl) |
 | `GET/POST/DELETE` | `/api/v1/namespaces/{net}/dnsforwarders[/{name}]` | DNS forwarders (df) |
 
+### StoragePools (cluster-scoped)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET/POST/PUT/PATCH/DELETE` | `/api/v1/storagepools[/{name}]` | Storage pools (sp) |
+| `POST` | `/api/v1/storagepools/{name}/migrate` | Migrate PVC/disk to pool |
+
 ### Job Scheduling
 
 | Method | Endpoint | Purpose |
@@ -421,6 +428,7 @@ mk get hostreservations -A         # All host reservations
 - Built-in web console UI: Integrated standalone `console` Rust project into mkube as Go `pkg/console`. 13 pages (Dashboard, Nodes, Pods, Deployments, Networks, BMH, BootConfigs, Registries, Storage, Jobs, CloudID, Logs). Served at `/ui/` on mkube's existing port 8082. stormd extension via `[process.ui]` config. CORS headers for iframe proxy. CloudID template management (CRUD, assignments, oneshot, backup/restore). Enhanced job runner management (create/delete runners and reservations, queue view, job logs).
 - Parallel job execution: Agent rewritten with worker pool — semaphore-capped concurrency (MKUBE_MAX_CONCURRENT, default 4). All agent→server calls carry job identity (heartbeat body `{"job":"ns/name"}`, logs `?job=ns/name`, complete body `jobName`/`jobNamespace`). Server handlers accept job identity with backward-compatible first-match fallback. Scheduler `findAvailableHost` counts active jobs per BMH, allows up to maxConcurrent per host. `releaseJobHost` only clears ActiveJob when no active jobs remain. HostReservation `ActiveJob` is informational (last assigned), scheduling decisions based on actual job counts.
 - Agent container storage on data disk: `agent-storage-setup.sh` in bootconfig auto-detects largest non-boot block device, formats XFS if needed, mounts at `/var/data`. Podman container storage bind-mounted from `/var/data/agent-storage:/var/lib/containers`. Prevents OS disk exhaustion during large image pulls (rawhidedev is multi-GB).
+- StoragePool CRD (IMPLEMENTED): Cluster-scoped CRD in `pkg/provider/storage_pool_crd.go`. Auto-discovers RouterOS hardware/RAID disks at boot via `/disk` REST API. Each pool has a mount-point name (e.g. "raid1", "sata1"), capacity tracking, and resource counts. PVCs select pools via `storageClassName` or `vkube.io/storage-pool` annotation. iSCSI disks via `spec.storagePool`. Default pool provides backward compat. Migration API (`POST /api/v1/storagepools/{name}/migrate`) moves PVCs/disks between pools. Console Pools tab with per-pool capacity bars.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:

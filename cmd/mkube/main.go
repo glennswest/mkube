@@ -540,6 +540,8 @@ func runSharedServices(
 		p.LoadHostReservationsFromStore(ctx)
 		p.LoadJobRunnersFromStore(ctx)
 		p.LoadJobsFromStore(ctx)
+		p.LoadStoragePoolsFromStore(ctx)
+		p.DiscoverStoragePools(ctx)
 	}
 	go p.RunDHCPWatcher(ctx)
 	go p.RunJobScheduler(ctx)

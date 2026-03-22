@@ -45,6 +45,7 @@ type ConsistencyChecks struct {
 	HostReservations []CheckItem `json:"hostReservations,omitempty"`
 	JobRunners       []CheckItem `json:"jobRunners,omitempty"`
 	Jobs             []CheckItem `json:"jobs,omitempty"`
+	StoragePools     []CheckItem `json:"storagePools,omitempty"`
 	MicroDNS         []CheckItem `json:"microDNS,omitempty"`
 	SmokeTests       []CheckItem `json:"smokeTests,omitempty"`
 	PodLiveness      []CheckItem `json:"podLiveness,omitempty"`
@@ -117,6 +118,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 	report.Checks.HostReservations = p.checkHostReservationCRDs(ctx)
 	report.Checks.JobRunners = p.checkJobRunnerCRDs(ctx)
 	report.Checks.Jobs = p.checkJobCRDs(ctx)
+	report.Checks.StoragePools = p.checkStoragePoolCRDs(ctx)
 	report.Checks.MicroDNS = p.checkMicroDNSServices(ctx)
 	report.Checks.SmokeTests = p.checkSmokeTests()
 	report.Checks.PodLiveness = p.checkPodLiveness(ctx)
@@ -138,6 +140,7 @@ func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) Consistenc
 		report.Checks.HostReservations,
 		report.Checks.JobRunners,
 		report.Checks.Jobs,
+		report.Checks.StoragePools,
 		report.Checks.MicroDNS,
 		report.Checks.SmokeTests,
 		report.Checks.PodLiveness,
