@@ -5,29 +5,32 @@ import "net/http"
 func (c *Console) handleBMH(w http.ResponseWriter, r *http.Request) {
 	body := `<h1>Bare Metal Hosts</h1>
 <table><thead><tr><th>Name</th><th>Namespace</th><th>State</th><th>Power</th><th>Network</th><th>IP</th><th>Image/Disk</th><th>Actions</th></tr></thead>
-<tbody id="tbl"></tbody></table>`
+<tbody id="tbl"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody></table>`
 
 	js := `
 async function load(){
   const data=await apiGet(API+'/api/v1/baremetalhosts');
   const tb=document.getElementById('tbl');
   tb.innerHTML='';
-  (data?.items||[]).forEach(b=>{
+  const items=data?.items||[];
+  if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No BMHs</td></tr>';return;}
+  items.forEach(b=>{
     const ns=b.metadata.namespace||'default';
     const s=b.spec||{};
     const st=b.status||{};
     const power=s.online?'ON':'OFF';
     const imgDisk=s.disk?shortImage(s.disk):shortImage(s.image);
-    tb.innerHTML+='<tr><td><a href="/ui/bmh/'+ns+'/'+escapeHtml(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
+    tb.innerHTML+='<tr><td><a href="bmh/'+encodeURIComponent(ns)+'/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(ns)+'</td>'
       +'<td>'+statusBadge(s.state||st.state||'—')+'</td>'
       +'<td>'+statusBadge(power)+'</td>'
       +'<td>'+escapeHtml(s.network||'—')+'</td>'
       +'<td>'+escapeHtml(s.ip||'—')+'</td>'
       +'<td>'+escapeHtml(imgDisk)+'</td>'
-      +'<td><button class="btn btn-success" onclick="setPower(\''+ns+'\',\''+escapeHtml(b.metadata.name)+'\',true)">On</button> '
-      +'<button class="btn btn-danger" onclick="setPower(\''+ns+'\',\''+escapeHtml(b.metadata.name)+'\',false)">Off</button></td></tr>';
+      +'<td><button class="btn btn-success" onclick="setPower(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(b.metadata.name)+'\',true)">On</button> '
+      +'<button class="btn btn-danger" onclick="setPower(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(b.metadata.name)+'\',false)">Off</button></td></tr>';
   });
+  initSort('tbl');reapplySort('tbl');
 }
 
 async function setPower(ns,name,on){
@@ -45,7 +48,7 @@ func (c *Console) handleBMHDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	body := `<h1>BMH: ` + name + `</h1>
-<div class="card"><h3>Spec</h3><div class="kv" id="spec"></div></div>
+<div class="card"><h3>Spec</h3><div class="kv" id="spec"><div class="loading">Loading...</div></div></div>
 <div class="card"><h3>BMC (IPMI)</h3><div class="kv" id="bmc"></div></div>
 <div class="card"><h3>Status</h3><div class="kv" id="status"></div></div>
 <div class="flex mt">
@@ -57,7 +60,7 @@ func (c *Console) handleBMHDetail(w http.ResponseWriter, r *http.Request) {
 const bNs=` + jsStr(ns) + `,bName=` + jsStr(name) + `;
 async function load(){
   const b=await apiGet(API+'/api/v1/namespaces/'+bNs+'/baremetalhosts/'+bName);
-  if(!b) return;
+  if(!b){document.getElementById('spec').innerHTML='<div class="muted">BMH not found</div>';return;}
   const s=b.spec||{};
   const bmc=s.bmc||{};
   const st=b.status||{};
@@ -68,7 +71,7 @@ async function load(){
     +kv('BootConfigRef',s.bootConfigRef);
   document.getElementById('bmc').innerHTML=
     kv('Address',bmc.address)+kv('Network',bmc.network)+kv('MAC',bmc.mac)+kv('Hostname',bmc.hostname);
-  document.getElementById('status').innerHTML=Object.entries(st).map(([k,v])=>kv(k,typeof v==='object'?JSON.stringify(v):v)).join('');
+  document.getElementById('status').innerHTML=Object.entries(st).map(([k,v])=>kv(k,typeof v==='object'?JSON.stringify(v):v)).join('')||'<div class="muted">No status</div>';
 }
 function kv(k,v){ return '<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v||'—'))+'</div>'; }
 async function setPower(on){

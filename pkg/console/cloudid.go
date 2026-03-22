@@ -17,7 +17,7 @@ func (c *Console) handleCloudID(w http.ResponseWriter, r *http.Request) {
     <button class="btn btn-primary" onclick="showCreateTemplate()">Create Template</button>
   </div>
   <table><thead><tr><th>Image Type</th><th>Name</th><th>Format</th><th>Mode</th><th>Updated</th><th>Actions</th></tr></thead>
-  <tbody id="tpl-tbl"></tbody></table>
+  <tbody id="tpl-tbl"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody></table>
 </div>
 
 <!-- Assignments Tab -->
@@ -124,18 +124,21 @@ function hideModal(id){ document.getElementById(id).classList.remove('show'); }
 
 // ── Templates ──
 async function loadTemplates(){
-  const data=await fetch(CLOUDID+'/api/v1/templates').then(r=>r.json()).catch(()=>[]);
+  const data=await fetch(CLOUDID+'/api/v1/templates').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('tpl-tbl');
   tb.innerHTML='';
-  (Array.isArray(data)?data:[]).forEach(t=>{
+  const items=Array.isArray(data)?data:[];
+  if(items.length===0){tb.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'+(data===null?'CloudID unavailable — check connection':'No templates')+'</td></tr>';return;}
+  items.forEach(t=>{
     tb.innerHTML+='<tr><td>'+escapeHtml(t.image_type||'—')+'</td>'
-      +'<td><a href="/ui/cloudid/'+encodeURIComponent(t.image_type)+'/'+encodeURIComponent(t.name)+'">'+escapeHtml(t.name||'—')+'</a></td>'
+      +'<td><a href="cloudid/'+encodeURIComponent(t.image_type)+'/'+encodeURIComponent(t.name)+'">'+escapeHtml(t.name||'—')+'</a></td>'
       +'<td>'+escapeHtml(t.format||'—')+'</td>'
       +'<td>'+statusBadge(t.mode||'forever')+'</td>'
       +'<td>'+timeSince(t.updated_at)+'</td>'
       +'<td><button class="btn btn-primary" onclick="editTpl(\''+escapeHtml(t.image_type)+'\',\''+escapeHtml(t.name)+'\')">Edit</button> '
       +'<button class="btn btn-danger" onclick="delTpl(\''+escapeHtml(t.image_type)+'\',\''+escapeHtml(t.name)+'\')">Delete</button></td></tr>';
   });
+  initSort('tpl-tbl');reapplySort('tpl-tbl');
 }
 
 async function editTpl(imageType,name){
@@ -166,15 +169,17 @@ async function delTpl(imageType,name){
 
 // ── Assignments ──
 async function loadAssignments(){
-  const data=await fetch(CLOUDID+'/api/v1/assignments').then(r=>r.json()).catch(()=>({}));
+  const data=await fetch(CLOUDID+'/api/v1/assignments').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('assign-tbl');
   tb.innerHTML='';
+  if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:8px">No assignments</td></tr>';return;}
   for(const[host,val] of Object.entries(data||{})){
     const imageType=typeof val==='object'?val.image_type||'—':'—';
     const tpl=typeof val==='object'?val.template||'—':String(val);
     tb.innerHTML+='<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(imageType)+'</td><td>'+escapeHtml(tpl)+'</td>'
       +'<td><button class="btn btn-danger" onclick="delAssign(\''+escapeHtml(host)+'\')">Remove</button></td></tr>';
   }
+  initSort('assign-tbl');reapplySort('assign-tbl');
 }
 
 async function createAssignment(){
@@ -199,13 +204,15 @@ async function delAssign(host){
 
 // ── Oneshot ──
 async function loadOneshot(){
-  const data=await fetch(CLOUDID+'/api/v1/oneshot').then(r=>r.json()).catch(()=>({}));
+  const data=await fetch(CLOUDID+'/api/v1/oneshot').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('oneshot-tbl');
   tb.innerHTML='';
+  if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="3" class="muted" style="text-align:center;padding:8px">No oneshot entries</td></tr>';return;}
   for(const[host,ts] of Object.entries(data||{})){
     tb.innerHTML+='<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(String(ts))+'</td>'
       +'<td><button class="btn btn-danger" onclick="resetOneshot(\''+escapeHtml(host)+'\')">Reset</button></td></tr>';
   }
+  initSort('oneshot-tbl');reapplySort('oneshot-tbl');
 }
 
 async function resetOneshot(host){
@@ -266,7 +273,7 @@ func (c *Console) handleCloudIDDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	body := `<h1>Template: ` + imageType + `/` + name + `</h1>
-<div class="card"><h3>Metadata</h3><div class="kv" id="meta"></div></div>
+<div class="card"><h3>Metadata</h3><div class="kv" id="meta"><div class="loading">Loading...</div></div></div>
 <div class="card"><h3>Content</h3>
   <div class="flex mb">
     <button class="btn btn-primary" onclick="editMode()">Edit</button>
@@ -290,7 +297,7 @@ let tplData=null;
 
 async function load(){
   tplData=await fetch(CLOUDID+'/api/v1/templates/'+encodeURIComponent(tplType)+'/'+encodeURIComponent(tplName)).then(r=>r.json()).catch(()=>null);
-  if(!tplData) return;
+  if(!tplData){document.getElementById('meta').innerHTML='<div class="muted">Template not found — check CloudID connection</div>';return;}
   document.getElementById('meta').innerHTML=
     kv('Image Type',tplType)+kv('Name',tplName)+kv('Format',tplData.format)
     +kv('Mode',tplData.mode)+kv('Created',tplData.created_at)+kv('Updated',tplData.updated_at);
@@ -327,7 +334,6 @@ async function saveContent(){
 
 async function preview(){
   const host=document.getElementById('preview-host').value||'example.g10.lo';
-  // Simple client-side variable substitution preview
   let content=tplData?.content||'';
   const short=host.split('.')[0];
   const domain=host.includes('.')?'.'+host.split('.').slice(1).join('.'):'';

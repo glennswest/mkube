@@ -5,19 +5,21 @@ import "net/http"
 func (c *Console) handleNodes(w http.ResponseWriter, r *http.Request) {
 	body := `<h1>Nodes</h1>
 <table><thead><tr><th>Name</th><th>Architecture</th><th>IP</th><th>OS</th><th>Version</th><th>Status</th><th>Heartbeat</th><th>stormd</th></tr></thead>
-<tbody id="tbl"></tbody></table>`
+<tbody id="tbl"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody></table>`
 
 	js := `
 async function load(){
   const data=await apiGet(API+'/api/v1/nodes');
   const tb=document.getElementById('tbl');
   tb.innerHTML='';
-  (data?.items||[]).forEach(n=>{
+  const items=data?.items||[];
+  if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No nodes</td></tr>';return;}
+  items.forEach(n=>{
     const addr=n.status?.addresses?.find(a=>a.type==='InternalIP')?.address||'—';
     const info=n.status?.nodeInfo||{};
     const ready=n.status?.conditions?.find(c=>c.type==='Ready');
     const hb=ready?.lastHeartbeatTime;
-    tb.innerHTML+='<tr><td><a href="/ui/nodes/'+escapeHtml(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
+    tb.innerHTML+='<tr><td><a href="nodes/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(info.architecture||'—')+'</td>'
       +'<td>'+escapeHtml(addr)+'</td>'
       +'<td>'+escapeHtml(info.operatingSystem||'—')+'</td>'
@@ -26,6 +28,8 @@ async function load(){
       +'<td>'+timeSince(hb)+'</td>'
       +'<td><a href="http://'+addr+':9080/ui/" target="_blank" class="btn btn-primary">UI</a></td></tr>';
   });
+  initSort('tbl');
+  reapplySort('tbl');
 }
 load(); setInterval(load,15000);
 `
@@ -35,7 +39,7 @@ load(); setInterval(load,15000);
 func (c *Console) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	body := `<h1>Node: ` + name + `</h1>
-<div class="card"><h3>Info</h3><div class="kv" id="info"></div></div>
+<div class="card"><h3>Info</h3><div class="kv" id="info"><div class="loading">Loading...</div></div></div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('procs')">Processes</div>
   <div class="tab" onclick="switchTab('mounts')">Disk Mounts</div>
@@ -59,7 +63,7 @@ function switchTab(id){
 async function load(){
   const nodes=await apiGet(API+'/api/v1/nodes');
   const node=(nodes?.items||[]).find(n=>n.metadata.name===nodeName);
-  if(!node) return;
+  if(!node){document.getElementById('info').innerHTML='<div class="muted">Node not found</div>';return;}
   const addr=node.status?.addresses?.find(a=>a.type==='InternalIP')?.address||'';
   stormdAddr=addr;
   const info=node.status?.nodeInfo||{};
@@ -81,6 +85,7 @@ async function load(){
           +'<button class="btn btn-success" onclick="procAction(\'start\',\''+escapeHtml(p.name)+'\')">Start</button> '
           +'<button class="btn btn-danger" onclick="procAction(\'stop\',\''+escapeHtml(p.name)+'\')">Stop</button></td></tr>';
       });
+      initSort('procs-tbl');reapplySort('procs-tbl');
       // mounts
       const mnts=await fetch('http://'+addr+':9080/api/v1/mounts').then(r=>r.json()).catch(()=>[]);
       const mb=document.getElementById('mounts-tbl');
@@ -90,8 +95,9 @@ async function load(){
         const color=pct>90?'#e94560':pct>70?'#f1fa8c':'#50fa7b';
         mb.innerHTML+='<tr><td>'+escapeHtml(m.mount_point||m.mountPoint||'—')+'</td><td>'+escapeHtml(m.device||'—')+'</td><td>'+escapeHtml(m.fs_type||m.fsType||'—')+'</td>'
           +'<td><div class="usage-bar"><div class="fill" style="width:'+pct+'%;background:'+color+'"></div></div> '+pct+'%</td>'
-          +'<td>'+escapeHtml(fmtBytes(m.used))+' / '+escapeHtml(fmtBytes(m.total))+'</td></tr>';
+          +'<td>'+fmtBytes(m.used)+' / '+fmtBytes(m.total)+'</td></tr>';
       });
+      initSort('mounts-tbl');reapplySort('mounts-tbl');
     }catch(e){}
   }
 
@@ -102,21 +108,14 @@ async function load(){
   pb.innerHTML='';
   nodePods.forEach(p=>{
     const ns=p.metadata.namespace||'default';
-    pb.innerHTML+='<tr><td><a href="/ui/pods/'+ns+'/'+escapeHtml(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td><td>'+escapeHtml(ns)+'</td><td>'+statusBadge(p.status?.phase)+'</td><td>'+escapeHtml(p.status?.podIP||'—')+'</td><td>'+shortImage(p.spec?.containers?.[0]?.image)+'</td></tr>';
+    pb.innerHTML+='<tr><td><a href="pods/'+encodeURIComponent(ns)+'/'+encodeURIComponent(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td><td>'+escapeHtml(ns)+'</td><td>'+statusBadge(p.status?.phase)+'</td><td>'+escapeHtml(p.status?.podIP||'—')+'</td><td>'+shortImage(p.spec?.containers?.[0]?.image)+'</td></tr>';
   });
+  initSort('pods-tbl');reapplySort('pods-tbl');
 }
 
 async function procAction(action,name){
   if(stormdAddr) await fetch('http://'+stormdAddr+':9080/api/v1/processes/'+name+'/'+action,{method:'POST'});
   load();
-}
-
-function fmtBytes(b){
-  if(!b) return '0';
-  if(b>1073741824) return (b/1073741824).toFixed(1)+'G';
-  if(b>1048576) return (b/1048576).toFixed(1)+'M';
-  if(b>1024) return (b/1024).toFixed(1)+'K';
-  return b+'B';
 }
 
 load(); setInterval(load,15000);

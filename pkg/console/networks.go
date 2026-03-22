@@ -5,18 +5,20 @@ import "net/http"
 func (c *Console) handleNetworks(w http.ResponseWriter, r *http.Request) {
 	body := `<h1>Networks</h1>
 <table><thead><tr><th>Name</th><th>Type</th><th>CIDR</th><th>Gateway</th><th>DNS</th><th>Pods</th><th>DNS Health</th><th>DHCP</th></tr></thead>
-<tbody id="tbl"></tbody></table>`
+<tbody id="tbl"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody></table>`
 
 	js := `
 async function load(){
   const data=await apiGet(API+'/api/v1/networks');
   const tb=document.getElementById('tbl');
   tb.innerHTML='';
-  (data?.items||[]).forEach(n=>{
+  const items=data?.items||[];
+  if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No networks</td></tr>';return;}
+  items.forEach(n=>{
     const s=n.spec||{};
     const st=n.status||{};
     const dhcp=s.dhcp?.enabled?'Yes':'—';
-    tb.innerHTML+='<tr><td><a href="/ui/networks/'+escapeHtml(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
+    tb.innerHTML+='<tr><td><a href="networks/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(s.type||'—')+'</td>'
       +'<td>'+escapeHtml(s.cidr||'—')+'</td>'
       +'<td>'+escapeHtml(s.gateway||'—')+'</td>'
@@ -25,6 +27,7 @@ async function load(){
       +'<td>'+statusBadge(st.dnsLiveness||'—')+'</td>'
       +'<td>'+escapeHtml(dhcp)+'</td></tr>';
   });
+  initSort('tbl');reapplySort('tbl');
 }
 load(); setInterval(load,15000);
 `
@@ -35,7 +38,7 @@ func (c *Console) handleNetworkDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	body := `<h1>Network: ` + name + `</h1>
-<div class="card"><h3>Spec</h3><div class="kv" id="info"></div>
+<div class="card"><h3>Spec</h3><div class="kv" id="info"><div class="loading">Loading...</div></div>
 <button class="btn btn-primary mt" onclick="smoketest()">Run Smoketest</button>
 <div id="smoketest-result" class="mt"></div></div>
 <div class="tabs">
@@ -63,7 +66,7 @@ function switchTab(id){
 
 async function load(){
   const net=await apiGet(API+'/api/v1/networks/'+netName);
-  if(!net) return;
+  if(!net){document.getElementById('info').innerHTML='<div class="muted">Network not found</div>';return;}
   const s=net.spec||{};
   document.getElementById('info').innerHTML=
     kv('Type',s.type)+kv('CIDR',s.cidr)+kv('Gateway',s.gateway)+kv('DNS',s.dns)
@@ -76,7 +79,7 @@ async function load(){
 
   // DHCP pools
   const dp=await apiGet(API+'/api/v1/namespaces/'+netName+'/dhcppools');
-  fillTable('pools-tbl',(dp?.items||[]),p=>'<td>'+escapeHtml(p.metadata?.name||'—')+'</td><td>'+escapeHtml((p.spec?.range_start||'')+'–'+(p.spec?.range_end||''))+'</td><td>'+escapeHtml(p.spec?.subnet||'—')+'</td><td>'+escapeHtml(p.spec?.gateway||'—')+'</td><td>'+(p.spec?.lease_time_secs||3600)+'s</td>');
+  fillTable('pools-tbl',(dp?.items||[]),p=>'<td>'+escapeHtml(p.metadata?.name||'—')+'</td><td>'+escapeHtml((p.spec?.range_start||'')+' – '+(p.spec?.range_end||''))+'</td><td>'+escapeHtml(p.spec?.subnet||'—')+'</td><td>'+escapeHtml(p.spec?.gateway||'—')+'</td><td>'+(p.spec?.lease_time_secs||3600)+'s</td>');
 
   // Reservations
   const dhr=await apiGet(API+'/api/v1/namespaces/'+netName+'/dhcpreservations');
@@ -94,6 +97,8 @@ async function load(){
 function fillTable(id,items,rowFn){
   const tb=document.getElementById(id);
   tb.innerHTML=items.map(i=>'<tr>'+rowFn(i)+'</tr>').join('');
+  if(items.length===0) tb.innerHTML='<tr><td colspan="10" class="muted" style="text-align:center;padding:8px">None</td></tr>';
+  initSort(id);reapplySort(id);
 }
 
 function kv(k,v){ return '<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v||'—'))+'</div>'; }

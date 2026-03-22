@@ -11,7 +11,7 @@ func (c *Console) handleLogs(w http.ResponseWriter, r *http.Request) {
   <label style="color:#888;font-size:12px"><input type="checkbox" id="follow" checked> Follow</label>
   <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
 </div>
-<div class="terminal" id="logs" style="max-height:600px"></div>`
+<div class="terminal" id="logs" style="max-height:600px"><span class="muted">Select a pod to view logs</span></div>`
 
 	js := `
 let allLogLines='';
@@ -45,8 +45,9 @@ async function init(){
 
 async function loadLogs(){
   const sel=document.getElementById('pod-filter').value;
-  if(!sel){ document.getElementById('logs').innerHTML=''; return; }
+  if(!sel){ document.getElementById('logs').innerHTML='<span class="muted">Select a pod to view logs</span>'; return; }
   const [ns,name]=sel.split('/');
+  document.getElementById('logs').innerHTML='<span class="muted">Loading...</span>';
   const logs=await fetch(API+'/api/v1/namespaces/'+ns+'/pods/'+name+'/log').then(r=>r.text()).catch(()=>'');
   allLogLines=logs;
   filterLogs();
@@ -55,12 +56,12 @@ async function loadLogs(){
 function filterLogs(){
   const search=document.getElementById('log-search').value.toLowerCase();
   const el=document.getElementById('logs');
-  if(!allLogLines){ el.innerHTML=''; return; }
+  if(!allLogLines){ el.innerHTML='<span class="muted">No logs</span>'; return; }
   let lines=allLogLines;
   if(search){
     lines=allLogLines.split('\n').filter(l=>l.toLowerCase().includes(search)).join('\n');
   }
-  el.innerHTML=ansiToHtml(lines);
+  el.innerHTML=ansiToHtml(lines)||'<span class="muted">No matching lines</span>';
   if(document.getElementById('follow').checked) el.scrollTop=el.scrollHeight;
 }
 

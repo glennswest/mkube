@@ -34,7 +34,9 @@ h2 { font-size:15px; font-weight:600; color:#ccc; margin:16px 0 8px; }
 
 /* Tables */
 table { width:100%; border-collapse:collapse; font-size:12px; }
-th { text-align:left; padding:8px 10px; background:#16192e; color:#8899aa; font-weight:600; border-bottom:1px solid #2a2d45; position:sticky; top:0; }
+th { text-align:left; padding:8px 10px; background:#16192e; color:#8899aa; font-weight:600; border-bottom:1px solid #2a2d45; position:sticky; top:0; cursor:pointer; user-select:none; white-space:nowrap; }
+th:hover { color:#8be9fd; }
+th .sort-arrow { font-size:10px; margin-left:4px; color:#8be9fd; }
 td { padding:7px 10px; border-bottom:1px solid #1e2140; }
 tr:hover td { background:#1a1d32; }
 
@@ -89,6 +91,9 @@ tr:hover td { background:#1a1d32; }
 .modal h3 { margin-bottom:12px; color:#8be9fd; }
 .modal textarea { width:100%; min-height:300px; background:#0a0a14; border:1px solid #2a2d45; color:#e0e0e0; font-family:inherit; font-size:12px; padding:10px; border-radius:4px; resize:vertical; }
 .modal .actions { display:flex; gap:8px; margin-top:12px; justify-content:flex-end; }
+
+/* Loading */
+.loading { color:#8899aa; font-style:italic; padding:20px; text-align:center; }
 
 /* Misc */
 .muted { color:#666; }
@@ -164,12 +169,41 @@ function shortImage(img){
   return p[p.length-1];
 }
 
+function fmtBytes(b){
+  if(!b||b===0) return '0';
+  if(b>=1099511627776) return (b/1099511627776).toFixed(1)+'T';
+  if(b>=1073741824) return (b/1073741824).toFixed(1)+'G';
+  if(b>=1048576) return (b/1048576).toFixed(1)+'M';
+  if(b>=1024) return (b/1024).toFixed(1)+'K';
+  return b+'B';
+}
+
+function fmtSize(s){
+  if(!s) return '—';
+  if(typeof s==='number') return fmtBytes(s);
+  return String(s);
+}
+
+// ── API helpers ──
 function apiGet(url){
-  return fetch(url).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).catch(e=>{console.error('fetch',url,e);return null});
+  return fetch(url).then(r=>{
+    if(!r.ok)throw new Error(r.status);
+    const ct=r.headers.get('content-type')||'';
+    if(ct.includes('json')) return r.json();
+    return r.text().then(t=>{try{return JSON.parse(t)}catch(e){return t}});
+  }).catch(e=>{console.error('fetch',url,e);return null});
+}
+
+function apiGetText(url){
+  return fetch(url).then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).catch(e=>{console.error('fetch',url,e);return ''});
 }
 
 function apiPost(url,body){
-  return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>r.json()).catch(e=>null);
+  return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>{
+    const ct=r.headers.get('content-type')||'';
+    if(ct.includes('json')) return r.json();
+    return r.text().then(t=>{try{return JSON.parse(t)}catch(e){return t}});
+  }).catch(e=>{console.error('apiPost',url,e);return null});
 }
 
 function apiDelete(url){
@@ -182,6 +216,97 @@ function apiPatch(url,body){
 
 function apiPut(url,body){
   return fetch(url,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(e=>null);
+}
+
+// ── Loading indicator ──
+function showLoading(id){
+  const el=document.getElementById(id);
+  if(el&&!el.innerHTML.trim()) el.innerHTML='<tr><td colspan="20" class="loading">Loading...</td></tr>';
+}
+
+// ── Table sorting ──
+const _sortState={};
+
+function initSort(tbodyId){
+  const tbody=document.getElementById(tbodyId);
+  if(!tbody) return;
+  const table=tbody.closest('table');
+  if(!table) return;
+  const headers=table.querySelectorAll('thead th');
+  headers.forEach((th,idx)=>{
+    if(th.dataset.sortInit) return;
+    th.dataset.sortInit='1';
+    const label=th.textContent.trim();
+    th.dataset.sortLabel=label;
+    th.addEventListener('click',()=>sortByCol(tbodyId,idx));
+  });
+}
+
+function sortByCol(tbodyId,colIdx){
+  const tbody=document.getElementById(tbodyId);
+  if(!tbody) return;
+  const table=tbody.closest('table');
+  if(!table) return;
+  const state=_sortState[tbodyId]||{col:-1,dir:'asc'};
+  if(state.col===colIdx) state.dir=state.dir==='asc'?'desc':'asc';
+  else{state.col=colIdx;state.dir='asc';}
+  _sortState[tbodyId]=state;
+  // Update header indicators
+  table.querySelectorAll('thead th').forEach((th,i)=>{
+    const arrow=th.querySelector('.sort-arrow');
+    if(arrow) arrow.remove();
+    if(i===colIdx){
+      const span=document.createElement('span');
+      span.className='sort-arrow';
+      span.textContent=state.dir==='asc'?' ▲':' ▼';
+      th.appendChild(span);
+    }
+  });
+  // Sort rows
+  const rows=Array.from(tbody.rows);
+  rows.sort((a,b)=>{
+    const aText=(a.cells[colIdx]?.textContent||'').trim();
+    const bText=(b.cells[colIdx]?.textContent||'').trim();
+    const aNum=parseFloat(aText),bNum=parseFloat(bText);
+    let cmp;
+    if(!isNaN(aNum)&&!isNaN(bNum)&&aText!==''&&bText!=='') cmp=aNum-bNum;
+    else cmp=aText.localeCompare(bText,undefined,{numeric:true,sensitivity:'base'});
+    return state.dir==='asc'?cmp:-cmp;
+  });
+  rows.forEach(r=>tbody.appendChild(r));
+}
+
+function reapplySort(tbodyId){
+  const state=_sortState[tbodyId];
+  if(!state||state.col<0) return;
+  const tbody=document.getElementById(tbodyId);
+  if(!tbody||tbody.rows.length===0) return;
+  const table=tbody.closest('table');
+  if(!table) return;
+  // Re-sort without toggling direction
+  const rows=Array.from(tbody.rows);
+  const colIdx=state.col;
+  rows.sort((a,b)=>{
+    const aText=(a.cells[colIdx]?.textContent||'').trim();
+    const bText=(b.cells[colIdx]?.textContent||'').trim();
+    const aNum=parseFloat(aText),bNum=parseFloat(bText);
+    let cmp;
+    if(!isNaN(aNum)&&!isNaN(bNum)&&aText!==''&&bText!=='') cmp=aNum-bNum;
+    else cmp=aText.localeCompare(bText,undefined,{numeric:true,sensitivity:'base'});
+    return state.dir==='asc'?cmp:-cmp;
+  });
+  rows.forEach(r=>tbody.appendChild(r));
+  // Re-apply header indicator
+  table.querySelectorAll('thead th').forEach((th,i)=>{
+    const arrow=th.querySelector('.sort-arrow');
+    if(arrow) arrow.remove();
+    if(i===colIdx){
+      const span=document.createElement('span');
+      span.className='sort-arrow';
+      span.textContent=state.dir==='asc'?' ▲':' ▼';
+      th.appendChild(span);
+    }
+  });
 }
 `
 }

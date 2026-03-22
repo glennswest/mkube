@@ -7,19 +7,21 @@ type navItem struct {
 	href  string
 }
 
+// Nav links use relative paths so they work both when accessed directly
+// at :8082/ui/ and through stormd proxy at :9080/ui/proxy/mkube/.
 var navItems = []navItem{
-	{"Dashboard", "/ui/"},
-	{"Nodes", "/ui/nodes"},
-	{"Pods", "/ui/pods"},
-	{"Deployments", "/ui/deployments"},
-	{"Networks", "/ui/networks"},
-	{"BMH", "/ui/bmh"},
-	{"BootConfigs", "/ui/bootconfigs"},
-	{"Registries", "/ui/registries"},
-	{"Storage", "/ui/storage"},
-	{"Jobs", "/ui/jobs"},
-	{"CloudID", "/ui/cloudid"},
-	{"Logs", "/ui/logs"},
+	{"Dashboard", "./"},
+	{"Nodes", "nodes"},
+	{"Pods", "pods"},
+	{"Deployments", "deployments"},
+	{"Networks", "networks"},
+	{"BMH", "bmh"},
+	{"BootConfigs", "bootconfigs"},
+	{"Registries", "registries"},
+	{"Storage", "storage"},
+	{"Jobs", "jobs"},
+	{"CloudID", "cloudid"},
+	{"Logs", "logs"},
 }
 
 func navHTML(active string) string {
@@ -41,6 +43,15 @@ func page(title, active, body string) string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>%s</style>
+<script>
+(function(){
+  var p=location.pathname;
+  var m=p.match(/^(\/ui\/proxy\/[^\/]+\/)/);
+  var b=document.createElement('base');
+  b.href=m?m[1]:'/ui/';
+  document.head.prepend(b);
+})();
+</script>
 </head><body>
 %s
 <div class="container">%s</div>
@@ -54,12 +65,22 @@ func (c *Console) pageWithJS(title, active, body, extraJS string) string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>%s</style>
+<script>
+(function(){
+  var p=location.pathname;
+  var m=p.match(/^(\/ui\/proxy\/[^\/]+\/)/);
+  var b=document.createElement('base');
+  b.href=m?m[1]:'/ui/';
+  document.head.prepend(b);
+})();
+</script>
 </head><body>
 %s
 <div class="container">%s</div>
 <script>
-const API = %q;
-const CLOUDID = %q;
+const API_CFG=%q;
+const CLOUDID=%q;
+const API=(function(){try{return location.origin===new URL(API_CFG).origin?'':API_CFG}catch(e){return API_CFG}})();
 %s
 %s
 </script>
