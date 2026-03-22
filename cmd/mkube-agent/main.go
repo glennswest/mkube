@@ -66,6 +66,20 @@ func main() {
 
 	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d", version, commit, apiURL, maxWorkers)
 
+	// Ensure TMPDIR exists on the data disk — podman uses it for blob
+	// downloads during image pulls. Without this, pulls write to /var/tmp
+	// on the OS disk which is typically small (10-20GB).
+	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
+		os.MkdirAll(tmpDir, 0755)
+	} else {
+		// Default: use /data/tmp if /data exists (mounted from host data disk)
+		if fi, err := os.Stat("/data"); err == nil && fi.IsDir() {
+			os.MkdirAll("/data/tmp", 0755)
+			os.Setenv("TMPDIR", "/data/tmp")
+			log.Printf("TMPDIR set to /data/tmp (data disk)")
+		}
+	}
+
 	// Capture our current image digest at startup for self-update detection.
 	currentDigest := getImageDigest(selfImage)
 	if currentDigest != "" {
