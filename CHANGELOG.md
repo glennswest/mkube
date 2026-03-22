@@ -13,7 +13,9 @@
 ### 2026-03-22 (earlier)
 - **fix:** mkube-agent now loops forever instead of one-shot exit — after completing a job, immediately polls for the next one. Eliminates the gap where jobs couldn't be picked up because the agent had exited. stormd still supervises as safety net for crashes.
 - **feat:** mkube-agent self-update detection — between jobs, checks registry for new digest of its own image (`mkube-agent:edge`). On mismatch, calls `POST stormd /api/v1/shutdown` to trigger container-level restart (fresh image pull). Falls back to process exit if stormd endpoint not available yet.
+- **feat:** mkube-agent log commit — after each build-container job, agent clones the repo and pushes build output as `logs/job-{datetime}.log` with job metadata header (name, exit code, image, script). Supports GIT_TOKEN for private repos.
 - **feat:** kernel-build repo created (github.com/glennswest/kernel-build) — Linux kernel build script for stress-testing the job scheduling system. Downloads latest stable kernel, applies config fragment (io_uring, NVMe, VFIO, virtio, network drivers), builds bzImage + modules + initramfs.
+- **fix:** kernel-build SCRIPT_DIR captured at top of build.sh before any cd — previously resolved after cd to kernel source dir, causing config.fragment not found.
 
 ### 2026-03-21
 - **fix:** Job scheduler no longer overwrites boot config on already-online hosts — previously the scheduler set template/bootConfigRef/image on the BMH even when the server was already up, which triggered the BMH operator to PXE reboot the server. Now when a host is already online, the scheduler skips all boot config changes and lets the running agent pick up the new job via its work poll loop. Only cold-start (power-on) jobs get boot config assigned.
