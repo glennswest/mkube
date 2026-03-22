@@ -975,7 +975,7 @@ func storagePoolListToTable(pools []StoragePool) *metav1.Table {
 
 		devType := sp.Status.DeviceType
 		if sp.Status.RaidType != "" {
-			devType = sp.Status.RaidType
+			devType = "RAID-" + sp.Status.RaidType
 		}
 
 		raw, _ := json.Marshal(map[string]interface{}{

@@ -81,7 +81,7 @@ async function load(){
   if(poolItems.length===0){plt.innerHTML='<tr><td colspan="11" class="muted" style="text-align:center;padding:8px">No pools</td></tr>';}
   else poolItems.forEach(p=>{
     const sp=p.spec||{};const st=p.status||{};
-    const devType=st.raidType||st.deviceType||'—';
+    const devType=st.raidType?('RAID-'+st.raidType):(st.deviceType||'—');
     plt.innerHTML+='<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(devType)+'</td><td>'+escapeHtml(st.interface||'—')+'</td><td>'+escapeHtml(sp.mountPoint||'—')+'</td><td>'+fmtPoolBytes(st.totalBytes)+'</td><td>'+fmtPoolBytes(st.usedBytes)+'</td><td>'+fmtPoolBytes(st.availBytes)+'</td><td>'+statusBadge(st.phase||'—')+'</td><td>'+(sp.default?'Yes':'')+'</td><td>'+(st.diskCount||0)+'</td><td>'+(st.pvcCount||0)+'</td></tr>';
   });
   initSort('pools-tbl');reapplySort('pools-tbl');
