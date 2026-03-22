@@ -42,7 +42,6 @@ func page(title, active, body string) string {
 <title>mkube — %s</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>%s</style>
 <script>
 (function(){
   var p=location.pathname;
@@ -52,10 +51,11 @@ func page(title, active, body string) string {
   document.head.prepend(b);
 })();
 </script>
+<link rel="stylesheet" href="static/style.css">
 </head><body>
 %s
 <div class="container">%s</div>
-</body></html>`, title, css(), navHTML(active), body)
+</body></html>`, title, navHTML(active), body)
 }
 
 func (c *Console) pageWithJS(title, active, body, extraJS string) string {
@@ -64,7 +64,6 @@ func (c *Console) pageWithJS(title, active, body, extraJS string) string {
 <title>mkube — %s</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>%s</style>
 <script>
 (function(){
   var p=location.pathname;
@@ -74,15 +73,16 @@ func (c *Console) pageWithJS(title, active, body, extraJS string) string {
   document.head.prepend(b);
 })();
 </script>
+<link rel="stylesheet" href="static/style.css">
+<script src="static/app.js"></script>
 </head><body>
 %s
 <div class="container">%s</div>
 <script>
-const API_CFG=%q;
-const CLOUDID=%q;
-const API=(function(){try{return location.origin===new URL(API_CFG).origin?'':API_CFG}catch(e){return API_CFG}})();
-%s
+var API_CFG=%q;
+var CLOUDID=%q;
+var API=(function(){try{return location.origin===new URL(API_CFG).origin?'':API_CFG}catch(e){return API_CFG}})();
 %s
 </script>
-</body></html>`, title, css(), navHTML(active), body, c.apiBase, c.cloudidURL, js(), extraJS)
+</body></html>`, title, navHTML(active), body, c.apiBase, c.cloudidURL, extraJS)
 }

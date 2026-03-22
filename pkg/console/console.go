@@ -29,6 +29,10 @@ func New(cfg config.ConsoleConfig) *Console {
 
 // RegisterRoutes registers all console UI routes on the mux.
 func (c *Console) RegisterRoutes(mux *http.ServeMux) {
+	// Static assets (cacheable)
+	mux.HandleFunc("GET /ui/static/style.css", handleStyleCSS)
+	mux.HandleFunc("GET /ui/static/app.js", handleAppJS)
+
 	// Dashboard
 	mux.HandleFunc("GET /ui/", c.handleDashboard)
 	mux.HandleFunc("GET /ui/dashboard", c.handleDashboard)
@@ -79,4 +83,16 @@ func (c *Console) RegisterRoutes(mux *http.ServeMux) {
 func write(w http.ResponseWriter, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
+}
+
+func handleStyleCSS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write([]byte(css()))
+}
+
+func handleAppJS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write([]byte(js()))
 }

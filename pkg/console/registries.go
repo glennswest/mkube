@@ -11,23 +11,24 @@ func (c *Console) handleRegistries(w http.ResponseWriter, r *http.Request) {
 async function load(){
   const data=await apiGet(API+'/api/v1/registries');
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">No registries</td></tr>';return;}
+  const rows=[];
   items.forEach(r=>{
     const s=r.spec||{};
     const mirrors=(s.mirrors||[]).length;
-    tb.innerHTML+='<tr><td><a href="registries/'+encodeURIComponent(r.metadata.name)+'">'+escapeHtml(r.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="registries/'+encodeURIComponent(r.metadata.name)+'">'+escapeHtml(r.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(s.url||s.endpoint||'—')+'</td>'
       +'<td>'+mirrors+'</td>'
       +'<td>'+(s.insecure?'<span class="badge badge-yellow">yes</span>':'<span class="badge badge-green">no</span>')+'</td>'
       +'<td>'+timeSince(r.metadata?.creationTimestamp)+'</td>'
-      +'<td><button class="btn btn-danger" onclick="del(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<td><button class="btn btn-danger" onclick="del(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');reapplySort('tbl');
 }
 async function del(name){ if(confirm('Delete registry '+name+'?')){ await apiDelete(API+'/api/v1/registries/'+name); load(); }}
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Registries", "Registries", body, js))
 }
@@ -63,7 +64,7 @@ async function load(){
   initSort('images');reapplySort('images');
 }
 function kv(k,v){ return '<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v||'—'))+'</div>'; }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Registry: "+name, "Registries", body, js))
 }

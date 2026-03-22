@@ -11,27 +11,28 @@ func (c *Console) handleNodes(w http.ResponseWriter, r *http.Request) {
 async function load(){
   const data=await apiGet(API+'/api/v1/nodes');
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No nodes</td></tr>';return;}
+  const rows=[];
   items.forEach(n=>{
     const addr=n.status?.addresses?.find(a=>a.type==='InternalIP')?.address||'—';
     const info=n.status?.nodeInfo||{};
     const ready=n.status?.conditions?.find(c=>c.type==='Ready');
     const hb=ready?.lastHeartbeatTime;
-    tb.innerHTML+='<tr><td><a href="nodes/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="nodes/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(info.architecture||'—')+'</td>'
       +'<td>'+escapeHtml(addr)+'</td>'
       +'<td>'+escapeHtml(info.operatingSystem||'—')+'</td>'
       +'<td>'+escapeHtml(info.kubeletVersion||'—')+'</td>'
       +'<td>'+statusBadge(ready?.status==='True'?'Ready':'NotReady')+'</td>'
       +'<td>'+timeSince(hb)+'</td>'
-      +'<td><a href="http://'+addr+':9080/ui/" target="_blank" class="btn btn-primary">UI</a></td></tr>';
+      +'<td><a href="http://'+addr+':9080/ui/" target="_blank" class="btn btn-primary">UI</a></td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');
   reapplySort('tbl');
 }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Nodes", "Nodes", body, js))
 }
@@ -78,25 +79,27 @@ async function load(){
     try{
       const procs=await fetch('http://'+addr+':9080/api/v1/processes').then(r=>r.json()).catch(()=>[]);
       const tb=document.getElementById('procs-tbl');
-      tb.innerHTML='';
+      const procRows=[];
       (procs||[]).forEach(p=>{
-        tb.innerHTML+='<tr><td>'+escapeHtml(p.name)+'</td><td>'+statusBadge(p.state)+'</td><td>'+escapeHtml(String(p.pid||'—'))+'</td><td>'+escapeHtml(String(p.restarts||0))+'</td><td>'+escapeHtml(p.uptime||'—')+'</td>'
+        procRows.push('<tr><td>'+escapeHtml(p.name)+'</td><td>'+statusBadge(p.state)+'</td><td>'+escapeHtml(String(p.pid||'—'))+'</td><td>'+escapeHtml(String(p.restarts||0))+'</td><td>'+escapeHtml(p.uptime||'—')+'</td>'
           +'<td><button class="btn btn-primary" onclick="procAction(\'restart\',\''+escapeHtml(p.name)+'\')">Restart</button> '
           +'<button class="btn btn-success" onclick="procAction(\'start\',\''+escapeHtml(p.name)+'\')">Start</button> '
-          +'<button class="btn btn-danger" onclick="procAction(\'stop\',\''+escapeHtml(p.name)+'\')">Stop</button></td></tr>';
+          +'<button class="btn btn-danger" onclick="procAction(\'stop\',\''+escapeHtml(p.name)+'\')">Stop</button></td></tr>');
       });
+      tb.innerHTML=procRows.join('');
       initSort('procs-tbl');reapplySort('procs-tbl');
       // mounts
       const mnts=await fetch('http://'+addr+':9080/api/v1/mounts').then(r=>r.json()).catch(()=>[]);
       const mb=document.getElementById('mounts-tbl');
-      mb.innerHTML='';
+      const mntRows=[];
       (mnts||[]).forEach(m=>{
         const pct=m.total>0?Math.round(m.used/m.total*100):0;
         const color=pct>90?'#e94560':pct>70?'#f1fa8c':'#50fa7b';
-        mb.innerHTML+='<tr><td>'+escapeHtml(m.mount_point||m.mountPoint||'—')+'</td><td>'+escapeHtml(m.device||'—')+'</td><td>'+escapeHtml(m.fs_type||m.fsType||'—')+'</td>'
+        mntRows.push('<tr><td>'+escapeHtml(m.mount_point||m.mountPoint||'—')+'</td><td>'+escapeHtml(m.device||'—')+'</td><td>'+escapeHtml(m.fs_type||m.fsType||'—')+'</td>'
           +'<td><div class="usage-bar"><div class="fill" style="width:'+pct+'%;background:'+color+'"></div></div> '+pct+'%</td>'
-          +'<td>'+fmtBytes(m.used)+' / '+fmtBytes(m.total)+'</td></tr>';
+          +'<td>'+fmtBytes(m.used)+' / '+fmtBytes(m.total)+'</td></tr>');
       });
+      mb.innerHTML=mntRows.join('');
       initSort('mounts-tbl');reapplySort('mounts-tbl');
     }catch(e){}
   }
@@ -105,11 +108,12 @@ async function load(){
   const allPods=await apiGet(API+'/api/v1/pods');
   const nodePods=(allPods?.items||[]).filter(p=>p.metadata?.annotations?.['vkube.io/node']===nodeName);
   const pb=document.getElementById('pods-tbl');
-  pb.innerHTML='';
+  const podRows=[];
   nodePods.forEach(p=>{
     const ns=p.metadata.namespace||'default';
-    pb.innerHTML+='<tr><td><a href="pods/'+encodeURIComponent(ns)+'/'+encodeURIComponent(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td><td>'+escapeHtml(ns)+'</td><td>'+statusBadge(p.status?.phase)+'</td><td>'+escapeHtml(p.status?.podIP||'—')+'</td><td>'+shortImage(p.spec?.containers?.[0]?.image)+'</td></tr>';
+    podRows.push('<tr><td><a href="pods/'+encodeURIComponent(ns)+'/'+encodeURIComponent(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td><td>'+escapeHtml(ns)+'</td><td>'+statusBadge(p.status?.phase)+'</td><td>'+escapeHtml(p.status?.podIP||'—')+'</td><td>'+shortImage(p.spec?.containers?.[0]?.image)+'</td></tr>');
   });
+  pb.innerHTML=podRows.join('');
   initSort('pods-tbl');reapplySort('pods-tbl');
 }
 
@@ -118,7 +122,7 @@ async function procAction(action,name){
   load();
 }
 
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Node: "+name, "Nodes", body, js))
 }

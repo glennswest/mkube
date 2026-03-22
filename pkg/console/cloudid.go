@@ -78,7 +78,7 @@ func (c *Console) handleCloudID(w http.ResponseWriter, r *http.Request) {
 </div></div>`
 
 	js := `
-let editingTemplate=null;
+var editingTemplate=null;
 
 function switchTab(id){
   document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));
@@ -126,18 +126,19 @@ function hideModal(id){ document.getElementById(id).classList.remove('show'); }
 async function loadTemplates(){
   const data=await fetch(CLOUDID+'/api/v1/templates').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('tpl-tbl');
-  tb.innerHTML='';
   const items=Array.isArray(data)?data:[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'+(data===null?'CloudID unavailable — check connection':'No templates')+'</td></tr>';return;}
+  const tplRows=[];
   items.forEach(t=>{
-    tb.innerHTML+='<tr><td>'+escapeHtml(t.image_type||'—')+'</td>'
+    tplRows.push('<tr><td>'+escapeHtml(t.image_type||'—')+'</td>'
       +'<td><a href="cloudid/'+encodeURIComponent(t.image_type)+'/'+encodeURIComponent(t.name)+'">'+escapeHtml(t.name||'—')+'</a></td>'
       +'<td>'+escapeHtml(t.format||'—')+'</td>'
       +'<td>'+statusBadge(t.mode||'forever')+'</td>'
       +'<td>'+timeSince(t.updated_at)+'</td>'
       +'<td><button class="btn btn-primary" onclick="editTpl(\''+escapeHtml(t.image_type)+'\',\''+escapeHtml(t.name)+'\')">Edit</button> '
-      +'<button class="btn btn-danger" onclick="delTpl(\''+escapeHtml(t.image_type)+'\',\''+escapeHtml(t.name)+'\')">Delete</button></td></tr>';
+      +'<button class="btn btn-danger" onclick="delTpl(\''+escapeHtml(t.image_type)+'\',\''+escapeHtml(t.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=tplRows.join('');
   initSort('tpl-tbl');reapplySort('tpl-tbl');
 }
 
@@ -171,14 +172,15 @@ async function delTpl(imageType,name){
 async function loadAssignments(){
   const data=await fetch(CLOUDID+'/api/v1/assignments').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('assign-tbl');
-  tb.innerHTML='';
   if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:8px">No assignments</td></tr>';return;}
+  const assignRows=[];
   for(const[host,val] of Object.entries(data||{})){
     const imageType=typeof val==='object'?val.image_type||'—':'—';
     const tpl=typeof val==='object'?val.template||'—':String(val);
-    tb.innerHTML+='<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(imageType)+'</td><td>'+escapeHtml(tpl)+'</td>'
-      +'<td><button class="btn btn-danger" onclick="delAssign(\''+escapeHtml(host)+'\')">Remove</button></td></tr>';
+    assignRows.push('<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(imageType)+'</td><td>'+escapeHtml(tpl)+'</td>'
+      +'<td><button class="btn btn-danger" onclick="delAssign(\''+escapeHtml(host)+'\')">Remove</button></td></tr>');
   }
+  tb.innerHTML=assignRows.join('');
   initSort('assign-tbl');reapplySort('assign-tbl');
 }
 
@@ -206,12 +208,13 @@ async function delAssign(host){
 async function loadOneshot(){
   const data=await fetch(CLOUDID+'/api/v1/oneshot').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('oneshot-tbl');
-  tb.innerHTML='';
   if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="3" class="muted" style="text-align:center;padding:8px">No oneshot entries</td></tr>';return;}
+  const osRows=[];
   for(const[host,ts] of Object.entries(data||{})){
-    tb.innerHTML+='<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(String(ts))+'</td>'
-      +'<td><button class="btn btn-danger" onclick="resetOneshot(\''+escapeHtml(host)+'\')">Reset</button></td></tr>';
+    osRows.push('<tr><td>'+escapeHtml(host)+'</td><td>'+escapeHtml(String(ts))+'</td>'
+      +'<td><button class="btn btn-danger" onclick="resetOneshot(\''+escapeHtml(host)+'\')">Reset</button></td></tr>');
   }
+  tb.innerHTML=osRows.join('');
   initSort('oneshot-tbl');reapplySort('oneshot-tbl');
 }
 
@@ -263,7 +266,7 @@ async function restoreTemplates(event){
 async function loadAll(){
   await Promise.all([loadTemplates(),loadAssignments(),loadOneshot()]);
 }
-loadAll(); setInterval(loadAll,30000);
+loadAll(); _uiInterval(loadAll,30000);
 `
 	write(w, c.pageWithJS("CloudID", "CloudID", body, js))
 }

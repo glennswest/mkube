@@ -152,11 +152,11 @@ async function deleteSelected(){
 }
 
 // ── Inline job detail + real-time logs ──
-let _selectedJob=null;
-let _selectedJobData=null;
-let _logPollTimer=null;
-let _lastLogText='';
-let _allJobData=[];
+var _selectedJob=null;
+var _selectedJobData=null;
+var _logPollTimer=null;
+var _lastLogText='';
+var _allJobData=[];
 
 function selectJob(ns,name){
   ns=decodeURIComponent(ns);
@@ -268,7 +268,7 @@ function startLogPoll(){
   // Poll every 2s for running jobs, 10s for terminal
   const phase=(_selectedJobData?.status?.phase||'').toLowerCase();
   const isActive=['pending','scheduling','provisioning','running'].includes(phase);
-  _logPollTimer=setInterval(pollLogs,isActive?2000:10000);
+  _logPollTimer=_uiInterval(pollLogs,isActive?2000:10000);
 }
 
 function stopLogPoll(){
@@ -319,8 +319,8 @@ async function loadJobs(){
   if(sel.options.length<=1) nss.forEach(n=>{const o=document.createElement('option');o.value=n;o.text=n;sel.add(o);});
 
   const tb=document.getElementById('jobs-tbl');
-  tb.innerHTML='';
   if(items.length===0){tb.innerHTML='<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">No jobs</td></tr>';return;}
+  const jobRows=[];
   items.forEach(j=>{
     const ns=j.metadata.namespace||'default';
     const s=j.spec||{};
@@ -330,7 +330,7 @@ async function loadJobs(){
     const canCancel=['pending','scheduling','provisioning','running'].includes(phase.toLowerCase());
     const key=ns+'/'+j.metadata.name;
     const selected=_selectedJob===key?' selected':'';
-    tb.innerHTML+='<tr data-job-key="'+escapeHtml(key)+'" class="job-row'+selected+'" onclick="selectJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')" style="cursor:pointer">'
+    jobRows.push('<tr data-job-key="'+escapeHtml(key)+'" class="job-row'+selected+'" onclick="selectJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')" style="cursor:pointer">'
       +'<td onclick="event.stopPropagation()"><input type="checkbox" data-ns="'+escapeHtml(ns)+'" data-name="'+escapeHtml(j.metadata.name)+'"></td>'
       +'<td>'+escapeHtml(j.metadata.name)+'</td>'
       +'<td>'+escapeHtml(ns)+'</td>'
@@ -341,8 +341,9 @@ async function loadJobs(){
       +'<td>'+timeSince(j.metadata?.creationTimestamp)+'</td>'
       +'<td onclick="event.stopPropagation()">'
       +(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
-      +'<button class="btn btn-danger" onclick="delJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<button class="btn btn-danger" onclick="delJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=jobRows.join('');
   initSort('jobs-tbl');reapplySort('jobs-tbl');
 
   // Refresh detail panel if selected job is still in list
@@ -377,11 +378,11 @@ async function delJob(ns,name){
 }
 
 // ── Job Runners ──
-let _selectedRunner=null;
-let _selectedRunnerData=null;
-let _allRunnerData=[];
-let _runnerLogPollTimer=null;
-let _runnerLastLogText='';
+var _selectedRunner=null;
+var _selectedRunnerData=null;
+var _allRunnerData=[];
+var _runnerLogPollTimer=null;
+var _runnerLastLogText='';
 
 function selectRunner(name){
   if(_selectedRunner===name){
@@ -454,7 +455,7 @@ function startRunnerLogPoll(){
   pollRunnerLogs();
   // Check if runner has active jobs — poll faster if so
   const hasActive=_allJobData.some(j=>(j.status?.runnerRef||'')===_selectedRunner&&['pending','scheduling','provisioning','running'].includes((j.status?.phase||'').toLowerCase()));
-  _runnerLogPollTimer=setInterval(pollRunnerLogs,hasActive?2000:10000);
+  _runnerLogPollTimer=_uiInterval(pollRunnerLogs,hasActive?2000:10000);
 }
 
 function stopRunnerLogPoll(){
@@ -490,13 +491,13 @@ async function loadRunners(){
   const data=await apiGet(API+'/api/v1/jobrunners');
   _allRunnerData=data?.items||[];
   const tb=document.getElementById('runners-tbl');
-  tb.innerHTML='';
   if(_allRunnerData.length===0){tb.innerHTML='<tr><td colspan="11" class="muted" style="text-align:center;padding:8px">No runners</td></tr>';return;}
+  const runnerRows=[];
   _allRunnerData.forEach(r=>{
     const s=r.spec||{};
     const st=r.status||{};
     const selected=_selectedRunner===r.metadata.name?' selected':'';
-    tb.innerHTML+='<tr data-runner-name="'+escapeHtml(r.metadata.name)+'" class="runner-row'+selected+'" onclick="selectRunner(\''+escapeHtml(r.metadata.name)+'\')" style="cursor:pointer">'
+    runnerRows.push('<tr data-runner-name="'+escapeHtml(r.metadata.name)+'" class="runner-row'+selected+'" onclick="selectRunner(\''+escapeHtml(r.metadata.name)+'\')" style="cursor:pointer">'
       +'<td>'+escapeHtml(r.metadata.name)+'</td>'
       +'<td>'+escapeHtml(s.pool||'—')+'</td>'
       +'<td>'+escapeHtml(s.template||s.bootConfigRef||'—')+'</td>'
@@ -507,8 +508,9 @@ async function loadRunners(){
       +'<td>'+(st.totalCompleted||0)+'</td>'
       +'<td>'+(st.totalFailed||0)+'</td>'
       +'<td>'+statusBadge(st.phase||'Active')+'</td>'
-      +'<td onclick="event.stopPropagation()"><button class="btn btn-danger" onclick="delRunner(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<td onclick="event.stopPropagation()"><button class="btn btn-danger" onclick="delRunner(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=runnerRows.join('');
   initSort('runners-tbl');reapplySort('runners-tbl');
 
   // Refresh runner detail if selected
@@ -550,17 +552,18 @@ async function delRunner(name){
 async function loadRes(){
   const data=await apiGet(API+'/api/v1/hostreservations');
   const tb=document.getElementById('res-tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="7" class="muted" style="text-align:center;padding:8px">No reservations</td></tr>';return;}
+  const resRows=[];
   items.forEach(h=>{
     const ns=h.metadata.namespace||'default';
     const s=h.spec||{};
-    tb.innerHTML+='<tr><td>'+escapeHtml(h.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
+    resRows.push('<tr><td>'+escapeHtml(h.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
       +'<td>'+escapeHtml(s.bmhRef||'—')+'</td><td>'+escapeHtml(s.pool||'—')+'</td>'
       +'<td>'+escapeHtml(s.owner||'—')+'</td><td>'+escapeHtml(s.purpose||'—')+'</td>'
-      +'<td><button class="btn btn-danger" onclick="delRes(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(h.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<td><button class="btn btn-danger" onclick="delRes(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(h.metadata.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=resRows.join('');
   initSort('res-tbl');reapplySort('res-tbl');
 }
 
@@ -604,6 +607,7 @@ async function loadQueue(){
     }
   }
   if(entries.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">Queue empty</td></tr>';return;}
+  const qRows=[];
   entries.forEach((e,i)=>{
     const name=e.name||e.metadata?.name||'—';
     const ns=e.namespace||e.metadata?.namespace||'—';
@@ -612,15 +616,16 @@ async function loadQueue(){
     const phase=e.phase||e.status?.phase||e.spec?.phase||'—';
     const host=e.assignedHost||e.status?.assignedHost||'—';
     const queued=e.creationTimestamp||e.metadata?.creationTimestamp||'';
-    tb.innerHTML+='<tr><td>'+(e._pos||i+1)+'</td><td>'+escapeHtml(name)+'</td><td>'+escapeHtml(ns)+'</td><td>'+escapeHtml(pool)+'</td><td>'+pri+'</td><td>'+statusBadge(phase)+'</td><td>'+escapeHtml(host)+'</td><td>'+timeSince(queued)+'</td></tr>';
+    qRows.push('<tr><td>'+(e._pos||i+1)+'</td><td>'+escapeHtml(name)+'</td><td>'+escapeHtml(ns)+'</td><td>'+escapeHtml(pool)+'</td><td>'+pri+'</td><td>'+statusBadge(phase)+'</td><td>'+escapeHtml(host)+'</td><td>'+timeSince(queued)+'</td></tr>');
   });
+  tb.innerHTML=qRows.join('');
   initSort('queue-tbl');reapplySort('queue-tbl');
 }
 
 async function loadAll(){
   await Promise.all([loadJobs(),loadRunners(),loadRes(),loadQueue()]);
 }
-loadAll(); setInterval(loadAll,15000);
+loadAll(); _uiInterval(loadAll,15000);
 `
 	// Add selected row styling
 	extraCSS := `<style>

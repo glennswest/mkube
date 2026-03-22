@@ -37,13 +37,14 @@ async function load(){
 
   // Nodes table
   const nb=document.getElementById('nodes');
-  nb.innerHTML='';
+  const nodeRows=[];
   (nodes?.items||[]).forEach(n=>{
     const addr=n.status?.addresses?.find(a=>a.type==='InternalIP')?.address||'—';
     const arch=n.status?.nodeInfo?.architecture||'—';
     const ready=n.status?.conditions?.find(c=>c.type==='Ready');
-    nb.innerHTML+='<tr><td><a href="nodes/'+escapeHtml(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td><td>'+escapeHtml(arch)+'</td><td>'+escapeHtml(addr)+'</td><td>'+statusBadge(ready?.status==='True'?'Ready':'NotReady')+'</td></tr>';
+    nodeRows.push('<tr><td><a href="nodes/'+escapeHtml(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td><td>'+escapeHtml(arch)+'</td><td>'+escapeHtml(addr)+'</td><td>'+statusBadge(ready?.status==='True'?'Ready':'NotReady')+'</td></tr>');
   });
+  nb.innerHTML=nodeRows.join('');
   initSort('nodes');
   reapplySort('nodes');
 
@@ -73,7 +74,7 @@ function statBox(val,label){
   return '<div class="stat"><div class="val">'+escapeHtml(String(val))+'</div><div class="lbl">'+escapeHtml(label)+'</div></div>';
 }
 
-load(); setInterval(load,30000);
+load(); _uiInterval(load,30000);
 `
 	write(w, c.pageWithJS("Dashboard", "Dashboard", body, js))
 }

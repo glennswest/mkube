@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-22 (UI Performance)
+- **perf:** Cacheable static assets — CSS and JS now served as external files (`/ui/static/style.css`, `/ui/static/app.js`) with `Cache-Control: public, max-age=86400`. Eliminates re-downloading ~14KB of inline CSS+JS on every page navigation.
+- **feat:** SPA client-side navigation — nav link clicks now fetch and swap page content without full page reload. `pushState`/`popstate` for URL bar and back/forward. Timer cleanup between page transitions. Fallback to full navigation on errors.
+- **perf:** Batch DOM writes — replaced `innerHTML +=` in loops (N DOM reparses per table) with `rows.push()` + `join('')` (single DOM write) across all 12 handler files. Eliminates visible jank on large tables.
+- **perf:** Debounced search inputs — search/filter text inputs now debounce API calls (200ms) instead of firing on every keystroke.
+- **refactor:** Timer management — all `setInterval` calls wrapped in `_uiInterval()` for global tracking. SPA navigation clears all timers before loading new page. Prevents timer leaks across page transitions.
+
 ### 2026-03-22 (StoragePool CRD)
 - **feat:** StoragePool CRD — cluster-scoped CRD representing physical storage devices. Auto-discovers RouterOS hardware and RAID disks at boot via `/disk` REST API. Full CRUD API (`mk get sp`), NATS persistence, watch, table format, consistency checks, export/import. Per-pool capacity tracking (total/used/avail), resource counts (disks/PVCs). Default pool support for backward compatibility.
 - **feat:** Pool-aware PVC paths — PVCs can select a storage pool via `storageClassName` or `vkube.io/storage-pool` annotation. Existing PVCs without annotation resolve to the default pool (backward compatible).

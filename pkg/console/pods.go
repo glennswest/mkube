@@ -7,7 +7,7 @@ func (c *Console) handlePods(w http.ResponseWriter, r *http.Request) {
 <div class="toolbar">
   <select id="ns-filter" onchange="load()"><option value="">All Namespaces</option></select>
   <select id="status-filter" onchange="load()"><option value="">All Status</option><option>Running</option><option>Pending</option><option>Failed</option><option>Succeeded</option></select>
-  <input type="text" id="search" placeholder="Search..." oninput="load()">
+  <input type="text" id="search" placeholder="Search..." oninput="debounce(load,200)">
 </div>
 <table><thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Node</th><th>IP</th><th>Image</th><th>Restarts</th><th>Age</th></tr></thead>
 <tbody id="tbl"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody></table>`
@@ -38,28 +38,29 @@ async function load(){
   });
 
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   if(filtered.length===0){
     tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No pods found</td></tr>';
     return;
   }
+  const rows=[];
   filtered.forEach(p=>{
     const ns=p.metadata.namespace||'default';
     const restarts=p.status?.containerStatuses?.[0]?.restartCount||0;
     const node=p.metadata?.annotations?.['vkube.io/node']||'—';
-    tb.innerHTML+='<tr><td><a href="pods/'+encodeURIComponent(ns)+'/'+encodeURIComponent(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="pods/'+encodeURIComponent(ns)+'/'+encodeURIComponent(p.metadata.name)+'">'+escapeHtml(p.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(ns)+'</td>'
       +'<td>'+statusBadge(p.status?.phase)+'</td>'
       +'<td>'+escapeHtml(node)+'</td>'
       +'<td>'+escapeHtml(p.status?.podIP||'—')+'</td>'
       +'<td>'+shortImage(p.spec?.containers?.[0]?.image)+'</td>'
       +'<td>'+restarts+'</td>'
-      +'<td>'+timeSince(p.status?.startTime||p.metadata?.creationTimestamp)+'</td></tr>';
+      +'<td>'+timeSince(p.status?.startTime||p.metadata?.creationTimestamp)+'</td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');
   reapplySort('tbl');
 }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Pods", "Pods", body, js))
 }
@@ -90,12 +91,13 @@ async function load(){
     +kv('Age',timeSince(s.startTime||pod.metadata?.creationTimestamp));
 
   const cb=document.getElementById('containers');
-  cb.innerHTML='';
+  const cRows=[];
   (pod.spec?.containers||[]).forEach((c,i)=>{
     const cs=s.containerStatuses?.[i]||{};
-    cb.innerHTML+='<div style="margin-bottom:8px"><strong>'+escapeHtml(c.name)+'</strong> — '+shortImage(c.image)
-      +' '+statusBadge(cs.ready?'Ready':'NotReady')+' restarts: '+(cs.restartCount||0)+'</div>';
+    cRows.push('<div style="margin-bottom:8px"><strong>'+escapeHtml(c.name)+'</strong> — '+shortImage(c.image)
+      +' '+statusBadge(cs.ready?'Ready':'NotReady')+' restarts: '+(cs.restartCount||0)+'</div>');
   });
+  cb.innerHTML=cRows.join('');
 
   const lb=document.getElementById('labels');
   lb.innerHTML=Object.entries(pod.metadata?.labels||{}).map(([k,v])=>'<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(v)+'</div>').join('')||'<div class="muted">None</div>';
@@ -114,7 +116,7 @@ async function deletePod(){
   await apiDelete(API+'/api/v1/namespaces/'+podNs+'/pods/'+podName);
   location.href='pods';
 }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Pod: "+name, "Pods", body, js))
 }

@@ -319,5 +319,78 @@ function reapplySort(tbodyId){
     }
   });
 }
+
+// ── Timer management ──
+window._uiTimers=[];
+function _uiInterval(fn,ms){
+  var id=setInterval(fn,ms);
+  window._uiTimers.push(id);
+  return id;
+}
+function _clearUiTimers(){
+  window._uiTimers.forEach(function(id){clearInterval(id);});
+  window._uiTimers=[];
+}
+
+// ── Debounce ──
+var _dbTimers=new Map();
+function debounce(fn,ms){
+  clearTimeout(_dbTimers.get(fn));
+  _dbTimers.set(fn,setTimeout(fn,ms||200));
+}
+
+// ── SPA Router ──
+var _spaNavigating=false;
+document.addEventListener('DOMContentLoaded',function(){
+  document.addEventListener('click',function(e){
+    var a=e.target.closest('nav .links a');
+    if(!a) return;
+    e.preventDefault();
+    _spaNavigate(a.href);
+  });
+  window.addEventListener('popstate',function(){
+    _spaNavigate(location.href,true);
+  });
+});
+
+function _spaNavigate(url,isPopState){
+  if(_spaNavigating) return;
+  _spaNavigating=true;
+  _clearUiTimers();
+  fetch(url,{headers:{'Accept':'text/html'}}).then(function(r){
+    if(!r.ok) throw new Error(r.status);
+    return r.text();
+  }).then(function(html){
+    var parser=new DOMParser();
+    var doc=parser.parseFromString(html,'text/html');
+    var newContainer=doc.querySelector('.container');
+    if(!newContainer){location.href=url;return;}
+    var scripts=doc.querySelectorAll('body > script');
+    var pageScript=scripts.length>0?scripts[scripts.length-1].textContent:'';
+    document.querySelector('.container').innerHTML=newContainer.innerHTML;
+    var newActive=doc.querySelector('nav .links a.active');
+    if(newActive){
+      var activeText=newActive.textContent;
+      document.querySelectorAll('nav .links a').forEach(function(a){
+        a.classList.toggle('active',a.textContent===activeText);
+      });
+    }
+    if(!isPopState) history.pushState(null,'',url);
+    var titleEl=doc.querySelector('title');
+    if(titleEl) document.title=titleEl.textContent;
+    if(pageScript){
+      var old=document.getElementById('_page_script');
+      if(old) old.remove();
+      var s=document.createElement('script');
+      s.id='_page_script';
+      s.textContent=pageScript;
+      document.body.appendChild(s);
+    }
+    _spaNavigating=false;
+  }).catch(function(){
+    _spaNavigating=false;
+    location.href=url;
+  });
+}
 `
 }

@@ -7,14 +7,14 @@ func (c *Console) handleLogs(w http.ResponseWriter, r *http.Request) {
 <div class="toolbar">
   <select id="node-filter"><option value="">All Nodes</option></select>
   <select id="pod-filter" onchange="loadLogs()"><option value="">Select a pod...</option></select>
-  <input type="text" id="log-search" placeholder="Search..." oninput="filterLogs()">
+  <input type="text" id="log-search" placeholder="Search..." oninput="debounce(filterLogs,200)">
   <label style="color:#888;font-size:12px"><input type="checkbox" id="follow" checked> Follow</label>
   <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
 </div>
 <div class="terminal" id="logs" style="max-height:600px"><span class="muted">Select a pod to view logs</span></div>`
 
 	js := `
-let allLogLines='';
+var allLogLines='';
 
 async function init(){
   const [nodes,pods]=await Promise.all([

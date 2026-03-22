@@ -11,25 +11,26 @@ func (c *Console) handleNetworks(w http.ResponseWriter, r *http.Request) {
 async function load(){
   const data=await apiGet(API+'/api/v1/networks');
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No networks</td></tr>';return;}
+  const rows=[];
   items.forEach(n=>{
     const s=n.spec||{};
     const st=n.status||{};
     const dhcp=s.dhcp?.enabled?'Yes':'—';
-    tb.innerHTML+='<tr><td><a href="networks/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="networks/'+encodeURIComponent(n.metadata.name)+'">'+escapeHtml(n.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(s.type||'—')+'</td>'
       +'<td>'+escapeHtml(s.cidr||'—')+'</td>'
       +'<td>'+escapeHtml(s.gateway||'—')+'</td>'
       +'<td>'+escapeHtml(s.dns||'—')+'</td>'
       +'<td>'+(st.podCount||0)+'</td>'
       +'<td>'+statusBadge(st.dnsLiveness||'—')+'</td>'
-      +'<td>'+escapeHtml(dhcp)+'</td></tr>';
+      +'<td>'+escapeHtml(dhcp)+'</td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');reapplySort('tbl');
 }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Networks", "Networks", body, js))
 }
@@ -110,7 +111,7 @@ async function smoketest(){
   else document.getElementById('smoketest-result').innerHTML=statusBadge('error');
 }
 
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Network: "+name, "Networks", body, js))
 }

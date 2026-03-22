@@ -11,16 +11,16 @@ func (c *Console) handleBMH(w http.ResponseWriter, r *http.Request) {
 async function load(){
   const data=await apiGet(API+'/api/v1/baremetalhosts');
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No BMHs</td></tr>';return;}
+  const rows=[];
   items.forEach(b=>{
     const ns=b.metadata.namespace||'default';
     const s=b.spec||{};
     const st=b.status||{};
     const power=s.online?'ON':'OFF';
     const imgDisk=s.disk?shortImage(s.disk):shortImage(s.image);
-    tb.innerHTML+='<tr><td><a href="bmh/'+encodeURIComponent(ns)+'/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="bmh/'+encodeURIComponent(ns)+'/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
       +'<td>'+escapeHtml(ns)+'</td>'
       +'<td>'+statusBadge(s.state||st.state||'—')+'</td>'
       +'<td>'+statusBadge(power)+'</td>'
@@ -28,8 +28,9 @@ async function load(){
       +'<td>'+escapeHtml(s.ip||'—')+'</td>'
       +'<td>'+escapeHtml(imgDisk)+'</td>'
       +'<td><button class="btn btn-success" onclick="setPower(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(b.metadata.name)+'\',true)">On</button> '
-      +'<button class="btn btn-danger" onclick="setPower(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(b.metadata.name)+'\',false)">Off</button></td></tr>';
+      +'<button class="btn btn-danger" onclick="setPower(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(b.metadata.name)+'\',false)">Off</button></td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');reapplySort('tbl');
 }
 
@@ -38,7 +39,7 @@ async function setPower(ns,name,on){
   load();
 }
 
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Bare Metal Hosts", "BMH", body, js))
 }
@@ -78,7 +79,7 @@ async function setPower(on){
   await apiPatch(API+'/api/v1/namespaces/'+bNs+'/baremetalhosts/'+bName,{spec:{online:on}});
   load();
 }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("BMH: "+name, "BMH", body, js))
 }

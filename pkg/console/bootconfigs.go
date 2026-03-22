@@ -11,23 +11,24 @@ func (c *Console) handleBootConfigs(w http.ResponseWriter, r *http.Request) {
 async function load(){
   const data=await apiGet(API+'/api/v1/bootconfigs');
   const tb=document.getElementById('tbl');
-  tb.innerHTML='';
   const items=data?.items||[];
   if(items.length===0){tb.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">No boot configs</td></tr>';return;}
+  const rows=[];
   items.forEach(b=>{
     const s=b.spec||{};
     const ipxe=s.ipxeScript?'Yes':'—';
-    tb.innerHTML+='<tr><td><a href="bootconfigs/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
+    rows.push('<tr><td><a href="bootconfigs/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
       +'<td>'+shortImage(s.kernel||'')+'</td>'
       +'<td>'+shortImage(s.initrd||'')+'</td>'
       +'<td>'+escapeHtml(ipxe)+'</td>'
       +'<td>'+timeSince(b.metadata?.creationTimestamp)+'</td>'
-      +'<td><button class="btn btn-danger" onclick="del(\''+escapeHtml(b.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<td><button class="btn btn-danger" onclick="del(\''+escapeHtml(b.metadata.name)+'\')">Delete</button></td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('tbl');reapplySort('tbl');
 }
 async function del(name){ if(confirm('Delete bootconfig '+name+'?')){ await apiDelete(API+'/api/v1/bootconfigs/'+name); load(); }}
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("Boot Configs", "BootConfigs", body, js))
 }
@@ -57,17 +58,18 @@ async function load(){
   const bmhs=await apiGet(API+'/api/v1/baremetalhosts');
   const refs=(bmhs?.items||[]).filter(b=>b.spec?.bootConfigRef===bcName);
   const tb=document.getElementById('refs');
-  tb.innerHTML='';
   if(refs.length===0){tb.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:8px">No hosts reference this config</td></tr>';return;}
+  const rows=[];
   refs.forEach(b=>{
     const ns=b.metadata.namespace||'default';
-    tb.innerHTML+='<tr><td><a href="bmh/'+encodeURIComponent(ns)+'/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
-      +'<td>'+escapeHtml(ns)+'</td><td>'+statusBadge(b.spec?.state||'—')+'</td><td>'+statusBadge(b.spec?.online?'ON':'OFF')+'</td></tr>';
+    rows.push('<tr><td><a href="bmh/'+encodeURIComponent(ns)+'/'+encodeURIComponent(b.metadata.name)+'">'+escapeHtml(b.metadata.name)+'</a></td>'
+      +'<td>'+escapeHtml(ns)+'</td><td>'+statusBadge(b.spec?.state||'—')+'</td><td>'+statusBadge(b.spec?.online?'ON':'OFF')+'</td></tr>');
   });
+  tb.innerHTML=rows.join('');
   initSort('refs');reapplySort('refs');
 }
 function kv(k,v){ return '<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v||'—'))+'</div>'; }
-load(); setInterval(load,15000);
+load(); _uiInterval(load,15000);
 `
 	write(w, c.pageWithJS("BootConfig: "+name, "BootConfigs", body, js))
 }

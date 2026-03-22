@@ -77,56 +77,68 @@ async function load(){
 
   // Pools table
   const plt=document.getElementById('pools-tbl');
-  plt.innerHTML='';
   if(poolItems.length===0){plt.innerHTML='<tr><td colspan="11" class="muted" style="text-align:center;padding:8px">No pools</td></tr>';}
-  else poolItems.forEach(p=>{
-    const sp=p.spec||{};const st=p.status||{};
-    const devType=st.raidType?('RAID-'+st.raidType):(st.deviceType||'—');
-    plt.innerHTML+='<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(devType)+'</td><td>'+escapeHtml(st.interface||'—')+'</td><td>'+escapeHtml(sp.mountPoint||'—')+'</td><td>'+fmtPoolBytes(st.totalBytes)+'</td><td>'+fmtPoolBytes(st.usedBytes)+'</td><td>'+fmtPoolBytes(st.availBytes)+'</td><td>'+statusBadge(st.phase||'—')+'</td><td>'+(sp.default?'Yes':'')+'</td><td>'+(st.diskCount||0)+'</td><td>'+(st.pvcCount||0)+'</td></tr>';
-  });
+  else{
+    const poolRows=[];
+    poolItems.forEach(p=>{
+      const sp=p.spec||{};const st=p.status||{};
+      const devType=st.raidType?('RAID-'+st.raidType):(st.deviceType||'—');
+      poolRows.push('<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(devType)+'</td><td>'+escapeHtml(st.interface||'—')+'</td><td>'+escapeHtml(sp.mountPoint||'—')+'</td><td>'+fmtPoolBytes(st.totalBytes)+'</td><td>'+fmtPoolBytes(st.usedBytes)+'</td><td>'+fmtPoolBytes(st.availBytes)+'</td><td>'+statusBadge(st.phase||'—')+'</td><td>'+(sp.default?'Yes':'')+'</td><td>'+(st.diskCount||0)+'</td><td>'+(st.pvcCount||0)+'</td></tr>');
+    });
+    plt.innerHTML=poolRows.join('');
+  }
   initSort('pools-tbl');reapplySort('pools-tbl');
 
   // PVCs
   const pt=document.getElementById('pvcs-tbl');
-  pt.innerHTML='';
   const pvcItems=pvcs?.items||[];
   if(pvcItems.length===0){pt.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:8px">No PVCs</td></tr>';}
-  else pvcItems.forEach(p=>{
-    const s=p.spec||{};
-    const st=p.status||{};
-    const ann=p.metadata?.annotations||{};
-    const usedBytes=ann['vkube.io/used-bytes'];
-    const used=usedBytes?fmtBytes(parseInt(usedBytes)):'—';
-    const cap=st.capacity?.storage||s.resources?.requests?.storage||'—';
-    pt.innerHTML+='<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(p.metadata.namespace||'default')+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+used+'</td><td>'+escapeHtml(String(cap))+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td></tr>';
-  });
+  else{
+    const pvcRows=[];
+    pvcItems.forEach(p=>{
+      const s=p.spec||{};
+      const st=p.status||{};
+      const ann=p.metadata?.annotations||{};
+      const usedBytes=ann['vkube.io/used-bytes'];
+      const used=usedBytes?fmtBytes(parseInt(usedBytes)):'—';
+      const cap=st.capacity?.storage||s.resources?.requests?.storage||'—';
+      pvcRows.push('<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(p.metadata.namespace||'default')+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+used+'</td><td>'+escapeHtml(String(cap))+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td></tr>');
+    });
+    pt.innerHTML=pvcRows.join('');
+  }
   initSort('pvcs-tbl');reapplySort('pvcs-tbl');
 
   // CDROMs
   const ct=document.getElementById('cdroms-tbl');
-  ct.innerHTML='';
   const cdromItems=cdroms?.items||[];
   if(cdromItems.length===0){ct.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:8px">No CDROMs</td></tr>';}
-  else cdromItems.forEach(c=>{
-    const s=c.spec||{};
-    const st=c.status||{};
-    ct.innerHTML+='<tr><td>'+escapeHtml(c.metadata.name)+'</td><td>'+escapeHtml(s.version||'—')+'</td><td>'+statusBadge(s.phase||st.phase||'—')+'</td><td>'+fmtSize(s.size||st.size)+'</td><td>'+(s.subscribers?.length||0)+'</td><td>'+timeSince(c.metadata?.creationTimestamp)+'</td></tr>';
-  });
+  else{
+    const cdRows=[];
+    cdromItems.forEach(c=>{
+      const s=c.spec||{};
+      const st=c.status||{};
+      cdRows.push('<tr><td>'+escapeHtml(c.metadata.name)+'</td><td>'+escapeHtml(s.version||'—')+'</td><td>'+statusBadge(s.phase||st.phase||'—')+'</td><td>'+fmtSize(s.size||st.size)+'</td><td>'+(s.subscribers?.length||0)+'</td><td>'+timeSince(c.metadata?.creationTimestamp)+'</td></tr>');
+    });
+    ct.innerHTML=cdRows.join('');
+  }
   initSort('cdroms-tbl');reapplySort('cdroms-tbl');
 
   // Disks
   const dt=document.getElementById('disks-tbl');
-  dt.innerHTML='';
   const diskItems=disks?.items||[];
   if(diskItems.length===0){dt.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">No disks</td></tr>';}
-  else diskItems.forEach(d=>{
-    const s=d.spec||{};
-    const st=d.status||{};
-    dt.innerHTML+='<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||'—')+'</td><td>'+fmtSize(s.size||st.size)+'</td><td>'+statusBadge(s.phase||st.phase||'—')+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+timeSince(st.lastUsed||s.lastUsed)+'</td></tr>';
-  });
+  else{
+    const diskRows=[];
+    diskItems.forEach(d=>{
+      const s=d.spec||{};
+      const st=d.status||{};
+      diskRows.push('<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||'—')+'</td><td>'+fmtSize(s.size||st.size)+'</td><td>'+statusBadge(s.phase||st.phase||'—')+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+timeSince(st.lastUsed||s.lastUsed)+'</td></tr>');
+    });
+    dt.innerHTML=diskRows.join('');
+  }
   initSort('disks-tbl');reapplySort('disks-tbl');
 }
-load(); setInterval(load,30000);
+load(); _uiInterval(load,30000);
 `
 	write(w, c.pageWithJS("Storage", "Storage", body, js))
 }
