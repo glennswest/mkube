@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -408,9 +409,16 @@ func reportComplete(apiURL string, exitCode int, execErr error) {
 }
 
 // commitJobLogs clones the job's repo and pushes the build log as logs/job-{datetime}.log.
+// Requires GIT_TOKEN — without auth, git push hangs waiting for credentials.
 // Best-effort — failures are logged but don't affect the job result.
 func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	if job.Spec.Repo == "" {
+		return
+	}
+
+	token := job.Spec.Env["GIT_TOKEN"]
+	if token == "" {
+		log.Printf("log commit: skipped (no GIT_TOKEN)")
 		return
 	}
 
@@ -418,20 +426,17 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	logFile := fmt.Sprintf("logs/job-%s.log", now.Format("2006-01-02-150405"))
 	cloneDir := "/tmp/log-commit"
 
-	// Build git URL with auth if available
+	// Inject token into HTTPS URL for push auth
 	repoURL := job.Spec.Repo
-	token := job.Spec.Env["GIT_TOKEN"]
-	pushURL := repoURL
-	if token != "" {
-		// Inject token into HTTPS URL: https://github.com/... → https://x-access-token:TOKEN@github.com/...
-		pushURL = strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
-	}
+	pushURL := strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
 
 	// Clean up any previous log-commit dir
 	os.RemoveAll(cloneDir)
 
-	// Shallow clone
-	cloneCmd := exec.Command("git", "clone", "--depth", "1", pushURL, cloneDir)
+	// Shallow clone with 60s timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", pushURL, cloneDir)
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		log.Printf("log commit: clone failed: %v\n%s", err, string(out))
 		return
@@ -469,8 +474,11 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	}
 
 	for _, c := range cmds {
-		cmd := exec.Command(c.args[0], c.args[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(cmdCtx, c.args[0], c.args[1:]...)
+		out, err := cmd.CombinedOutput()
+		cmdCancel()
+		if err != nil {
 			log.Printf("log commit: %s failed: %v\n%s", c.name, err, string(out))
 			return
 		}
