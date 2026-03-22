@@ -47,8 +47,31 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
   <div class="flex mb">
     <button class="btn btn-primary" onclick="showCreateRunner()">Create Runner</button>
   </div>
-  <table><thead><tr><th>Name</th><th>Pool</th><th>Template</th><th>Max Concurrent</th><th>Idle Timeout</th><th>Reclaim</th><th>Status</th><th>Actions</th></tr></thead>
+  <table><thead><tr><th>Name</th><th>Pool</th><th>Template</th><th>Max Concurrent</th><th>Idle Timeout</th><th>Reclaim</th><th>Active</th><th>Completed</th><th>Failed</th><th>Status</th><th>Actions</th></tr></thead>
   <tbody id="runners-tbl"></tbody></table>
+  <div id="runner-detail-panel" style="display:none;margin-top:12px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="card" style="margin-bottom:0">
+        <h3 id="runner-detail-title">Runner Details</h3>
+        <div class="kv" id="runner-detail-spec"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h3>Active Jobs</h3>
+        <div id="runner-active-jobs"><span class="muted">No active jobs</span></div>
+      </div>
+    </div>
+    <div class="card mt" style="margin-bottom:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0" id="runner-log-title">Active Job Logs</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="runner-log-job" onchange="switchRunnerLogJob()" style="background:#1a1d32;border:1px solid #2a2d45;color:#e0e0e0;padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit"></select>
+          <label style="color:#888;font-size:11px"><input type="checkbox" id="runner-log-follow" checked> Follow</label>
+          <span id="runner-log-line-count" style="color:#666;font-size:11px"></span>
+        </div>
+      </div>
+      <div class="terminal" id="runner-logs" style="max-height:500px;min-height:200px"><span class="muted">Select a runner to view active job logs</span></div>
+    </div>
+  </div>
 </div>
 
 <div id="reservations" class="tab-content">
@@ -355,25 +378,186 @@ async function delJob(ns,name){
 }
 
 // ── Job Runners ──
+let _selectedRunner=null;
+let _selectedRunnerData=null;
+let _allRunnerData=[];
+let _runnerLogPollTimer=null;
+let _runnerLastLogText='';
+let _runnerLogJobKey=null;
+
+function selectRunner(name){
+  if(_selectedRunner===name){
+    _selectedRunner=null;
+    _selectedRunnerData=null;
+    document.getElementById('runner-detail-panel').style.display='none';
+    document.querySelectorAll('#runners-tbl tr').forEach(r=>r.classList.remove('selected'));
+    stopRunnerLogPoll();
+    return;
+  }
+  _selectedRunner=name;
+  _selectedRunnerData=_allRunnerData.find(r=>r.metadata.name===name)||null;
+  document.querySelectorAll('#runners-tbl tr').forEach(r=>r.classList.remove('selected'));
+  document.querySelectorAll('#runners-tbl tr').forEach(r=>{if(r.dataset.runnerName===name) r.classList.add('selected');});
+  renderRunnerDetail();
+}
+
+function renderRunnerDetail(){
+  const r=_selectedRunnerData;
+  if(!r){document.getElementById('runner-detail-panel').style.display='none';return;}
+  document.getElementById('runner-detail-panel').style.display='block';
+  const s=r.spec||{};
+  const st=r.status||{};
+  document.getElementById('runner-detail-title').textContent=r.metadata.name;
+
+  let html='';
+  const fields=[
+    ['Pool',s.pool],['Template',s.template||s.bootConfigRef],['Boot Config',s.bootConfigRef],
+    ['Max Concurrent',s.maxConcurrent||1],['Idle Timeout',(s.idleTimeout||0)+'s'],
+    ['Reclaim Policy',s.reclaimPolicy||'PowerOff'],['Phase',st.phase||'Active'],
+    ['Reserved Hosts',st.reservedHosts||0],['Active Jobs',st.activeJobs||0],
+    ['Total Completed',st.totalCompleted||0],['Total Failed',st.totalFailed||0],
+    ['Created',r.metadata.creationTimestamp],
+  ];
+  fields.forEach(([k,v])=>{
+    if(v!==undefined&&v!==null&&v!=='') html+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v))+'</div>';
+  });
+  document.getElementById('runner-detail-spec').innerHTML=html;
+
+  // Find jobs assigned to this runner
+  const runnerJobs=_allJobData.filter(j=>(j.status?.runnerRef||'')=== _selectedRunner);
+  const activeJobs=runnerJobs.filter(j=>['pending','scheduling','provisioning','running'].includes((j.status?.phase||'').toLowerCase()));
+  const recentJobs=runnerJobs.sort((a,b)=>(b.metadata?.creationTimestamp||'').localeCompare(a.metadata?.creationTimestamp||'')).slice(0,10);
+
+  // Active jobs list
+  const ajDiv=document.getElementById('runner-active-jobs');
+  if(recentJobs.length===0){
+    ajDiv.innerHTML='<span class="muted">No jobs for this runner</span>';
+  } else {
+    let ajHtml='<table style="font-size:11px"><thead><tr><th>Job</th><th>Phase</th><th>Host</th><th>Age</th></tr></thead><tbody>';
+    recentJobs.forEach(j=>{
+      const ns=j.metadata.namespace||'default';
+      const phase=j.status?.phase||'Pending';
+      ajHtml+='<tr><td>'+escapeHtml(ns+'/'+j.metadata.name)+'</td><td>'+statusBadge(phase)+'</td><td>'+escapeHtml(j.status?.bmhRef||'—')+'</td><td>'+timeSince(j.metadata?.creationTimestamp)+'</td></tr>';
+    });
+    ajHtml+='</tbody></table>';
+    ajDiv.innerHTML=ajHtml;
+  }
+
+  // Populate runner log job selector
+  const logSel=document.getElementById('runner-log-job');
+  const prevVal=logSel.value;
+  logSel.innerHTML='';
+  if(runnerJobs.length===0){
+    logSel.innerHTML='<option value="">No jobs</option>';
+  } else {
+    // Active jobs first, then recent
+    const sorted=[...activeJobs,...runnerJobs.filter(j=>!activeJobs.includes(j))].slice(0,20);
+    sorted.forEach(j=>{
+      const ns=j.metadata.namespace||'default';
+      const key=ns+'/'+j.metadata.name;
+      const phase=j.status?.phase||'Pending';
+      const o=document.createElement('option');
+      o.value=key;
+      o.text=j.metadata.name+' ('+phase+')';
+      logSel.add(o);
+    });
+  }
+  // Restore previous selection or auto-select first active
+  if(prevVal&&[...logSel.options].some(o=>o.value===prevVal)){
+    logSel.value=prevVal;
+  } else if(activeJobs.length>0){
+    const firstActive=(activeJobs[0].metadata.namespace||'default')+'/'+activeJobs[0].metadata.name;
+    logSel.value=firstActive;
+  }
+  switchRunnerLogJob();
+}
+
+function switchRunnerLogJob(){
+  const sel=document.getElementById('runner-log-job');
+  const key=sel.value;
+  if(!key||key===_runnerLogJobKey) return;
+  _runnerLogJobKey=key;
+  _runnerLastLogText='';
+  document.getElementById('runner-logs').innerHTML='<span class="muted">Loading logs...</span>';
+  document.getElementById('runner-log-line-count').textContent='';
+  document.getElementById('runner-log-title').textContent='Logs: '+key;
+  startRunnerLogPoll();
+}
+
+function startRunnerLogPoll(){
+  stopRunnerLogPoll();
+  pollRunnerLogs();
+  const job=_allJobData.find(j=>(j.metadata.namespace||'default')+'/'+j.metadata.name===_runnerLogJobKey);
+  const phase=(job?.status?.phase||'').toLowerCase();
+  const isActive=['pending','scheduling','provisioning','running'].includes(phase);
+  _runnerLogPollTimer=setInterval(pollRunnerLogs,isActive?2000:10000);
+}
+
+function stopRunnerLogPoll(){
+  if(_runnerLogPollTimer){clearInterval(_runnerLogPollTimer);_runnerLogPollTimer=null;}
+}
+
+async function pollRunnerLogs(){
+  if(!_runnerLogJobKey) return;
+  const [ns,name]=_runnerLogJobKey.split('/');
+  try{
+    const resp=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs');
+    if(!_runnerLogJobKey||_runnerLogJobKey!==ns+'/'+name) return;
+    const text=await resp.text();
+    if(!resp.ok){
+      document.getElementById('runner-logs').innerHTML='<span class="muted">'+escapeHtml(text||'No logs ('+resp.status+')')+'</span>';
+      return;
+    }
+    if(text!==_runnerLastLogText){
+      _runnerLastLogText=text;
+      const el=document.getElementById('runner-logs');
+      el.innerHTML=ansiToHtml(text)||'<span class="muted">No logs yet</span>';
+      const lineCount=(text.match(/\n/g)||[]).length;
+      document.getElementById('runner-log-line-count').textContent=lineCount+' lines';
+      if(document.getElementById('runner-log-follow').checked) el.scrollTop=el.scrollHeight;
+    }
+  }catch(e){
+    console.error('runner log poll error',e);
+    const el=document.getElementById('runner-logs');
+    if(el&&el.innerHTML.includes('Loading')) el.innerHTML='<span class="muted">Failed to connect</span>';
+  }
+}
+
 async function loadRunners(){
   const data=await apiGet(API+'/api/v1/jobrunners');
+  _allRunnerData=data?.items||[];
   const tb=document.getElementById('runners-tbl');
   tb.innerHTML='';
-  const items=data?.items||[];
-  if(items.length===0){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">No runners</td></tr>';return;}
-  items.forEach(r=>{
+  if(_allRunnerData.length===0){tb.innerHTML='<tr><td colspan="11" class="muted" style="text-align:center;padding:8px">No runners</td></tr>';return;}
+  _allRunnerData.forEach(r=>{
     const s=r.spec||{};
     const st=r.status||{};
-    tb.innerHTML+='<tr><td>'+escapeHtml(r.metadata.name)+'</td>'
+    const selected=_selectedRunner===r.metadata.name?' selected':'';
+    tb.innerHTML+='<tr data-runner-name="'+escapeHtml(r.metadata.name)+'" class="runner-row'+selected+'" onclick="selectRunner(\''+escapeHtml(r.metadata.name)+'\')" style="cursor:pointer">'
+      +'<td>'+escapeHtml(r.metadata.name)+'</td>'
       +'<td>'+escapeHtml(s.pool||'—')+'</td>'
       +'<td>'+escapeHtml(s.template||s.bootConfigRef||'—')+'</td>'
       +'<td>'+(s.maxConcurrent||1)+'</td>'
       +'<td>'+(s.idleTimeout||0)+'s</td>'
       +'<td>'+escapeHtml(s.reclaimPolicy||'PowerOff')+'</td>'
-      +'<td>'+statusBadge(st.state||'Active')+'</td>'
-      +'<td><button class="btn btn-danger" onclick="delRunner(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>';
+      +'<td>'+(st.activeJobs||0)+'</td>'
+      +'<td>'+(st.totalCompleted||0)+'</td>'
+      +'<td>'+(st.totalFailed||0)+'</td>'
+      +'<td>'+statusBadge(st.phase||'Active')+'</td>'
+      +'<td onclick="event.stopPropagation()"><button class="btn btn-danger" onclick="delRunner(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>';
   });
   initSort('runners-tbl');reapplySort('runners-tbl');
+
+  // Refresh runner detail if selected
+  if(_selectedRunner){
+    _selectedRunnerData=_allRunnerData.find(r=>r.metadata.name===_selectedRunner)||null;
+    if(_selectedRunnerData) renderRunnerDetail();
+    else{
+      _selectedRunner=null;
+      document.getElementById('runner-detail-panel').style.display='none';
+      stopRunnerLogPoll();
+    }
+  }
 }
 
 async function createRunner(){
@@ -477,9 +661,9 @@ loadAll(); setInterval(loadAll,15000);
 `
 	// Add selected row styling
 	extraCSS := `<style>
-#jobs-tbl tr.selected td { background:#1e2845; }
-#jobs-tbl tr.job-row:hover td { background:#1a1d32; }
-#jobs-tbl tr.selected:hover td { background:#1e2845; }
+#jobs-tbl tr.selected td, #runners-tbl tr.selected td { background:#1e2845; }
+#jobs-tbl tr.job-row:hover td, #runners-tbl tr.runner-row:hover td { background:#1a1d32; }
+#jobs-tbl tr.selected:hover td, #runners-tbl tr.selected:hover td { background:#1e2845; }
 </style>`
 	write(w, c.pageWithJS("Jobs", "Jobs", body+extraCSS, js))
 }
