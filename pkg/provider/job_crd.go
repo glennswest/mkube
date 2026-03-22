@@ -551,6 +551,9 @@ func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Reque
 				job.Status.LastHeartbeat = job.Status.StartedAt
 				p.persistJob(r.Context(), job)
 				c.Status = job.Status
+				if job.Status.RunnerRef != "" {
+					p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("Agent started %s on %s (%s)", jobKey(job), matchedBMH.Name, sourceIP))
+				}
 			}
 
 			podWriteJSON(w, http.StatusOK, c)
@@ -703,6 +706,18 @@ func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.R
 	p.persistJob(r.Context(), matchedJob)
 	p.triggerScheduler()
 
+	if matchedJob.Status.RunnerRef != "" {
+		if req.ExitCode == 0 {
+			p.appendRunnerEvent(matchedJob.Status.RunnerRef, fmt.Sprintf("COMPLETED %s (exit 0)", jobKey(matchedJob)))
+		} else {
+			msg := fmt.Sprintf("FAILED %s (exit %d)", jobKey(matchedJob), req.ExitCode)
+			if req.ErrorMessage != "" {
+				msg += ": " + req.ErrorMessage
+			}
+			p.appendRunnerEvent(matchedJob.Status.RunnerRef, msg)
+		}
+	}
+
 	p.deps.Logger.Infow("job completed",
 		"job", jobKey(matchedJob),
 		"phase", matchedJob.Status.Phase,
@@ -725,6 +740,25 @@ func (p *MicroKubeProvider) handleGetJobLogs(w http.ResponseWriter, r *http.Requ
 	}
 
 	lines := p.getJobLogs(r.Context(), key)
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(w, line)
+	}
+}
+
+// ─── Runner Logs Endpoint ───────────────────────────────────────────────────
+
+func (p *MicroKubeProvider) handleGetRunnerLogs(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	if _, ok := p.jobRunners[name]; !ok {
+		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	lines := p.getRunnerLogs(name)
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)

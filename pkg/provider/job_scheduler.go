@@ -228,6 +228,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 			"pool", job.Spec.Pool,
 			"priority", job.Spec.Priority,
 		)
+		p.appendRunnerEvent(runner.Name, fmt.Sprintf("Scheduled %s → %s (priority %d)", jobKey(job), bmhName, job.Spec.Priority))
 	}
 }
 
@@ -285,6 +286,9 @@ func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log i
 			p.releaseJobHostDeferred(job, d)
 			d.jobs = append(d.jobs, job)
 			log.Infow("job provisioning timeout", "job", jobKey(job))
+			if job.Status.RunnerRef != "" {
+				p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("TIMEOUT provisioning %s on %s", jobKey(job), job.Status.BMHRef))
+			}
 		}
 	}
 }
@@ -309,6 +313,9 @@ func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interf
 			p.releaseJobHostDeferred(job, d)
 			d.jobs = append(d.jobs, job)
 			log.Infow("job timed out", "job", jobKey(job), "timeout", job.Spec.Timeout)
+			if job.Status.RunnerRef != "" {
+				p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("TIMEOUT running %s after %ds", jobKey(job), job.Spec.Timeout))
+			}
 		}
 	}
 }
@@ -330,6 +337,9 @@ func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log inte
 			p.releaseJobHostDeferred(job, d)
 			d.jobs = append(d.jobs, job)
 			log.Infow("job heartbeat timeout", "job", jobKey(job))
+			if job.Status.RunnerRef != "" {
+				p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("HEARTBEAT TIMEOUT %s on %s — agent may have crashed", jobKey(job), job.Status.BMHRef))
+			}
 		}
 	}
 }
@@ -399,6 +409,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 						"pool", pool,
 						"idleTimeout", runner.Spec.IdleTimeout,
 					)
+					p.appendRunnerEvent(runner.Name, fmt.Sprintf("Powering off idle host %s (timeout %ds)", bmh.Name, runner.Spec.IdleTimeout))
 				}
 			}
 		}
@@ -433,6 +444,7 @@ func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log 
 						"pool", pool,
 						"schedule", runner.Spec.Schedule.FormatSummary(),
 					)
+					p.appendRunnerEvent(runner.Name, fmt.Sprintf("Powering on %s for scheduled work hours", bmh.Name))
 				}
 			}
 		}

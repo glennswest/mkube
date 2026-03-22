@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 )
 
 const jobLogMaxLines = 10000
@@ -80,6 +81,7 @@ func (b *jobLogBuffer) snapshot() []string {
 // ─── Provider methods ───────────────────────────────────────────────────────
 
 // appendJobLogs adds log lines to the in-memory buffer and persists to NATS.
+// Also feeds the associated runner's log buffer if the job has a runnerRef.
 func (p *MicroKubeProvider) appendJobLogs(ctx context.Context, jobKey string, lines []string) {
 	buf := p.jobLogBuf.getOrCreate(jobKey)
 	buf.append(lines)
@@ -92,6 +94,11 @@ func (p *MicroKubeProvider) appendJobLogs(ctx context.Context, jobKey string, li
 		if err == nil {
 			_, _ = p.deps.Store.JobLogs.Put(ctx, natsKey, data)
 		}
+	}
+
+	// Also feed runner log buffer
+	if job, ok := p.jobs[jobKey]; ok && job.Status.RunnerRef != "" {
+		p.appendRunnerLogs(job.Status.RunnerRef, lines)
 	}
 }
 
@@ -120,4 +127,27 @@ func (p *MicroKubeProvider) getJobLogs(ctx context.Context, key string) []string
 // deleteJobLogs removes the log buffer for a job.
 func (p *MicroKubeProvider) deleteJobLogs(key string) {
 	p.jobLogBuf.delete(key)
+}
+
+// ─── Runner log methods ─────────────────────────────────────────────────────
+
+// appendRunnerLogs adds log lines to the runner's in-memory log buffer.
+func (p *MicroKubeProvider) appendRunnerLogs(runnerName string, lines []string) {
+	buf := p.runnerLogBuf.getOrCreate(runnerName)
+	buf.append(lines)
+}
+
+// appendRunnerEvent adds a single timestamped event line to the runner's log.
+func (p *MicroKubeProvider) appendRunnerEvent(runnerName, msg string) {
+	ts := time.Now().UTC().Format("15:04:05")
+	p.appendRunnerLogs(runnerName, []string{"[" + ts + "] " + msg})
+}
+
+// getRunnerLogs returns log lines for a runner.
+func (p *MicroKubeProvider) getRunnerLogs(runnerName string) []string {
+	buf := p.runnerLogBuf.get(runnerName)
+	if buf != nil {
+		return buf.snapshot()
+	}
+	return nil
 }

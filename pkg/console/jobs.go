@@ -62,14 +62,13 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
     </div>
     <div class="card mt" style="margin-bottom:0">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <h3 style="margin:0" id="runner-log-title">Active Job Logs</h3>
+        <h3 style="margin:0" id="runner-log-title">Runner Activity Log</h3>
         <div style="display:flex;gap:8px;align-items:center">
-          <select id="runner-log-job" onchange="switchRunnerLogJob()" style="background:#1a1d32;border:1px solid #2a2d45;color:#e0e0e0;padding:4px 8px;border-radius:4px;font-size:11px;font-family:inherit"></select>
           <label style="color:#888;font-size:11px"><input type="checkbox" id="runner-log-follow" checked> Follow</label>
           <span id="runner-log-line-count" style="color:#666;font-size:11px"></span>
         </div>
       </div>
-      <div class="terminal" id="runner-logs" style="max-height:500px;min-height:200px"><span class="muted">Select a runner to view active job logs</span></div>
+      <div class="terminal" id="runner-logs" style="max-height:500px;min-height:200px"><span class="muted">Select a runner to view activity log</span></div>
     </div>
   </div>
 </div>
@@ -383,7 +382,6 @@ let _selectedRunnerData=null;
 let _allRunnerData=[];
 let _runnerLogPollTimer=null;
 let _runnerLastLogText='';
-let _runnerLogJobKey=null;
 
 function selectRunner(name){
   if(_selectedRunner===name){
@@ -443,54 +441,20 @@ function renderRunnerDetail(){
     ajDiv.innerHTML=ajHtml;
   }
 
-  // Populate runner log job selector
-  const logSel=document.getElementById('runner-log-job');
-  const prevVal=logSel.value;
-  logSel.innerHTML='';
-  if(runnerJobs.length===0){
-    logSel.innerHTML='<option value="">No jobs</option>';
-  } else {
-    // Active jobs first, then recent
-    const sorted=[...activeJobs,...runnerJobs.filter(j=>!activeJobs.includes(j))].slice(0,20);
-    sorted.forEach(j=>{
-      const ns=j.metadata.namespace||'default';
-      const key=ns+'/'+j.metadata.name;
-      const phase=j.status?.phase||'Pending';
-      const o=document.createElement('option');
-      o.value=key;
-      o.text=j.metadata.name+' ('+phase+')';
-      logSel.add(o);
-    });
-  }
-  // Restore previous selection or auto-select first active
-  if(prevVal&&[...logSel.options].some(o=>o.value===prevVal)){
-    logSel.value=prevVal;
-  } else if(activeJobs.length>0){
-    const firstActive=(activeJobs[0].metadata.namespace||'default')+'/'+activeJobs[0].metadata.name;
-    logSel.value=firstActive;
-  }
-  switchRunnerLogJob();
-}
-
-function switchRunnerLogJob(){
-  const sel=document.getElementById('runner-log-job');
-  const key=sel.value;
-  if(!key||key===_runnerLogJobKey) return;
-  _runnerLogJobKey=key;
+  // Start polling runner activity log
   _runnerLastLogText='';
-  document.getElementById('runner-logs').innerHTML='<span class="muted">Loading logs...</span>';
+  document.getElementById('runner-logs').innerHTML='<span class="muted">Loading activity log...</span>';
   document.getElementById('runner-log-line-count').textContent='';
-  document.getElementById('runner-log-title').textContent='Logs: '+key;
+  document.getElementById('runner-log-title').textContent='Activity Log: '+_selectedRunner;
   startRunnerLogPoll();
 }
 
 function startRunnerLogPoll(){
   stopRunnerLogPoll();
   pollRunnerLogs();
-  const job=_allJobData.find(j=>(j.metadata.namespace||'default')+'/'+j.metadata.name===_runnerLogJobKey);
-  const phase=(job?.status?.phase||'').toLowerCase();
-  const isActive=['pending','scheduling','provisioning','running'].includes(phase);
-  _runnerLogPollTimer=setInterval(pollRunnerLogs,isActive?2000:10000);
+  // Check if runner has active jobs — poll faster if so
+  const hasActive=_allJobData.some(j=>(j.status?.runnerRef||'')===_selectedRunner&&['pending','scheduling','provisioning','running'].includes((j.status?.phase||'').toLowerCase()));
+  _runnerLogPollTimer=setInterval(pollRunnerLogs,hasActive?2000:10000);
 }
 
 function stopRunnerLogPoll(){
@@ -498,11 +462,10 @@ function stopRunnerLogPoll(){
 }
 
 async function pollRunnerLogs(){
-  if(!_runnerLogJobKey) return;
-  const [ns,name]=_runnerLogJobKey.split('/');
+  if(!_selectedRunner) return;
   try{
-    const resp=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs');
-    if(!_runnerLogJobKey||_runnerLogJobKey!==ns+'/'+name) return;
+    const resp=await fetch(API+'/api/v1/jobrunners/'+encodeURIComponent(_selectedRunner)+'/logs');
+    if(!_selectedRunner) return;
     const text=await resp.text();
     if(!resp.ok){
       document.getElementById('runner-logs').innerHTML='<span class="muted">'+escapeHtml(text||'No logs ('+resp.status+')')+'</span>';
@@ -511,7 +474,7 @@ async function pollRunnerLogs(){
     if(text!==_runnerLastLogText){
       _runnerLastLogText=text;
       const el=document.getElementById('runner-logs');
-      el.innerHTML=ansiToHtml(text)||'<span class="muted">No logs yet</span>';
+      el.innerHTML=ansiToHtml(text)||'<span class="muted">No activity yet</span>';
       const lineCount=(text.match(/\n/g)||[]).length;
       document.getElementById('runner-log-line-count').textContent=lineCount+' lines';
       if(document.getElementById('runner-log-follow').checked) el.scrollTop=el.scrollHeight;

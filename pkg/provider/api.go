@@ -171,6 +171,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/jobrunners/{name}", p.handleUpdateJobRunner)
 	mux.HandleFunc("PATCH /api/v1/jobrunners/{name}", p.handlePatchJobRunner)
 	mux.HandleFunc("DELETE /api/v1/jobrunners/{name}", p.handleDeleteJobRunner)
+	mux.HandleFunc("GET /api/v1/jobrunners/{name}/logs", p.handleGetRunnerLogs)
 
 	// Jobs (namespaced)
 	mux.HandleFunc("GET /api/v1/jobs", p.handleListAllJobs)
