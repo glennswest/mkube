@@ -197,10 +197,12 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	log.Printf("image pulled successfully")
 
 	// Build the command to run inside the container.
+	// Ensure git is available (bare images like fedora:rawhide may not have it).
 	// If GIT_TOKEN is set, configure git credential helper for HTTPS clones of private repos.
 	// Clone the repo, cd into it, run the build script.
 	var parts []string
 	parts = append(parts, "set -e")
+	parts = append(parts, "command -v git >/dev/null 2>&1 || { echo 'Installing git...'; dnf install -y git 2>&1 | tail -3 || yum install -y git 2>&1 | tail -3 || apt-get update && apt-get install -y git 2>&1 | tail -3; }")
 
 	// Configure git auth if GIT_TOKEN is provided
 	if token := job.Spec.Env["GIT_TOKEN"]; token != "" {
