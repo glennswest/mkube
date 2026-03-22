@@ -91,10 +91,13 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - Integrated microdns client for automatic DNS registration
 - Pod aliases via `vkube.io/aliases` annotation
 - Per-namespace DNS zones with cross-zone forwarding
+- Forward zones baked into microdns TOML configs for immediate cross-zone resolution at startup
+- DHCP `domain_search` includes all zones for cross-network hostname resolution (option 119)
 - Port 53 liveness probe (raw UDP DNS query, not just REST API check)
 - Auto-restart dead DNS pods with staggered rollout
 - Stale DNS record cleanup on pod IP changes
 - External DNS support (`externalDNS: true` for DNS servers not managed by mkube)
+- Smoke test per network (canary DNS record creation + UDP resolution verification)
 
 ### Storage Manager
 - OCI image to RouterOS tarball conversion
@@ -329,6 +332,49 @@ PUT    /api/v1/registries/{name}                       # Update registry
 DELETE /api/v1/registries/{name}                       # Delete registry
 ```
 
+### iSCSI Disks (cluster-scoped)
+```
+GET    /api/v1/iscsi-disks                             # List all disks
+GET    /api/v1/iscsi-disks/{name}                      # Get disk
+POST   /api/v1/iscsi-disks                             # Create disk (clones from source)
+PATCH  /api/v1/iscsi-disks/{name}                      # Patch disk (host, description, grow)
+DELETE /api/v1/iscsi-disks/{name}                      # Delete disk
+POST   /api/v1/iscsi-disks/{name}/clone                # Clone to new instance
+POST   /api/v1/iscsi-disks/{name}/resize               # Grow disk
+GET    /api/v1/iscsi-disks/capacity                    # Disk usage stats
+```
+
+### BootConfigs (cluster-scoped)
+```
+GET    /api/v1/bootconfigs                             # List all boot configs
+GET    /api/v1/bootconfigs/{name}                      # Get boot config
+POST   /api/v1/bootconfigs                             # Create boot config
+PUT    /api/v1/bootconfigs/{name}                      # Update boot config
+PATCH  /api/v1/bootconfigs/{name}                      # Patch boot config
+DELETE /api/v1/bootconfigs/{name}                      # Delete boot config
+GET    /api/v1/bootconfigs/{name}/serve                # Serve rendered config to booting host
+GET    /api/v1/bootconfig                              # Lookup boot config by source IP
+POST   /api/v1/boot-complete                           # Signal boot completion (source IP auth)
+```
+
+### DNS/DHCP Proxy Resources (namespace = network name)
+
+Proxied directly to microdns. Namespace corresponds to the network name (e.g. `g10`).
+
+```
+GET/POST/PUT/PATCH/DELETE  /api/v1/namespaces/{net}/dnsrecords[/{name}]         # DNS records (dr)
+GET/POST/PUT/PATCH/DELETE  /api/v1/namespaces/{net}/dhcppools[/{name}]          # DHCP pools (dp)
+GET/POST/PUT/PATCH/DELETE  /api/v1/namespaces/{net}/dhcpreservations[/{name}]   # DHCP reservations (dhcpr)
+GET                        /api/v1/namespaces/{net}/dhcpleases                  # DHCP leases (dl)
+GET/POST/DELETE            /api/v1/namespaces/{net}/dnsforwarders[/{name}]      # DNS forwarders (df)
+```
+
+### Nodes (cluster-scoped)
+```
+GET    /api/v1/nodes                                   # List cluster nodes
+GET    /api/v1/nodes/{name}                            # Get node details
+```
+
 ### Events
 ```
 GET    /api/v1/events                                  # List all events
@@ -338,11 +384,14 @@ GET    /api/v1/namespaces/{ns}/events                  # List events in namespac
 ### Operations
 ```
 GET    /api/v1/consistency                             # Consistency report
+POST   /api/v1/consistency/repair                      # Repair consistency issues
 GET    /api/v1/images                                  # Image cache state
 POST   /api/v1/images/redeploy                         # Force redeploy by image
 POST   /api/v1/registry/push-notify                    # Registry push webhook
 GET    /api/v1/dns/validate                            # DNS validation
-GET    /healthz                                        # Health check
+POST   /api/v1/networks/{name}/smoketest               # On-demand DNS/DHCP smoke test
+GET    /api/v1/lifecycle/stats                          # Lifecycle phase timing
+GET    /healthz                                        # Health check (version + commit)
 ```
 
 ### Manifests (oc apply compatible)
@@ -360,11 +409,18 @@ All resources support `oc` (or `kubectl`) with `--server=http://192.168.200.2:80
 | Resource | Short Name | Namespaced | Kind |
 |----------|-----------|------------|------|
 | baremetalhosts | bmh | yes | BareMetalHost |
+| bootconfigs | bc | no | BootConfig |
 | configmaps | | yes | ConfigMap |
 | deployments | deploy | yes | Deployment |
+| dhcpleases | dl | yes | DHCPLease |
+| dhcppools | dp | yes | DHCPPool |
+| dhcpreservations | dhcpr | yes | DHCPReservation |
+| dnsforwarders | df | yes | DNSForwarder |
+| dnsrecords | dr | yes | DNSRecord |
 | events | | yes | Event |
 | hostreservations | hres | yes | HostReservation |
 | iscsi-cdroms | icd | no | ISCSICdrom |
+| iscsi-disks | idisk | no | ISCSIDisk |
 | jobrunners | jr | no | JobRunner |
 | jobs | job | yes | Job |
 | jobqueue | jq | no | Job (computed) |
@@ -507,13 +563,38 @@ spec:
 mk apply -f job.yaml
 ```
 
+### Build Container Jobs
+
+For git-based builds, use `repo` + `buildScript` + `buildImage` instead of inline `script`. The agent clones the repo into a disposable container and runs the specified build script:
+
+```yaml
+apiVersion: v1
+kind: Job
+metadata:
+  name: build-mkube
+  namespace: default
+spec:
+  pool: build
+  priority: 10
+  repo: https://github.com/glennswest/mkube
+  buildScript: build.sh          # script name in the repo root
+  buildImage: registry.gt.lo:5000/fedoradev:latest   # or rawhidedev:latest
+  env:
+    BRANCH: main
+  timeout: 3600
+```
+
+The agent pulls the build image via podman, runs `git clone` + the build script inside a disposable container, streams logs back to mkube, and disposes the container on completion. Two build images are available:
+- `registry.gt.lo:5000/fedoradev:latest` — stable Fedora toolchain
+- `registry.gt.lo:5000/rawhidedev:latest` — Fedora Rawhide (bleeding edge)
+
 ### Monitoring
 
 ```bash
 # Runner status (hosts, active/completed/failed counts)
 mk get jr
-# NAME           POOL    BOOT-CONFIG    HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
-# build-runner   build   coreos-agent   1       1        5           0        300s           2d
+# NAME           POOL    BOOT-CONFIG              HOSTS   ACTIVE   COMPLETED   FAILED   IDLE-TIMEOUT   AGE
+# build-runner   build   tpl:fcos/agent-runner    1       1        5           0        300s           2d
 
 # Host reservations (which hosts, active jobs)
 mk get hres
@@ -811,12 +892,14 @@ mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
 
 mkube manages multiple networks, each with its own bridge, CIDR, DNS, and DHCP:
 
-| Network | Bridge | CIDR | DNS Server | IPAM Range |
-|---------|--------|------|------------|------------|
-| gt | containers | 192.168.200.0/24 | 192.168.200.199 | .2-.198 |
-| g10 | bridge | 192.168.10.0/24 | 192.168.10.252 | .200-.250 |
-| g11 | bridge-boot | 192.168.11.0/24 | 192.168.11.252 | .200-.250 |
-| gw | bridge-lan | 192.168.1.0/24 | 192.168.1.52 (external) | — |
+| Network | Type | Bridge | CIDR | DNS Server | DHCP | IPAM Range |
+|---------|------|--------|------|------------|------|------------|
+| gt | management | bridge-gt | 192.168.200.0/24 | 192.168.200.199 | no | .2-.198 |
+| g8 | data | bridge-g8 | 192.168.8.0/24 | 192.168.8.252 | yes | — |
+| g9 | user | bridge-g9 | 192.168.9.0/24 | 192.168.9.252 | yes | — |
+| g10 | data | bridge-g10 | 192.168.10.0/24 | 192.168.10.252 | yes | .200-.250 |
+| g11 | ipmi | bridge-g11 | 192.168.11.0/24 | 192.168.11.252 | yes | .200-.250 |
+| gw | external | bridge-lan | 192.168.1.0/24 | 192.168.1.52 | no | — |
 
 ## Configuration
 
@@ -843,22 +926,30 @@ cmd/
   mkube/            Main controller binary
   mkube-update/     Image update watcher
   mkube-agent/      Job execution agent (runs on CoreOS bare metal)
+  mkube-boot/       Bootstrap mkube infrastructure on Proxmox LXC
+  mkube-test/       Live integration test CLI
   registry/         Standalone OCI registry
   installer/        Bootstrap CLI tool (runs on Mac)
+  pve-deploy/       Deploy OCI images as Proxmox LXC containers
 pkg/
+  cluster/          Multi-node clustering (peer health, push sync, full resync)
   config/           YAML configuration with CLI overrides
+  diskimg/          Pure Go disk image converters (VMDK, QCOW2, VHD → raw)
   dns/              microdns REST API client
   dzo/              DNS Zone Orchestrator (cross-zone management)
   lifecycle/        Boot ordering, health checks, watchdog
   namespace/        Namespace management
+  nats/             Embedded NATS server (in-process JetStream)
   network/          Multi-network IPAM, veth/bridge management
   provider/         Virtual Kubelet provider (pods, deployments, BMH, consistency)
+  proxmox/          Proxmox VE REST API client, VMID allocator
+  pvectl/           Proxmox LXC deploy library (OCI extraction, SSH, systemd install)
   registry/         OCI registry implementation
   routeros/         RouterOS REST API client
-  runtime/          Container runtime abstraction
+  runtime/          Container runtime abstraction (RouterOS, Proxmox, StormBase)
   storage/          OCI→tarball, volume provisioning, image cache
   store/            NATS JetStream KV persistence + YAML import/export
-  stormbase/        StormBase runtime backend
+  stormbase/        StormBase gRPC client
 deploy/
   config.yaml       Default configuration
   rose1-config.yaml rose1-specific config

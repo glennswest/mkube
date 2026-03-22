@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-03-21
+- **docs:** README updated — network layout table (added g8/g9, corrected bridge names), job runner BOOT-CONFIG column fix, build container job example, DNS cross-zone details, missing API sections (iSCSI Disks, BootConfigs, DNS/DHCP proxy, Nodes, smoketest), new resource types in table (dr, dp, dhcpr, dl, df, idisk, bc), project structure updated with new packages and binaries
+
+### 2026-03-21 (earlier)
 - **fix:** DHCP domain_search set to ALL zones — `seedDHCPPool` was setting `domain_search` to only the local zone (e.g. `["g10.lo"]`). Every container restart reset this, causing clients to use scoped DNS (option 15 behavior). Now builds the search list from all Network CRDs — local zone first, then peers sorted alphabetically. Clients get full cross-network hostname resolution via option 119. Auto-reseed detects stale domain_search and corrects it.
 - **fix:** Forward zones baked into microdns TOML config — `generateMinimalTOML` now includes forward zones for all peer networks. Previously forward zones were only seeded via REST API after startup, creating a gap where cross-zone DNS queries returned NXDOMAIN. systemd-resolved cached these NXDOMAIN responses for 300s (SOA minimum TTL), breaking cross-network resolution for 5 minutes after every DNS container restart. Zone names containing dots (e.g. `g8.lo`) are quoted in TOML to avoid dotted-key interpretation.
 - **fix:** DNS pod endless restart loop — `generateMinimalTOML` iterated `p.networks` (a Go map) to build forward zones. Map iteration order is random, so the TOML output changed on every call. `syncConfigMapsToDisk` detected a ConfigMap "change" each reconcile cycle (~10s), triggering DNS pod recreation. This created an infinite stop→create→stop cycle for all DNS pods. Fixed by sorting peer zones alphabetically before TOML generation.
