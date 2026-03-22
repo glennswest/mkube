@@ -47,45 +47,51 @@ func main() {
 
 	log.Printf("mkube-agent %s (%s) starting, api=%s", version, commit, apiURL)
 
-	// Poll for work
-	job, err := pollForWork(apiURL)
-	if err != nil {
-		log.Fatalf("failed to get work: %v", err)
+	// Main work loop — after completing a job, poll for the next one.
+	// This keeps the agent alive so the scheduler can assign new jobs to
+	// an already-online host without triggering a PXE reboot.
+	for {
+		job, err := pollForWork(apiURL)
+		if err != nil {
+			log.Printf("no work available: %v — will retry in 30s", err)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		log.Printf("job assigned: %s/%s", job.Metadata.Namespace, job.Metadata.Name)
+
+		// Start heartbeat
+		hbStop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			heartbeat(apiURL, hbStop)
+		}()
+
+		// Execute job — build container mode or legacy inline script
+		var exitCode int
+		var execErr error
+		if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
+			log.Printf("build container mode: repo=%s script=%s", job.Spec.Repo, job.Spec.BuildScript)
+			exitCode, execErr = executeBuildContainer(apiURL, job)
+		} else if job.Spec.Script != "" {
+			log.Printf("legacy inline script mode")
+			exitCode, execErr = executeScript(apiURL, job)
+		} else {
+			execErr = fmt.Errorf("job has neither repo+buildScript nor script")
+			exitCode = 1
+		}
+
+		// Stop heartbeat
+		close(hbStop)
+		wg.Wait()
+
+		// Report completion
+		reportComplete(apiURL, exitCode, execErr)
+
+		log.Printf("job finished with exit code %d — polling for next job", exitCode)
 	}
-
-	log.Printf("job assigned: %s/%s", job.Metadata.Namespace, job.Metadata.Name)
-
-	// Start heartbeat
-	ctx := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		heartbeat(apiURL, ctx)
-	}()
-
-	// Execute job — build container mode or legacy inline script
-	var exitCode int
-	var execErr error
-	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
-		log.Printf("build container mode: repo=%s script=%s", job.Spec.Repo, job.Spec.BuildScript)
-		exitCode, execErr = executeBuildContainer(apiURL, job)
-	} else if job.Spec.Script != "" {
-		log.Printf("legacy inline script mode")
-		exitCode, execErr = executeScript(apiURL, job)
-	} else {
-		execErr = fmt.Errorf("job has neither repo+buildScript nor script")
-		exitCode = 1
-	}
-
-	// Stop heartbeat
-	close(ctx)
-	wg.Wait()
-
-	// Report completion
-	reportComplete(apiURL, exitCode, execErr)
-
-	log.Printf("job finished with exit code %d", exitCode)
 }
 
 // pollForWork polls GET /api/v1/agent/work until a job is assigned.
