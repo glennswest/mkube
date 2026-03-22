@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-21
+- **fix:** Job scheduler no longer overwrites boot config on already-online hosts — previously the scheduler set template/bootConfigRef/image on the BMH even when the server was already up, which triggered the BMH operator to PXE reboot the server. Now when a host is already online, the scheduler skips all boot config changes and lets the running agent pick up the new job via its work poll loop. Only cold-start (power-on) jobs get boot config assigned.
 - **docs:** README updated — network layout table (added g8/g9, corrected bridge names), job runner BOOT-CONFIG column fix, build container job example, DNS cross-zone details, missing API sections (iSCSI Disks, BootConfigs, DNS/DHCP proxy, Nodes, smoketest), new resource types in table (dr, dp, dhcpr, dl, df, idisk, bc), project structure updated with new packages and binaries
 
 ### 2026-03-21 (earlier)

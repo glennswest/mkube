@@ -416,6 +416,7 @@ mk get hostreservations -A         # All host reservations
 - Forward zones baked into microdns TOML: `generateMinimalTOML` now includes forward zones for all peer networks, eliminating the REST API seeding gap where cross-zone DNS queries returned NXDOMAIN (cached by systemd-resolved for 300s).
 - TOML dotted key fix: Zone names containing dots (e.g. `g8.lo`) must be quoted in TOML (`"g8.lo"`) or they're parsed as dotted key paths (table `g8`, key `lo`). Caused all DNS pods to crash with TOML parse error.
 - DNS pod endless restart loop: `generateMinimalTOML` iterated `p.networks` (Go map, random order) for forward zones. Output changed every call, causing `syncConfigMapsToDisk` to detect "changes" every 10s reconcile cycle, endlessly restarting DNS pods. Fixed by sorting peer zones alphabetically.
+- Job scheduler PXE reboot of online hosts: Scheduler overwrote BMH template/bootConfigRef/image even when server was already online. BMH operator saw config change → triggered PXE reboot. Fixed: when host is already online, skip all boot config changes — agent picks up new job via work poll.
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:

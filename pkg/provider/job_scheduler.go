@@ -183,33 +183,36 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 			}
 		}
 
-		// Set BMH provisioning config and power on (only if not already online)
+		// Set BMH provisioning config and power on.
+		// If the server is already online, skip boot config changes entirely —
+		// overwriting template/bootConfigRef/image would trigger a PXE reboot
+		// via the BMH operator. The running agent will pick up the new job
+		// through its work poll loop.
 		for bmhKey, bmh := range p.bareMetalHosts {
 			if bmh.Name == bmhName {
 				job.Status.HostIP = bmh.Spec.IP
 				alreadyOnline := bmh.Spec.Online != nil && *bmh.Spec.Online
-				runnerTemplate := runner.Spec.Template
-				runnerBootConfigRef := runner.Spec.BootConfigRef
-				runnerImage := runner.Spec.Image
-				_ = p.deferBMHUpdate(d, bmhKey, func(b *BareMetalHost) {
-					if runnerTemplate != "" {
-						b.Spec.Template = runnerTemplate
-					} else {
-						b.Spec.BootConfigRef = runnerBootConfigRef
-					}
-					if runnerImage != "" {
-						b.Spec.Image = runnerImage
-					}
-					if !alreadyOnline {
+				if alreadyOnline {
+					log.Infow("host already online, skipping boot config + power-on (agent will pick up job)",
+						"bmh", bmhName, "job", jobKey(job))
+				} else {
+					runnerTemplate := runner.Spec.Template
+					runnerBootConfigRef := runner.Spec.BootConfigRef
+					runnerImage := runner.Spec.Image
+					_ = p.deferBMHUpdate(d, bmhKey, func(b *BareMetalHost) {
+						if runnerTemplate != "" {
+							b.Spec.Template = runnerTemplate
+						} else {
+							b.Spec.BootConfigRef = runnerBootConfigRef
+						}
+						if runnerImage != "" {
+							b.Spec.Image = runnerImage
+						}
 						online := true
 						b.Spec.Online = &online
-					}
-					// Clear manual-power annotation — scheduler takes power control
-					delete(b.Annotations, "bmh.mkube.io/manual-power")
-				})
-				if alreadyOnline {
-					log.Infow("host already online, skipping power-on (agent should pick up job)",
-						"bmh", bmhName, "job", jobKey(job))
+						// Clear manual-power annotation — scheduler takes power control
+						delete(b.Annotations, "bmh.mkube.io/manual-power")
+					})
 				}
 				break
 			}
