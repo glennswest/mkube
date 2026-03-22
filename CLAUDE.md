@@ -339,6 +339,8 @@ mk get hostreservations -A         # All host reservations
 ## Work Plan
 
 ### Resolved Issues
+- Consistency check lock contention: GET /api/v1/consistency held middleware RLock for 57 seconds. Any pending writer (scheduler, CRUD) blocked ALL new readers (Go RWMutex fairness) → entire API unresponsive. Fix: exempt from middleware, cached background report with per-check brief RLock/RUnlock, 120s auto-refresh timer.
+- Console UI performance: SPA navigation, cacheable static assets, batch DOM writes, debounced inputs, API data prefetch cache (15s TTL), storage PVC pool column + move button, pool disk/PVC names.
 - Deployment controller with replica management, rolling updates, DNS round-robin
 - DNS port 53 liveness probe and auto-repair
 - Staggered container restarts (same-image pods restarted one at a time)
