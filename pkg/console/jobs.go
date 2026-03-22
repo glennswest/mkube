@@ -19,9 +19,27 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
   </div>
   <table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Age</th><th>Actions</th></tr></thead>
   <tbody id="jobs-tbl"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody></table>
-  <div class="card mt" id="job-log-panel" style="display:none">
-    <h3 id="job-log-title">Job Logs</h3>
-    <div class="terminal" id="job-logs" style="max-height:400px"></div>
+  <div id="job-detail-panel" style="display:none;margin-top:12px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="card" style="margin-bottom:0">
+        <h3 id="detail-title">Job Details</h3>
+        <div class="kv" id="detail-spec"></div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <h3>Status</h3>
+        <div class="kv" id="detail-status"></div>
+      </div>
+    </div>
+    <div class="card mt" style="margin-bottom:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0" id="log-title">Logs</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="color:#888;font-size:11px"><input type="checkbox" id="log-follow" checked> Follow</label>
+          <span id="log-line-count" style="color:#666;font-size:11px"></span>
+        </div>
+      </div>
+      <div class="terminal" id="job-logs" style="max-height:500px;min-height:200px"><span class="muted">Select a job to view logs</span></div>
+    </div>
   </div>
 </div>
 
@@ -105,60 +123,168 @@ async function deleteSelected(){
   if(boxes.length===0){alert('No jobs selected');return;}
   if(!confirm('Delete '+boxes.length+' selected job(s)?')) return;
   for(const cb of boxes){
-    const ns=cb.dataset.ns;
-    const name=cb.dataset.name;
-    await apiDelete(API+'/api/v1/namespaces/'+ns+'/jobs/'+name);
+    await apiDelete(API+'/api/v1/namespaces/'+cb.dataset.ns+'/jobs/'+cb.dataset.name);
   }
   document.getElementById('select-all').checked=false;
   loadJobs();
 }
 
-// ── Inline log viewing ──
+// ── Inline job detail + real-time logs ──
 let _selectedJob=null;
+let _selectedJobData=null;
+let _logPollTimer=null;
+let _lastLogText='';
+let _allJobData=[];
 
 function selectJob(ns,name){
   const key=ns+'/'+name;
-  // Toggle off if clicking same row
   if(_selectedJob===key){
     _selectedJob=null;
-    document.getElementById('job-log-panel').style.display='none';
+    _selectedJobData=null;
+    document.getElementById('job-detail-panel').style.display='none';
     document.querySelectorAll('#jobs-tbl tr').forEach(r=>r.classList.remove('selected'));
+    stopLogPoll();
     return;
   }
   _selectedJob=key;
+  // Find full job data
+  _selectedJobData=_allJobData.find(j=>(j.metadata.namespace||'default')+'/'+j.metadata.name===key)||null;
   // Highlight selected row
   document.querySelectorAll('#jobs-tbl tr').forEach(r=>r.classList.remove('selected'));
-  const rows=document.querySelectorAll('#jobs-tbl tr');
-  rows.forEach(r=>{if(r.dataset.jobKey===key) r.classList.add('selected');});
-  // Load logs
-  document.getElementById('job-log-panel').style.display='block';
-  document.getElementById('job-log-title').textContent='Logs: '+key;
-  document.getElementById('job-logs').innerHTML='<span class="muted">Loading...</span>';
-  fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs')
-    .then(r=>r.text())
-    .then(text=>{
-      if(_selectedJob!==key) return;
-      document.getElementById('job-logs').innerHTML=ansiToHtml(text)||'<span class="muted">No logs available</span>';
+  document.querySelectorAll('#jobs-tbl tr').forEach(r=>{if(r.dataset.jobKey===key) r.classList.add('selected');});
+  // Show detail panel
+  renderJobDetail();
+  _lastLogText='';
+  document.getElementById('job-logs').innerHTML='<span class="muted">Loading logs...</span>';
+  document.getElementById('log-line-count').textContent='';
+  startLogPoll();
+}
+
+function renderJobDetail(){
+  const j=_selectedJobData;
+  if(!j){document.getElementById('job-detail-panel').style.display='none';return;}
+  document.getElementById('job-detail-panel').style.display='block';
+  const s=j.spec||{};
+  const st=j.status||{};
+
+  document.getElementById('detail-title').textContent=j.metadata.name;
+
+  // Spec details
+  let specHtml='';
+  const specFields=[
+    ['Pool',s.pool],
+    ['Priority',s.priority||0],
+    ['Build Image',s.buildImage],
+    ['Repository',s.repo],
+    ['Build Script',s.buildScript],
+    ['Image',s.image],
+    ['Timeout',s.timeout?s.timeout+'s':'none'],
+  ];
+  specFields.forEach(([k,v])=>{
+    if(v!==undefined&&v!==null&&v!==''){
+      specHtml+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v))+'</div>';
+    }
+  });
+  // Environment
+  if(s.env&&Object.keys(s.env).length>0){
+    specHtml+='<div class="k">Environment</div><div class="v">';
+    Object.entries(s.env).forEach(([ek,ev])=>{specHtml+=escapeHtml(ek)+'='+escapeHtml(ev)+'<br>';});
+    specHtml+='</div>';
+  }
+  // Labels
+  if(s.labels&&Object.keys(s.labels).length>0){
+    specHtml+='<div class="k">Labels</div><div class="v">';
+    Object.entries(s.labels).forEach(([lk,lv])=>{specHtml+=escapeHtml(lk)+'='+escapeHtml(lv)+'<br>';});
+    specHtml+='</div>';
+  }
+  // Artifacts
+  if(s.artifacts&&s.artifacts.length>0){
+    specHtml+='<div class="k">Artifacts</div><div class="v">';
+    s.artifacts.forEach(a=>{specHtml+=escapeHtml(a.name)+': '+escapeHtml(a.path)+'<br>';});
+    specHtml+='</div>';
+  }
+  // Legacy script (show truncated)
+  if(s.script&&!s.repo){
+    const preview=s.script.length>200?s.script.substring(0,200)+'...':s.script;
+    specHtml+='<div class="k">Script</div><div class="v"><pre style="margin:0;white-space:pre-wrap;font-size:11px;max-height:120px;overflow-y:auto">'+escapeHtml(preview)+'</pre></div>';
+  }
+  document.getElementById('detail-spec').innerHTML=specHtml;
+
+  // Status details
+  let statusHtml='';
+  statusHtml+='<div class="k">Phase</div><div class="v">'+statusBadge(st.phase||'Pending')+'</div>';
+  const statusFields=[
+    ['Assigned Host',st.bmhRef],
+    ['Runner',st.runnerRef],
+    ['Host IP',st.hostIP],
+    ['Started',st.startedAt],
+    ['Completed',st.completedAt],
+    ['Exit Code',st.exitCode!==undefined&&st.exitCode!==null?String(st.exitCode):null],
+    ['Error',st.errorMessage],
+    ['Log Lines',st.logLines||0],
+    ['Last Heartbeat',st.lastHeartbeat?timeSince(st.lastHeartbeat)+' ago':null],
+    ['Created',j.metadata.creationTimestamp],
+  ];
+  statusFields.forEach(([k,v])=>{
+    if(v!==undefined&&v!==null&&v!==''){
+      specVal=String(v);
+      if(k==='Error') specVal='<span style="color:#e94560">'+escapeHtml(specVal)+'</span>';
+      else if(k==='Exit Code'&&v!=='0') specVal='<span style="color:#e94560">'+escapeHtml(specVal)+'</span>';
+      else if(k==='Exit Code'&&v==='0') specVal='<span style="color:#50fa7b">'+escapeHtml(specVal)+'</span>';
+      else specVal=escapeHtml(specVal);
+      statusHtml+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+specVal+'</div>';
+    }
+  });
+  document.getElementById('detail-status').innerHTML=statusHtml;
+}
+
+function startLogPoll(){
+  stopLogPoll();
+  pollLogs();
+  // Poll every 2s for running jobs, 10s for terminal
+  const phase=(_selectedJobData?.status?.phase||'').toLowerCase();
+  const isActive=['pending','scheduling','provisioning','running'].includes(phase);
+  _logPollTimer=setInterval(pollLogs,isActive?2000:10000);
+}
+
+function stopLogPoll(){
+  if(_logPollTimer){clearInterval(_logPollTimer);_logPollTimer=null;}
+}
+
+async function pollLogs(){
+  if(!_selectedJob) return;
+  const [ns,name]=_selectedJob.split('/');
+  try{
+    const text=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs').then(r=>r.text());
+    if(!_selectedJob||_selectedJob!==ns+'/'+name) return;
+
+    // Only update if logs changed
+    if(text!==_lastLogText){
+      _lastLogText=text;
       const el=document.getElementById('job-logs');
-      el.scrollTop=el.scrollHeight;
-    })
-    .catch(()=>{
-      if(_selectedJob!==key) return;
-      document.getElementById('job-logs').innerHTML='<span class="muted">Failed to load logs</span>';
-    });
+      const html=ansiToHtml(text);
+      el.innerHTML=html||'<span class="muted">No logs yet</span>';
+      const lineCount=(text.match(/\n/g)||[]).length;
+      document.getElementById('log-line-count').textContent=lineCount+' lines';
+      if(document.getElementById('log-follow').checked) el.scrollTop=el.scrollHeight;
+    }
+  }catch(e){
+    console.error('log poll error',e);
+  }
 }
 
 // ── Jobs ──
 async function loadJobs(){
   const data=await apiGet(API+'/api/v1/jobs');
+  _allJobData=data?.items||[];
   const nsFilter=document.getElementById('job-ns').value;
   const phaseFilter=document.getElementById('job-phase').value.toLowerCase();
-  let items=data?.items||[];
+  let items=[..._allJobData];
   if(nsFilter) items=items.filter(j=>j.metadata.namespace===nsFilter);
   if(phaseFilter) items=items.filter(j=>(j.status?.phase||j.spec?.phase||'').toLowerCase()===phaseFilter);
 
   // Populate ns filter
-  const nss=[...new Set((data?.items||[]).map(j=>j.metadata.namespace||'default'))].sort();
+  const nss=[...new Set(_allJobData.map(j=>j.metadata.namespace||'default'))].sort();
   const sel=document.getElementById('job-ns');
   if(sel.options.length<=1) nss.forEach(n=>{const o=document.createElement('option');o.value=n;o.text=n;sel.add(o);});
 
@@ -170,18 +296,35 @@ async function loadJobs(){
     const s=j.spec||{};
     const st=j.status||{};
     const phase=st.phase||s.phase||'Pending';
-    const bmh=st.assignedHost||s.assignedHost||'—';
-    const canCancel=['pending','provisioning','running'].includes(phase.toLowerCase());
+    const bmh=st.bmhRef||st.assignedHost||'—';
+    const canCancel=['pending','scheduling','provisioning','running'].includes(phase.toLowerCase());
     const key=ns+'/'+j.metadata.name;
     const selected=_selectedJob===key?' selected':'';
-    tb.innerHTML+='<tr data-job-key="'+escapeHtml(key)+'" class="job-row'+selected+'" onclick="selectJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')" style="cursor:pointer"><td onclick="event.stopPropagation()"><input type="checkbox" data-ns="'+escapeHtml(ns)+'" data-name="'+escapeHtml(j.metadata.name)+'"></td><td>'+escapeHtml(j.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
-      +'<td>'+statusBadge(phase)+'</td><td>'+escapeHtml(s.pool||'—')+'</td>'
-      +'<td>'+(s.priority||0)+'</td><td>'+escapeHtml(bmh)+'</td>'
+    tb.innerHTML+='<tr data-job-key="'+escapeHtml(key)+'" class="job-row'+selected+'" onclick="selectJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')" style="cursor:pointer">'
+      +'<td onclick="event.stopPropagation()"><input type="checkbox" data-ns="'+escapeHtml(ns)+'" data-name="'+escapeHtml(j.metadata.name)+'"></td>'
+      +'<td>'+escapeHtml(j.metadata.name)+'</td>'
+      +'<td>'+escapeHtml(ns)+'</td>'
+      +'<td>'+statusBadge(phase)+'</td>'
+      +'<td>'+escapeHtml(s.pool||'—')+'</td>'
+      +'<td>'+(s.priority||0)+'</td>'
+      +'<td>'+escapeHtml(bmh)+'</td>'
       +'<td>'+timeSince(j.metadata?.creationTimestamp)+'</td>'
-      +'<td onclick="event.stopPropagation()">'+(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
+      +'<td onclick="event.stopPropagation()">'
+      +(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
       +'<button class="btn btn-danger" onclick="delJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Delete</button></td></tr>';
   });
   initSort('jobs-tbl');reapplySort('jobs-tbl');
+
+  // Refresh detail panel if selected job is still in list
+  if(_selectedJob){
+    _selectedJobData=_allJobData.find(j=>(j.metadata.namespace||'default')+'/'+j.metadata.name===_selectedJob)||null;
+    if(_selectedJobData) renderJobDetail();
+    else{
+      _selectedJob=null;
+      document.getElementById('job-detail-panel').style.display='none';
+      stopLogPoll();
+    }
+  }
 }
 
 async function cancelJob(ns,name){
@@ -193,9 +336,12 @@ async function cancelJob(ns,name){
 async function delJob(ns,name){
   if(!confirm('Delete job '+name+'?')) return;
   await apiDelete(API+'/api/v1/namespaces/'+ns+'/jobs/'+name);
-  if(_selectedJob===decodeURIComponent(ns)+'/'+name){
+  const key=decodeURIComponent(ns)+'/'+name;
+  if(_selectedJob===key){
     _selectedJob=null;
-    document.getElementById('job-log-panel').style.display='none';
+    _selectedJobData=null;
+    document.getElementById('job-detail-panel').style.display='none';
+    stopLogPoll();
   }
   loadJobs();
 }
@@ -292,14 +438,12 @@ async function loadQueue(){
   const tb=document.getElementById('queue-tbl');
   tb.innerHTML='';
   if(!data){tb.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">Queue unavailable</td></tr>';return;}
-  // Queue data may be an array or object with entries
   let entries=[];
   if(Array.isArray(data)) entries=data;
   else if(data.items) entries=data.items;
   else if(data.queue) entries=data.queue;
   else if(data.entries) entries=data.entries;
   else{
-    // Try to render as object keys
     for(const[k,v] of Object.entries(data)){
       if(Array.isArray(v)) entries=entries.concat(v.map((e,i)=>({...e,_pool:k,_pos:i+1})));
     }
