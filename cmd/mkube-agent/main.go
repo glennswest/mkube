@@ -202,7 +202,7 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	// Clone the repo, cd into it, run the build script.
 	var parts []string
 	parts = append(parts, "set -e")
-	parts = append(parts, "command -v git >/dev/null 2>&1 || { echo 'Installing git...'; dnf install -y git 2>&1 | tail -3 || yum install -y git 2>&1 | tail -3 || apt-get update && apt-get install -y git 2>&1 | tail -3; }")
+	parts = append(parts, "command -v git >/dev/null 2>&1 || { echo 'Installing git...'; dnf install -y git 2>&1 | tail -3 || yum install -y git 2>&1 | tail -3 || (apt-get update && apt-get install -y git) 2>&1 | tail -3; }")
 
 	// Configure git auth if GIT_TOKEN is provided
 	if token := job.Spec.Env["GIT_TOKEN"]; token != "" {
