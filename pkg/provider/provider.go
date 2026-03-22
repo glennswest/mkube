@@ -106,8 +106,9 @@ type MicroKubeProvider struct {
 	hostReservations map[string]*HostReservation             // namespace/name -> HostReservation
 	jobRunners       map[string]*JobRunner                   // name -> JobRunner (cluster-scoped)
 	jobs             map[string]*Job                         // namespace/name -> Job
-	storagePools     map[string]*StoragePool                 // name -> StoragePool (cluster-scoped)
-	jobLogBuf        *jobLogStore                            // in-memory job log buffers
+	storagePools        map[string]*StoragePool              // name -> StoragePool (cluster-scoped)
+	cleanupTickCounter  int                                  // scheduler tick counter for auto-cleanup
+	jobLogBuf           *jobLogStore                         // in-memory job log buffers
 	runnerLogBuf     *jobLogStore                            // in-memory runner activity log buffers
 	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
 	events          []corev1.Event               // recent events (ring buffer, max 256)

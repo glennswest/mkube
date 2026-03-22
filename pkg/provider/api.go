@@ -184,7 +184,8 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/jobs/{name}/cancel", p.handleCancelJob)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/jobs/{name}/logs", p.handleGetJobLogs)
 
-	// JobQueue (computed view)
+	// Job cleanup + queue
+	mux.HandleFunc("POST /api/v1/jobs/cleanup", p.handleCleanupJobs)
 	mux.HandleFunc("GET /api/v1/jobqueue", p.handleGetJobQueue)
 
 	// StoragePools (cluster-scoped)

@@ -80,6 +80,10 @@ func main() {
 		}
 	}
 
+	// Clean up stale container storage on startup — previous images, stopped
+	// containers, and dangling layers accumulate across job runs.
+	pruneContainerStorage("startup")
+
 	// Capture our current image digest at startup for self-update detection.
 	currentDigest := getImageDigest(selfImage)
 	if currentDigest != "" {
@@ -204,6 +208,13 @@ func runJob(apiURL string, job *agentJob) {
 	// Report completion with job identity
 	reportComplete(apiURL, job, exitCode, execErr)
 	log.Printf("[%s] finished with exit code %d", key, exitCode)
+
+	// Clean up container storage after each job — remove unused images
+	// older than 24h to prevent disk exhaustion from large build images.
+	pruneContainerStorage(key)
+
+	// Clean job output directory if empty (artifact collection already happened)
+	cleanJobOutputDir(job)
 }
 
 // heartbeat sends periodic heartbeats for a specific job.
@@ -522,6 +533,70 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 
 	log.Printf("[%s] log committed: %s", job.jobKey(), logFile)
 	os.RemoveAll(cloneDir)
+}
+
+// pruneContainerStorage removes unused container images and build cache.
+// On startup it does a full prune; after jobs it prunes images older than 24h.
+func pruneContainerStorage(context string) {
+	log.Printf("[%s] pruning container storage", context)
+
+	// Remove all stopped containers (should be none with --rm, but just in case)
+	rmCmd := exec.Command("podman", "container", "prune", "-f")
+	rmCmd.CombinedOutput()
+
+	// Remove dangling (untagged) images
+	danglingCmd := exec.Command("podman", "image", "prune", "-f")
+	if out, err := danglingCmd.CombinedOutput(); err == nil {
+		if s := strings.TrimSpace(string(out)); s != "" {
+			log.Printf("[%s] pruned dangling images: %s", context, s)
+		}
+	}
+
+	// Remove unused images older than 24h (keeps the currently-pulled build image)
+	oldCmd := exec.Command("podman", "image", "prune", "-af", "--filter", "until=24h")
+	if out, err := oldCmd.CombinedOutput(); err == nil {
+		if s := strings.TrimSpace(string(out)); s != "" {
+			log.Printf("[%s] pruned old images: %s", context, s)
+		}
+	}
+
+	// Remove build cache
+	buildCmd := exec.Command("podman", "builder", "prune", "-af")
+	buildCmd.CombinedOutput()
+
+	// Clean TMPDIR if it exists
+	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
+		entries, _ := os.ReadDir(tmpDir)
+		for _, e := range entries {
+			os.RemoveAll(tmpDir + "/" + e.Name())
+		}
+		if len(entries) > 0 {
+			log.Printf("[%s] cleaned %d tmp entries from %s", context, len(entries), tmpDir)
+		}
+	}
+
+	// Log remaining disk usage
+	dfCmd := exec.Command("df", "-h", "/var/lib/containers")
+	if out, err := dfCmd.CombinedOutput(); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) > 1 {
+			log.Printf("[%s] container storage: %s", context, strings.TrimSpace(lines[len(lines)-1]))
+		}
+	}
+}
+
+// cleanJobOutputDir removes the job's output directory if it's empty.
+// Non-empty dirs are preserved (contain artifacts the user may want).
+func cleanJobOutputDir(job *agentJob) {
+	outputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return // dir doesn't exist or not readable
+	}
+	if len(entries) == 0 {
+		os.Remove(outputDir)
+		log.Printf("[%s] removed empty output dir", job.jobKey())
+	}
 }
 
 // shellQuote wraps a string in single quotes for safe shell interpolation.

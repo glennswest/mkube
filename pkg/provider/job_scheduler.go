@@ -12,6 +12,8 @@ const (
 	schedulerInterval   = 10 * time.Second
 	provisioningTimeout = 10 * time.Minute
 	heartbeatTimeout    = 90 * time.Second
+	jobRetentionDefault = 7 * 24 * time.Hour // auto-delete completed jobs after 7 days
+	cleanupInterval     = 60                  // run cleanup every 60 scheduler ticks (~10 min)
 )
 
 // schedulerDeferred collects NATS writes to perform outside the lock.
@@ -20,9 +22,10 @@ const (
 // lock from being held during I/O, which was causing a deadlock:
 // scheduler Lock() + slow NATS → blocks all API RLock() → healthz blocked → stormd kills mkube.
 type schedulerDeferred struct {
-	jobs []*Job
-	hrs  []*HostReservation
-	bmhs []bmhPersist
+	jobs       []*Job
+	hrs        []*HostReservation
+	bmhs       []bmhPersist
+	jobDeletes []string // keys to delete from NATS (auto-cleanup)
 }
 
 type bmhPersist struct {
@@ -45,6 +48,18 @@ func (sd *schedulerDeferred) flush(ctx context.Context, p *MicroKubeProvider) {
 				if _, err := p.deps.Store.BareMetalHosts.PutJSON(ctx, storeKey, bw.bmh); err != nil {
 					p.deps.Logger.Warnw("scheduler: deferred BMH persist failed", "key", bw.key, "error", err)
 				}
+			}
+		}
+	}
+	for _, key := range sd.jobDeletes {
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) == 2 && p.deps.Store != nil {
+			storeKey := parts[0] + "." + parts[1]
+			if p.deps.Store.Jobs != nil {
+				_ = p.deps.Store.Jobs.Delete(ctx, storeKey)
+			}
+			if p.deps.Store.JobLogs != nil {
+				_ = p.deps.Store.JobLogs.Delete(ctx, storeKey)
 			}
 		}
 	}
@@ -100,6 +115,9 @@ func (p *MicroKubeProvider) schedulerTick(ctx context.Context) schedulerDeferred
 
 	// 6. Power on hosts during scheduled work hours
 	p.ensureScheduledHostsOnline(ctx, log, &d)
+
+	// 7. Auto-cleanup old completed/failed jobs (runs every ~10min via counter)
+	p.autoCleanupOldJobs(ctx, log, &d)
 
 	return d
 }
@@ -477,4 +495,55 @@ func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log 
 			}
 		}
 	}
+}
+
+// autoCleanupOldJobs removes completed/failed/timed-out/cancelled jobs older
+// than the retention period. Runs on a tick counter to avoid doing NATS I/O
+// every 10 seconds.
+func (p *MicroKubeProvider) autoCleanupOldJobs(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
+	p.cleanupTickCounter++
+	if p.cleanupTickCounter < cleanupInterval {
+		return
+	}
+	p.cleanupTickCounter = 0
+
+	cutoff := time.Now().Add(-jobRetentionDefault)
+	var toDelete []string
+
+	for key, job := range p.jobs {
+		switch job.Status.Phase {
+		case "Completed", "Failed", "TimedOut", "Cancelled":
+		default:
+			continue
+		}
+
+		if job.Status.CompletedAt != "" {
+			if t, err := time.Parse(time.RFC3339, job.Status.CompletedAt); err == nil {
+				if t.After(cutoff) {
+					continue
+				}
+			}
+		} else if !job.CreationTimestamp.IsZero() && job.CreationTimestamp.Time.After(cutoff) {
+			continue
+		}
+
+		toDelete = append(toDelete, key)
+	}
+
+	if len(toDelete) == 0 {
+		return
+	}
+
+	for _, key := range toDelete {
+		p.deleteJobLogs(key)
+		delete(p.jobs, key)
+	}
+
+	// Queue NATS deletes for deferred flush (outside lock)
+	d.jobDeletes = append(d.jobDeletes, toDelete...)
+
+	log.Infow("auto-cleaned old jobs",
+		"count", len(toDelete),
+		"retention", jobRetentionDefault.String(),
+	)
 }

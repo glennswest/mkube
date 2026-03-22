@@ -14,6 +14,12 @@
 - **perf:** Debounced search inputs — search/filter text inputs now debounce API calls (200ms) instead of firing on every keystroke.
 - **refactor:** Timer management — all `setInterval` calls wrapped in `_uiInterval()` for global tracking. SPA navigation clears all timers before loading new page. Prevents timer leaks across page transitions.
 
+### 2026-03-22 (Job Storage Cleanup)
+- **feat:** Agent auto-prune — agent runs `podman system prune` on startup and `podman image prune --filter until=24h` after each job. Cleans stopped containers, dangling images, build cache, and TMPDIR. Logs remaining disk usage after cleanup.
+- **feat:** Job cleanup API — `POST /api/v1/jobs/cleanup` bulk-deletes completed/failed/timed-out/cancelled jobs. Query params: `olderThan` (default 7d, supports 1h/24h/7d/30d), `pool` (filter), `dryRun` (preview). Removes job records and logs from both memory and NATS.
+- **feat:** Auto-cleanup in scheduler — completed jobs older than 7 days are automatically deleted every ~10 minutes (60 scheduler ticks). NATS writes deferred outside lock to prevent deadlocks.
+- **feat:** Job output directory cleanup — agent removes empty `/data/{jobname}/` dirs after job completion. Non-empty dirs preserved for artifact collection.
+
 ### 2026-03-22 (StoragePool CRD)
 - **feat:** StoragePool CRD — cluster-scoped CRD representing physical storage devices. Auto-discovers RouterOS hardware and RAID disks at boot via `/disk` REST API. Full CRUD API (`mk get sp`), NATS persistence, watch, table format, consistency checks, export/import. Per-pool capacity tracking (total/used/avail), resource counts (disks/PVCs). Default pool support for backward compatibility.
 - **feat:** Pool-aware PVC paths — PVCs can select a storage pool via `storageClassName` or `vkube.io/storage-pool` annotation. Existing PVCs without annotation resolve to the default pool (backward compatible).

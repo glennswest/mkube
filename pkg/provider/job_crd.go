@@ -444,6 +444,112 @@ func (p *MicroKubeProvider) releaseJobHost(ctx context.Context, job *Job) {
 	}
 }
 
+// ─── Cleanup ────────────────────────────────────────────────────────────────
+
+// handleCleanupJobs bulk-deletes completed/failed/timed-out/cancelled jobs.
+// Query params:
+//
+//	olderThan=<duration>  — only delete jobs completed more than this ago (default 7d)
+//	                        supports: 1h, 24h, 7d, 30d
+//	pool=<name>           — only delete jobs from this pool (optional)
+//	dryRun=true           — report what would be deleted without deleting
+func (p *MicroKubeProvider) handleCleanupJobs(w http.ResponseWriter, r *http.Request) {
+	olderThanStr := r.URL.Query().Get("olderThan")
+	if olderThanStr == "" {
+		olderThanStr = "7d"
+	}
+	threshold, err := parseDuration(olderThanStr)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid olderThan %q: %v", olderThanStr, err), http.StatusBadRequest)
+		return
+	}
+
+	pool := r.URL.Query().Get("pool")
+	dryRun := r.URL.Query().Get("dryRun") == "true"
+	cutoff := time.Now().Add(-threshold)
+
+	var toDelete []string
+	for key, job := range p.jobs {
+		// Only terminal phases
+		switch job.Status.Phase {
+		case "Completed", "Failed", "TimedOut", "Cancelled":
+		default:
+			continue
+		}
+
+		// Pool filter
+		if pool != "" && job.Spec.Pool != pool {
+			continue
+		}
+
+		// Age filter
+		if job.Status.CompletedAt != "" {
+			if t, err := time.Parse(time.RFC3339, job.Status.CompletedAt); err == nil {
+				if t.After(cutoff) {
+					continue
+				}
+			}
+		} else if !job.CreationTimestamp.IsZero() && job.CreationTimestamp.Time.After(cutoff) {
+			continue
+		}
+
+		toDelete = append(toDelete, key)
+	}
+
+	if dryRun {
+		podWriteJSON(w, http.StatusOK, map[string]interface{}{
+			"dryRun":  true,
+			"count":   len(toDelete),
+			"jobs":    toDelete,
+			"cutoff":  cutoff.Format(time.RFC3339),
+		})
+		return
+	}
+
+	deleted := 0
+	for _, key := range toDelete {
+		p.deleteJobLogs(key)
+
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) == 2 && p.deps.Store != nil {
+			storeKey := parts[0] + "." + parts[1]
+			if p.deps.Store.Jobs != nil {
+				_ = p.deps.Store.Jobs.Delete(r.Context(), storeKey)
+			}
+			if p.deps.Store.JobLogs != nil {
+				_ = p.deps.Store.JobLogs.Delete(r.Context(), storeKey)
+			}
+		}
+
+		delete(p.jobs, key)
+		deleted++
+	}
+
+	p.deps.Logger.Infow("job cleanup completed",
+		"deleted", deleted,
+		"olderThan", olderThanStr,
+		"pool", pool,
+	)
+
+	podWriteJSON(w, http.StatusOK, map[string]interface{}{
+		"deleted": deleted,
+		"cutoff":  cutoff.Format(time.RFC3339),
+	})
+}
+
+// parseDuration parses durations like "1h", "24h", "7d", "30d".
+func parseDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		days := strings.TrimSuffix(s, "d")
+		var n int
+		if _, err := fmt.Sscanf(days, "%d", &n); err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 // ─── Job Queue (computed view) ──────────────────────────────────────────────
 
 func (p *MicroKubeProvider) handleGetJobQueue(w http.ResponseWriter, r *http.Request) {
