@@ -9,20 +9,19 @@ func (c *Console) handleDashboard(w http.ResponseWriter, r *http.Request) {
   <div class="card"><h3>Nodes</h3><table><thead><tr><th>Name</th><th>Arch</th><th>IP</th><th>Status</th></tr></thead><tbody id="nodes"></tbody></table></div>
   <div class="card"><h3>Recent Events</h3><div id="events" style="max-height:300px;overflow-y:auto"><div class="loading">Loading...</div></div></div>
 </div>
-<div class="card"><h3>Consistency</h3><div class="kv" id="consistency"><div class="loading">Loading...</div></div></div>`
+<div class="card"><h3>Consistency <button class="btn btn-primary" onclick="loadConsistency()" style="margin-left:8px;font-size:10px">Refresh</button></h3><div class="kv" id="consistency"><div class="muted">Loading in background...</div></div></div>`
 
 	js := `
 async function load(){
-  const [healthText,nodes,events,consist,pods]=await Promise.all([
+  const [healthText,nodes,events,pods]=await Promise.all([
     apiGetText(API+'/healthz'),
     apiGet(API+'/api/v1/nodes'),
     apiGet(API+'/api/v1/events'),
-    apiGet(API+'/api/v1/consistency'),
     apiGet(API+'/api/v1/pods'),
   ]);
 
   // Parse healthz plaintext
-  let ver='—';
+  var ver='—';
   if(healthText){
     const m=healthText.match(/version:\s*(.+)/);
     if(m) ver=m[1].trim();
@@ -55,11 +54,18 @@ async function load(){
     const cls=e.type==='Warning'?'color:#f1fa8c':e.type==='Error'?'color:#e94560':'color:#888';
     return '<div style="padding:3px 0;font-size:12px"><span style="'+cls+';font-weight:600">'+escapeHtml(e.type||'Normal')+'</span> <span class="muted">'+timeSince(e.lastTimestamp)+'</span> '+escapeHtml(e.message||'')+'</div>';
   }).join(''):'<div class="muted" style="padding:8px">No events</div>';
+}
 
-  // Consistency
+// Consistency loaded separately — takes 30-60s, must not block dashboard
+var _consistLoaded=false;
+async function loadConsistency(){
   const cb=document.getElementById('consistency');
+  if(!cb) return;
+  cb.innerHTML='<div class="muted">Running consistency check...</div>';
+  const consist=await apiGet(API+'/api/v1/consistency');
+  if(!document.getElementById('consistency')) return;
   if(consist){
-    let html='';
+    var html='';
     for(const[k,v] of Object.entries(consist)){
       if(typeof v==='object') continue;
       html+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v))+'</div>';
@@ -68,6 +74,7 @@ async function load(){
   } else {
     cb.innerHTML='<div class="muted">Unavailable</div>';
   }
+  _consistLoaded=true;
 }
 
 function statBox(val,label){
@@ -75,6 +82,7 @@ function statBox(val,label){
 }
 
 load(); _uiInterval(load,30000);
+loadConsistency();
 `
 	write(w, c.pageWithJS("Dashboard", "Dashboard", body, js))
 }

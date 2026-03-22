@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
-### 2026-03-22 (UI Performance)
+### 2026-03-22 (UI Performance + Consistency Lock Fix)
+- **fix:** Consistency check no longer blocks all API endpoints — removed from global middleware RLock. Check now runs asynchronously in background, HTTP handler returns cached report instantly. Each sub-check acquires its own brief RLock (microseconds) and releases between checks, allowing writers to proceed. Background cache refreshes every 120s + on demand. Root cause: consistency check held RLock for 57 seconds via middleware, any pending writer (scheduler, CRUD) blocked ALL new readers (Go RWMutex fairness) → networks, registries, and all other pages hung.
+- **feat:** API data prefetching — on app load, all common API endpoints are prefetched in parallel into an in-memory cache (15s TTL). First navigation to any page is instant. `apiGet()` checks cache before making fetch calls.
+- **feat:** Storage PVC pool column + move button — PVC table now shows which storage pool each PVC lives on (from `vkube.io/storage-pool` annotation). Move button opens modal to migrate PVC to another pool via `POST /api/v1/storagepools/{name}/migrate`.
+- **fix:** Storage pool cards show disk/PVC names — pool cards now list actual iSCSI disk and PVC names (cross-referenced from fetched data), not just counts. Fixes "undefined disks, undefined PVCs" display bug (missing `||0` fallback on `st.diskCount`/`st.pvcCount`).
+- **fix:** Dashboard consistency check separated from main load — consistency moved to background async call with manual Refresh button. Dashboard stats/nodes/events load instantly without waiting 57s for consistency.
 - **perf:** Cacheable static assets — CSS and JS now served as external files (`/ui/static/style.css`, `/ui/static/app.js`) with `Cache-Control: public, max-age=86400`. Eliminates re-downloading ~14KB of inline CSS+JS on every page navigation.
 - **feat:** SPA client-side navigation — nav link clicks now fetch and swap page content without full page reload. `pushState`/`popstate` for URL bar and back/forward. Timer cleanup between page transitions. Fallback to full navigation on errors.
 - **perf:** Batch DOM writes — replaced `innerHTML +=` in loops (N DOM reparses per table) with `rows.push()` + `join('')` (single DOM write) across all 12 handler files. Eliminates visible jank on large tables.

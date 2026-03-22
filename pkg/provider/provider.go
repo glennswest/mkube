@@ -117,6 +117,9 @@ type MicroKubeProvider struct {
 	createFailures     map[string]int               // pod key -> consecutive CreatePod failures
 	networkFailures    map[string]int               // pod key -> consecutive network health failures
 	consistencyRunning atomic.Bool                  // guards CheckConsistencyAsync against goroutine leaks
+	consistencyCache   *ConsistencyReport           // cached consistency report (lock-free HTTP reads)
+	consistencyCacheMu sync.Mutex                   // guards consistencyCache writes
+	consistencyCacheAt time.Time                    // when the cache was last refreshed
 	reseedRunning      atomic.Bool                  // guards triggerNetworkReseed against goroutine leaks
 	clusterMgr         *cluster.Manager             // nil if clustering is disabled
 	kickReconcile      chan struct{}                 // event-driven reconcile trigger (buffered 1)
@@ -158,6 +161,9 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.DiscoverStoragePools(context.Background())
 	p.startDHCPSubscription(context.Background())
 	go p.RunResourceWatchers(context.Background())
+	// Seed consistency cache on startup so the first dashboard visit has data.
+	p.refreshConsistencyCache("startup")
+	go p.runConsistencyCacheTimer()
 }
 
 // SetClusterManager sets the cluster manager on the provider.

@@ -60,8 +60,135 @@ type CheckItem struct {
 }
 
 func (p *MicroKubeProvider) handleConsistency(w http.ResponseWriter, r *http.Request) {
-	report := p.runConsistencyChecks(r.Context())
-	podWriteJSON(w, http.StatusOK, report)
+	// Return cached report instantly — never hold the RWMutex on the HTTP path.
+	// The consistency check does heavy network I/O (DNS probes, microdns REST,
+	// RouterOS queries) that takes 30-60s. Holding RLock that long blocks all
+	// pending writers, which in turn blocks ALL new readers (Go RWMutex fairness),
+	// making every API endpoint unresponsive.
+	p.consistencyCacheMu.Lock()
+	cached := p.consistencyCache
+	p.consistencyCacheMu.Unlock()
+
+	if cached != nil {
+		podWriteJSON(w, http.StatusOK, cached)
+	} else {
+		podWriteJSON(w, http.StatusOK, ConsistencyReport{
+			Timestamp: "pending",
+			Summary:   CheckSummary{},
+		})
+	}
+
+	// Kick background refresh (non-blocking)
+	p.refreshConsistencyCache("api-request")
+}
+
+// refreshConsistencyCache runs a full consistency check in the background
+// and caches the result. Only one check runs at a time (atomic guard).
+// Each check function acquires its own brief RLock for map access, then
+// releases before doing any network I/O. This prevents blocking writers
+// for the full 30-60s duration.
+func (p *MicroKubeProvider) refreshConsistencyCache(reason string) {
+	if !p.consistencyRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer p.consistencyRunning.Store(false)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		report := p.runConsistencyChecksLockPerCheck(ctx)
+
+		p.consistencyCacheMu.Lock()
+		p.consistencyCache = &report
+		p.consistencyCacheAt = time.Now()
+		p.consistencyCacheMu.Unlock()
+
+		p.deps.Logger.Infow("consistency cache refreshed",
+			"trigger", reason,
+			"pass", report.Summary.Pass,
+			"fail", report.Summary.Fail,
+			"warn", report.Summary.Warn)
+	}()
+}
+
+// runConsistencyChecksLockPerCheck runs each check under its own brief RLock,
+// releasing between checks so writers can proceed. This replaces holding a
+// single RLock for the entire 30-60s check duration.
+func (p *MicroKubeProvider) runConsistencyChecksLockPerCheck(ctx context.Context) ConsistencyReport {
+	report := ConsistencyReport{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	rlockCheck := func(fn func(context.Context) []CheckItem) []CheckItem {
+		p.mu.RLock()
+		result := fn(ctx)
+		p.mu.RUnlock()
+		return result
+	}
+	rlockCheckNoCtx := func(fn func() []CheckItem) []CheckItem {
+		p.mu.RLock()
+		result := fn()
+		p.mu.RUnlock()
+		return result
+	}
+
+	report.Checks.Containers = rlockCheck(p.checkContainers)
+	report.Checks.DNS = rlockCheck(p.checkDNS)
+	report.Checks.Manifest = rlockCheckNoCtx(p.checkManifest)
+	report.Checks.IPAM = rlockCheck(p.checkIPAM)
+	report.Checks.Network = rlockCheck(p.checkNetworkHealth)
+	report.Checks.Deployments = rlockCheckNoCtx(p.checkDeployments)
+	report.Checks.PVCs = rlockCheck(p.checkPVCs)
+	report.Checks.Networks = rlockCheck(p.checkNetworkCRDs)
+	report.Checks.BMHs = rlockCheckNoCtx(p.checkBMHs)
+	report.Checks.Registries = rlockCheck(p.checkRegistryCRDs)
+	report.Checks.ISCSICdroms = rlockCheck(p.checkISCSICdromCRDs)
+	report.Checks.ISCSIDisks = rlockCheck(p.checkISCSIDiskCRDs)
+	report.Checks.BootConfigs = rlockCheck(p.checkBootConfigCRDs)
+	report.Checks.HostReservations = rlockCheck(p.checkHostReservationCRDs)
+	report.Checks.JobRunners = rlockCheck(p.checkJobRunnerCRDs)
+	report.Checks.Jobs = rlockCheck(p.checkJobCRDs)
+	report.Checks.StoragePools = rlockCheck(p.checkStoragePoolCRDs)
+	report.Checks.MicroDNS = rlockCheck(p.checkMicroDNSServices)
+	report.Checks.SmokeTests = rlockCheckNoCtx(p.checkSmokeTests)
+	report.Checks.PodLiveness = rlockCheck(p.checkPodLiveness)
+
+	for _, items := range [][]CheckItem{
+		report.Checks.Containers,
+		report.Checks.DNS,
+		report.Checks.Manifest,
+		report.Checks.IPAM,
+		report.Checks.Network,
+		report.Checks.Deployments,
+		report.Checks.PVCs,
+		report.Checks.Networks,
+		report.Checks.BMHs,
+		report.Checks.Registries,
+		report.Checks.ISCSICdroms,
+		report.Checks.ISCSIDisks,
+		report.Checks.BootConfigs,
+		report.Checks.HostReservations,
+		report.Checks.JobRunners,
+		report.Checks.Jobs,
+		report.Checks.StoragePools,
+		report.Checks.MicroDNS,
+		report.Checks.SmokeTests,
+		report.Checks.PodLiveness,
+	} {
+		for _, item := range items {
+			switch item.Status {
+			case "pass":
+				report.Summary.Pass++
+			case "fail":
+				report.Summary.Fail++
+			case "warn":
+				report.Summary.Warn++
+			}
+		}
+	}
+
+	return report
 }
 
 // handleConsistencyRepair cleans up orphaned IPAM entries where the veth
@@ -850,6 +977,16 @@ func (p *MicroKubeProvider) checkDeployments() []CheckItem {
 		}
 	}
 	return items
+}
+
+// runConsistencyCacheTimer periodically refreshes the cached consistency
+// report so the dashboard always has reasonably fresh data.
+func (p *MicroKubeProvider) runConsistencyCacheTimer() {
+	ticker := time.NewTicker(120 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.refreshConsistencyCache("timer")
+	}
 }
 
 // CheckConsistencyAsync runs a consistency check in the background after

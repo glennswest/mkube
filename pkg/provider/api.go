@@ -284,7 +284,8 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 		// kills mkube when a long-running operation holds the write lock.
 		// Console UI pages (/ui/) are pure HTML generation, no shared state.
 		if r.URL.Path == "/healthz" || r.URL.Path == "/version" || r.URL.Path == "/apis" ||
-			strings.HasPrefix(r.URL.Path, "/ui/") {
+			strings.HasPrefix(r.URL.Path, "/ui/") ||
+			r.URL.Path == "/api/v1/consistency" {
 			h.ServeHTTP(w, r)
 			return
 		}

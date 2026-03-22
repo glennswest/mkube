@@ -184,18 +184,63 @@ function fmtSize(s){
   return String(s);
 }
 
+// ── API cache + prefetch ──
+var _apiCache={};
+var _apiCacheTTL=15000; // 15s TTL
+var _apiInflight={};
+
+function _apiCacheGet(url){
+  var entry=_apiCache[url];
+  if(entry&&(Date.now()-entry.t)<_apiCacheTTL) return entry.v;
+  return undefined;
+}
+function _apiCacheSet(url,val){
+  _apiCache[url]={v:val,t:Date.now()};
+}
+
+// Prefetch common endpoints on app load for instant first page render
+function _prefetchAll(){
+  var base=window.API||'';
+  var endpoints=[
+    '/healthz','/api/v1/pods','/api/v1/nodes','/api/v1/events',
+    '/api/v1/networks','/api/v1/deployments','/api/v1/storagepools',
+    '/api/v1/persistentvolumeclaims','/api/v1/baremetalhosts',
+    '/api/v1/registries','/api/v1/iscsi-cdroms','/api/v1/iscsi-disks',
+    '/api/v1/bootconfigs','/api/v1/jobrunners','/api/v1/jobs'
+  ];
+  endpoints.forEach(function(ep){
+    var url=base+ep;
+    if(!_apiInflight[url]){
+      _apiInflight[url]=true;
+      fetch(url).then(function(r){
+        if(!r.ok) return null;
+        var ct=r.headers.get('content-type')||'';
+        if(ct.includes('json')) return r.json();
+        return r.text().then(function(t){try{return JSON.parse(t)}catch(e){return t}});
+      }).then(function(data){
+        if(data!==null) _apiCacheSet(url,data);
+        delete _apiInflight[url];
+      }).catch(function(){delete _apiInflight[url];});
+    }
+  });
+}
+
 // ── API helpers ──
 function apiGet(url){
+  var cached=_apiCacheGet(url);
+  if(cached!==undefined) return Promise.resolve(cached);
   return fetch(url).then(r=>{
     if(!r.ok)throw new Error(r.status);
     const ct=r.headers.get('content-type')||'';
     if(ct.includes('json')) return r.json();
     return r.text().then(t=>{try{return JSON.parse(t)}catch(e){return t}});
-  }).catch(e=>{console.error('fetch',url,e);return null});
+  }).then(function(data){_apiCacheSet(url,data);return data;}).catch(e=>{console.error('fetch',url,e);return null});
 }
 
 function apiGetText(url){
-  return fetch(url).then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).catch(e=>{console.error('fetch',url,e);return ''});
+  var cached=_apiCacheGet(url);
+  if(cached!==undefined) return Promise.resolve(typeof cached==='string'?cached:JSON.stringify(cached));
+  return fetch(url).then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).then(function(t){_apiCacheSet(url,t);return t;}).catch(e=>{console.error('fetch',url,e);return ''});
 }
 
 function apiPost(url,body){
@@ -342,6 +387,9 @@ function debounce(fn,ms){
 // ── SPA Router ──
 var _spaNavigating=false;
 document.addEventListener('DOMContentLoaded',function(){
+  // Prefetch all common API data for instant page transitions
+  setTimeout(_prefetchAll,100);
+
   document.addEventListener('click',function(e){
     var a=e.target.closest('nav .links a');
     if(!a) return;
