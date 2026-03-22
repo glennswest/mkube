@@ -305,6 +305,25 @@ func (p *ProxmoxRuntime) ListDirectory(_ context.Context, path string) ([]string
 	return names, nil
 }
 
+func (p *ProxmoxRuntime) DirectoryDiskUsage(_ context.Context, path string) (int64, error) {
+	var total int64
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+	}
+	return total, nil
+}
+
 // CreateMount stages a mount for the next CreateContainer call.
 // Proxmox requires all mounts to be specified at container creation time.
 func (p *ProxmoxRuntime) CreateMount(_ context.Context, name, src, dst string) error {

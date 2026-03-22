@@ -435,6 +435,35 @@ func (c *Client) ListDirectory(ctx context.Context, path string) ([]string, erro
 	return entries, nil
 }
 
+// DirectoryDiskUsage returns the total size in bytes of all files under a directory.
+func (c *Client) DirectoryDiskUsage(ctx context.Context, path string) (int64, error) {
+	path = strings.TrimPrefix(path, "/")
+	prefix := path + "/"
+
+	var allFiles []map[string]interface{}
+	if err := c.restGET(ctx, "/file", &allFiles); err != nil {
+		return 0, fmt.Errorf("directory disk usage %s: %w", path, err)
+	}
+
+	var total int64
+	for _, f := range allFiles {
+		name, _ := f["name"].(string)
+		if strings.HasPrefix(name, prefix) || name == path {
+			switch sz := f["size"].(type) {
+			case float64:
+				total += int64(sz)
+			case string:
+				if n, err := fmt.Sscanf(sz, "%d", new(int64)); n == 1 && err == nil {
+					var v int64
+					fmt.Sscanf(sz, "%d", &v)
+					total += v
+				}
+			}
+		}
+	}
+	return total, nil
+}
+
 // ─── Bridge Operations ──────────────────────────────────────────────────────
 
 // BridgePort represents a bridge port assignment.

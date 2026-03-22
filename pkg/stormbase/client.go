@@ -271,6 +271,25 @@ func (c *Client) ListDirectory(_ context.Context, path string) ([]string, error)
 	return names, nil
 }
 
+func (c *Client) DirectoryDiskUsage(_ context.Context, path string) (int64, error) {
+	var total int64
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+	}
+	return total, nil
+}
+
 func (c *Client) CreateMount(_ context.Context, _, _, _ string) error {
 	return nil // volumes are passed inline via CreateContainer spec
 }

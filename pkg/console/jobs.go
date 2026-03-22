@@ -19,6 +19,10 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
   </div>
   <table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Age</th><th>Actions</th></tr></thead>
   <tbody id="jobs-tbl"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody></table>
+  <div class="card mt" id="job-log-panel" style="display:none">
+    <h3 id="job-log-title">Job Logs</h3>
+    <div class="terminal" id="job-logs" style="max-height:400px"></div>
+  </div>
 </div>
 
 <div id="runners" class="tab-content">
@@ -41,12 +45,6 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
   <table><thead><tr><th>Position</th><th>Job</th><th>Namespace</th><th>Pool</th><th>Priority</th><th>Phase</th><th>Assigned Host</th><th>Queued</th></tr></thead>
   <tbody id="queue-tbl"></tbody></table>
 </div>
-
-<div class="card mt"><h3>Job Logs</h3>
-<div class="toolbar">
-  <select id="log-job" onchange="loadJobLogs()"><option value="">Select a job...</option></select>
-</div>
-<div class="terminal" id="job-logs"></div></div>
 
 <!-- Create Runner Modal -->
 <div class="modal-overlay" id="runner-modal">
@@ -115,6 +113,41 @@ async function deleteSelected(){
   loadJobs();
 }
 
+// ── Inline log viewing ──
+let _selectedJob=null;
+
+function selectJob(ns,name){
+  const key=ns+'/'+name;
+  // Toggle off if clicking same row
+  if(_selectedJob===key){
+    _selectedJob=null;
+    document.getElementById('job-log-panel').style.display='none';
+    document.querySelectorAll('#jobs-tbl tr').forEach(r=>r.classList.remove('selected'));
+    return;
+  }
+  _selectedJob=key;
+  // Highlight selected row
+  document.querySelectorAll('#jobs-tbl tr').forEach(r=>r.classList.remove('selected'));
+  const rows=document.querySelectorAll('#jobs-tbl tr');
+  rows.forEach(r=>{if(r.dataset.jobKey===key) r.classList.add('selected');});
+  // Load logs
+  document.getElementById('job-log-panel').style.display='block';
+  document.getElementById('job-log-title').textContent='Logs: '+key;
+  document.getElementById('job-logs').innerHTML='<span class="muted">Loading...</span>';
+  fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs')
+    .then(r=>r.text())
+    .then(text=>{
+      if(_selectedJob!==key) return;
+      document.getElementById('job-logs').innerHTML=ansiToHtml(text)||'<span class="muted">No logs available</span>';
+      const el=document.getElementById('job-logs');
+      el.scrollTop=el.scrollHeight;
+    })
+    .catch(()=>{
+      if(_selectedJob!==key) return;
+      document.getElementById('job-logs').innerHTML='<span class="muted">Failed to load logs</span>';
+    });
+}
+
 // ── Jobs ──
 async function loadJobs(){
   const data=await apiGet(API+'/api/v1/jobs');
@@ -129,19 +162,6 @@ async function loadJobs(){
   const sel=document.getElementById('job-ns');
   if(sel.options.length<=1) nss.forEach(n=>{const o=document.createElement('option');o.value=n;o.text=n;sel.add(o);});
 
-  // Populate job log selector
-  const logSel=document.getElementById('log-job');
-  const cur=logSel.value;
-  logSel.innerHTML='<option value="">Select a job...</option>';
-  (data?.items||[]).forEach(j=>{
-    const ns=j.metadata.namespace||'default';
-    const o=document.createElement('option');
-    o.value=ns+'/'+j.metadata.name;
-    o.text=ns+'/'+j.metadata.name+' ('+((j.status?.phase||j.spec?.phase)||'—')+')';
-    logSel.add(o);
-  });
-  if(cur) logSel.value=cur;
-
   const tb=document.getElementById('jobs-tbl');
   tb.innerHTML='';
   if(items.length===0){tb.innerHTML='<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">No jobs</td></tr>';return;}
@@ -152,11 +172,13 @@ async function loadJobs(){
     const phase=st.phase||s.phase||'Pending';
     const bmh=st.assignedHost||s.assignedHost||'—';
     const canCancel=['pending','provisioning','running'].includes(phase.toLowerCase());
-    tb.innerHTML+='<tr><td><input type="checkbox" data-ns="'+escapeHtml(ns)+'" data-name="'+escapeHtml(j.metadata.name)+'"></td><td>'+escapeHtml(j.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
+    const key=ns+'/'+j.metadata.name;
+    const selected=_selectedJob===key?' selected':'';
+    tb.innerHTML+='<tr data-job-key="'+escapeHtml(key)+'" class="job-row'+selected+'" onclick="selectJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')" style="cursor:pointer"><td onclick="event.stopPropagation()"><input type="checkbox" data-ns="'+escapeHtml(ns)+'" data-name="'+escapeHtml(j.metadata.name)+'"></td><td>'+escapeHtml(j.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
       +'<td>'+statusBadge(phase)+'</td><td>'+escapeHtml(s.pool||'—')+'</td>'
       +'<td>'+(s.priority||0)+'</td><td>'+escapeHtml(bmh)+'</td>'
       +'<td>'+timeSince(j.metadata?.creationTimestamp)+'</td>'
-      +'<td>'+(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
+      +'<td onclick="event.stopPropagation()">'+(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
       +'<button class="btn btn-danger" onclick="delJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Delete</button></td></tr>';
   });
   initSort('jobs-tbl');reapplySort('jobs-tbl');
@@ -171,6 +193,10 @@ async function cancelJob(ns,name){
 async function delJob(ns,name){
   if(!confirm('Delete job '+name+'?')) return;
   await apiDelete(API+'/api/v1/namespaces/'+ns+'/jobs/'+name);
+  if(_selectedJob===decodeURIComponent(ns)+'/'+name){
+    _selectedJob=null;
+    document.getElementById('job-log-panel').style.display='none';
+  }
   loadJobs();
 }
 
@@ -292,19 +318,16 @@ async function loadQueue(){
   initSort('queue-tbl');reapplySort('queue-tbl');
 }
 
-// ── Job Logs ──
-async function loadJobLogs(){
-  const sel=document.getElementById('log-job').value;
-  if(!sel){ document.getElementById('job-logs').innerHTML=''; return; }
-  const [ns,name]=sel.split('/');
-  const logs=await fetch(API+'/api/v1/namespaces/'+ns+'/jobs/'+name+'/logs').then(r=>r.text()).catch(()=>'');
-  document.getElementById('job-logs').innerHTML=ansiToHtml(logs)||'<span class="muted">No logs</span>';
-}
-
 async function loadAll(){
   await Promise.all([loadJobs(),loadRunners(),loadRes(),loadQueue()]);
 }
 loadAll(); setInterval(loadAll,15000);
 `
-	write(w, c.pageWithJS("Jobs", "Jobs", body, js))
+	// Add selected row styling
+	extraCSS := `<style>
+#jobs-tbl tr.selected td { background:#1e2845; }
+#jobs-tbl tr.job-row:hover td { background:#1a1d32; }
+#jobs-tbl tr.selected:hover td { background:#1e2845; }
+</style>`
+	write(w, c.pageWithJS("Jobs", "Jobs", body+extraCSS, js))
 }

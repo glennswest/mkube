@@ -227,7 +227,7 @@ function showLoading(id){
 // ── Table sorting ──
 const _sortState={};
 
-function initSort(tbodyId){
+function initSort(tbodyId,defaultCol){
   const tbody=document.getElementById(tbodyId);
   if(!tbody) return;
   const table=tbody.closest('table');
@@ -240,6 +240,17 @@ function initSort(tbodyId){
     th.dataset.sortLabel=label;
     th.addEventListener('click',()=>sortByCol(tbodyId,idx));
   });
+  // Apply default sort on first call if no sort state exists
+  if(!_sortState[tbodyId]&&tbody.rows.length>0){
+    const col=typeof defaultCol==='number'?defaultCol:0;
+    // Skip checkbox columns (type=checkbox in th)
+    const firstTh=headers[col];
+    if(firstTh&&firstTh.querySelector('input[type=checkbox]')){
+      if(headers.length>1) sortByCol(tbodyId,col+1);
+    } else {
+      sortByCol(tbodyId,col);
+    }
+  }
 }
 
 function sortByCol(tbodyId,colIdx){

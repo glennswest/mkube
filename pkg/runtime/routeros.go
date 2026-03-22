@@ -135,6 +135,10 @@ func (r *RouterOSRuntime) ListDirectory(ctx context.Context, path string) ([]str
 	return r.client.ListDirectory(ctx, path)
 }
 
+func (r *RouterOSRuntime) DirectoryDiskUsage(ctx context.Context, path string) (int64, error) {
+	return r.client.DirectoryDiskUsage(ctx, path)
+}
+
 // ─── iSCSI Operations (via ROSE /disk) ──────────────────────────────────────
 
 func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {

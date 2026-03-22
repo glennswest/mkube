@@ -44,9 +44,11 @@ async function load(){
   else pvcItems.forEach(p=>{
     const s=p.spec||{};
     const st=p.status||{};
-    const used=st.usedBytes||st.used;
-    const size=s.resources?.requests?.storage||st.capacityBytes||st.capacity;
-    pt.innerHTML+='<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(p.metadata.namespace||'default')+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+fmtSize(used)+'</td><td>'+fmtSize(size)+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td></tr>';
+    const ann=p.metadata?.annotations||{};
+    const usedBytes=ann['vkube.io/used-bytes'];
+    const used=usedBytes?fmtBytes(parseInt(usedBytes)):'—';
+    const cap=st.capacity?.storage||s.resources?.requests?.storage||'—';
+    pt.innerHTML+='<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(p.metadata.namespace||'default')+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+used+'</td><td>'+escapeHtml(String(cap))+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td></tr>';
   });
   initSort('pvcs-tbl');reapplySort('pvcs-tbl');
 

@@ -185,6 +185,7 @@ func (p *MicroKubeProvider) handleGetPVC(w http.ResponseWriter, r *http.Request)
 
 	enriched := pvc.DeepCopy()
 	enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
+	p.enrichPVCUsage(r.Context(), enriched)
 	podWriteJSON(w, http.StatusOK, enriched)
 }
 
@@ -204,6 +205,7 @@ func (p *MicroKubeProvider) handleListPVCs(w http.ResponseWriter, r *http.Reques
 		}
 		enriched := pvc.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
+		p.enrichPVCUsage(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
 
@@ -229,6 +231,7 @@ func (p *MicroKubeProvider) handleListAllPVCs(w http.ResponseWriter, r *http.Req
 	for _, pvc := range p.pvcs {
 		enriched := pvc.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
+		p.enrichPVCUsage(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
 
@@ -557,6 +560,19 @@ func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context
 		}
 	}
 	return modified
+}
+
+// enrichPVCUsage adds a vkube.io/used-bytes annotation with actual disk usage.
+func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.PersistentVolumeClaim) {
+	hostPath := p.pvcHostPath(pvc)
+	used, err := p.deps.Runtime.DirectoryDiskUsage(ctx, hostPath)
+	if err != nil {
+		return
+	}
+	if pvc.Annotations == nil {
+		pvc.Annotations = make(map[string]string)
+	}
+	pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
 }
 
 // formatAccessModes returns a short string representation of access modes.

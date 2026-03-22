@@ -34,6 +34,7 @@ type ContainerRuntime interface {
 	EnsureDirectory(ctx context.Context, path string) error
 	FileExists(ctx context.Context, path string) (bool, error)
 	ListDirectory(ctx context.Context, path string) ([]string, error)
+	DirectoryDiskUsage(ctx context.Context, path string) (int64, error)
 
 	// Mount operations (RouterOS-specific, no-op on other backends)
 	CreateMount(ctx context.Context, name, src, dst string) error
