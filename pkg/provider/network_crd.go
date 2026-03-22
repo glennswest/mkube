@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -734,12 +735,22 @@ url = %q
 	// cross-zone queries immediately on startup (no REST API seeding gap).
 	// Without this, queries for peer zones during the startup gap get NXDOMAIN
 	// which systemd-resolved caches for the SOA minimum TTL (300s).
-	var forwardZones string
+	// Collect peer zones and sort for deterministic TOML output.
+	// Without sorting, Go map iteration randomises the order each call,
+	// causing syncConfigMapsToDisk to detect a "change" every reconcile
+	// cycle and endlessly restart DNS pods.
+	type fwdEntry struct{ zone, server string }
+	var fwdEntries []fwdEntry
 	for _, peer := range p.networks {
 		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 			continue
 		}
-		forwardZones += fmt.Sprintf("%q = [\"%s:53\"]\n", peer.Spec.DNS.Zone, peer.Spec.DNS.Server)
+		fwdEntries = append(fwdEntries, fwdEntry{peer.Spec.DNS.Zone, peer.Spec.DNS.Server})
+	}
+	sort.Slice(fwdEntries, func(i, j int) bool { return fwdEntries[i].zone < fwdEntries[j].zone })
+	var forwardZones string
+	for _, e := range fwdEntries {
+		forwardZones += fmt.Sprintf("%q = [\"%s:53\"]\n", e.zone, e.server)
 	}
 
 	return fmt.Sprintf(`[instance]
