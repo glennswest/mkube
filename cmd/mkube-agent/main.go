@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,8 @@ var (
 const (
 	defaultBuildImage = "registry.gt.lo:5000/rawhidedev:latest"
 	defaultRegistry   = "registry.gt.lo:5000"
+	selfImage         = "registry.gt.lo:5000/mkube-agent:edge"
+	stormdAPI         = "http://127.0.0.1:9080"
 )
 
 // agentJob mirrors the Job type from mkube, with only the fields the agent needs.
@@ -47,10 +50,27 @@ func main() {
 
 	log.Printf("mkube-agent %s (%s) starting, api=%s", version, commit, apiURL)
 
+	// Capture our current image digest at startup for self-update detection.
+	currentDigest := getImageDigest(selfImage)
+	if currentDigest != "" {
+		log.Printf("current image digest: %.12s", currentDigest)
+	}
+
 	// Main work loop — after completing a job, poll for the next one.
 	// This keeps the agent alive so the scheduler can assign new jobs to
 	// an already-online host without triggering a PXE reboot.
 	for {
+		// Check for self-update between jobs
+		if currentDigest != "" {
+			if newDigest := getImageDigest(selfImage); newDigest != "" && newDigest != currentDigest {
+				log.Printf("new agent image detected: %.12s → %.12s — requesting container restart", currentDigest, newDigest)
+				requestContainerRestart()
+				// If stormd shutdown didn't kill us, sleep and let stormd handle it
+				time.Sleep(10 * time.Second)
+				continue
+			}
+		}
+
 		job, err := pollForWork(apiURL)
 		if err != nil {
 			log.Printf("no work available: %v — will retry in 30s", err)
@@ -383,4 +403,64 @@ func reportComplete(apiURL string, exitCode int, execErr error) {
 // shellQuote wraps a string in single quotes for safe shell interpolation.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// getImageDigest queries the registry for the current digest of an image tag.
+// Returns empty string on any error (non-fatal — update check is best-effort).
+func getImageDigest(image string) string {
+	// Parse image into registry/repo:tag
+	// e.g. "registry.gt.lo:5000/mkube-agent:edge" → registry="registry.gt.lo:5000", repo="mkube-agent", tag="edge"
+	parts := strings.SplitN(image, "/", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	registry := parts[0]
+	repoTag := parts[1]
+
+	repo := repoTag
+	tag := "latest"
+	if idx := strings.LastIndex(repoTag, ":"); idx != -1 {
+		repo = repoTag[:idx]
+		tag = repoTag[idx+1:]
+	}
+
+	// HEAD request to registry v2 manifest endpoint
+	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, tag)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	req, err := http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	return resp.Header.Get("Docker-Content-Digest")
+}
+
+// requestContainerRestart asks stormd to shut down the entire container.
+// stormd exits → container dies → restart mechanism pulls fresh image.
+func requestContainerRestart() {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(stormdAPI+"/api/v1/shutdown", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		log.Printf("stormd shutdown request failed: %v — falling back to process exit", err)
+		os.Exit(0)
+	}
+	resp.Body.Close()
+	log.Printf("stormd shutdown requested (status %d)", resp.StatusCode)
 }
