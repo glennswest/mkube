@@ -5,27 +5,27 @@
 #   mk apply -f deploy/job-scheduling-setup.yaml
 #
 # This creates:
-#   1. JobRunner "build-runner"    — pool="build", uses cloudid template, powers off after 5min idle
+#   1. JobRunner "build-runner"    — pool="build", maxConcurrent=10, powers off after 5min idle
 #   2. HostReservation "server1"   — reserves server1 for the "build" pool
 #
-# The ignition template "fcos/agent-runner" is managed in cloudid's template store.
+# The bootconfig "coreos-agent" is assigned to build pool servers.
 # It runs mkube-agent as a container: registry.gt.lo:5000/mkube-agent:edge
+# Agent supports parallel job execution (MKUBE_MAX_CONCURRENT env, default 4).
 #
-# Then submit jobs:
+# Submit build-container jobs:
 #   mk apply -f - <<EOF
 #   apiVersion: v1
 #   kind: Job
 #   metadata:
-#     name: my-build
+#     name: kernel-build
 #     namespace: default
 #   spec:
 #     pool: build
 #     priority: 10
-#     script: |
-#       echo "Hello from $(hostname)"
-#       uname -a
-#       date
-#     timeout: 600
+#     repo: https://github.com/glennswest/kernel-build
+#     buildScript: build.sh
+#     buildImage: registry.gt.lo:5000/rawhidedev:latest
+#     timeout: 10800
 #   EOF
 #
 # Monitor:
@@ -33,7 +33,7 @@
 #   mk get hres        # host reservations
 #   mk get job         # job status
 #   mk get jq          # pending queue
-#   mk logs job/my-build -n default   # or: curl $API/api/v1/namespaces/default/jobs/my-build/logs
+#   mk logs job/kernel-build -n default
 #
 apiVersion: v1
 kind: JobRunner
@@ -44,7 +44,7 @@ spec:
   template: fcos/agent-runner
   idleTimeout: 300
   reclaimPolicy: PowerOff
-  maxConcurrent: 1
+  maxConcurrent: 10
 ---
 apiVersion: v1
 kind: HostReservation

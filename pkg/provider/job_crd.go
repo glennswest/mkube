@@ -424,9 +424,20 @@ func (p *MicroKubeProvider) releaseJobHost(ctx context.Context, job *Job) {
 	if job.Status.BMHRef == "" {
 		return
 	}
+	// Count remaining active jobs on this BMH (excluding the one being released)
+	remaining := 0
+	for _, j := range p.jobs {
+		if j.Spec.Pool == job.Spec.Pool && j.Status.BMHRef == job.Status.BMHRef &&
+			(j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") &&
+			jobKey(j) != jobKey(job) {
+			remaining++
+		}
+	}
 	for _, hr := range p.hostReservations {
-		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Status.ActiveJob == jobKey(job) {
-			hr.Status.ActiveJob = ""
+		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Spec.Pool == job.Spec.Pool {
+			if remaining == 0 {
+				hr.Status.ActiveJob = ""
+			}
 			p.persistHostReservation(ctx, hr)
 			break
 		}
@@ -516,7 +527,8 @@ func jobQueueToTable(items []Job) *metav1.Table {
 
 // ─── Agent Endpoints ────────────────────────────────────────────────────────
 
-// handleAgentWork returns the assigned job for the calling agent (source IP lookup).
+// handleAgentWork returns the next unstarted job for the calling agent (source IP lookup).
+// Only returns Provisioning jobs — Running jobs are already handed out.
 func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Request) {
 	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -537,23 +549,19 @@ func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Find job assigned to this BMH
+	// Find next Provisioning job assigned to this BMH
 	for _, job := range p.jobs {
-		if job.Status.BMHRef == matchedBMH.Name &&
-			(job.Status.Phase == "Provisioning" || job.Status.Phase == "Running") {
+		if job.Status.BMHRef == matchedBMH.Name && job.Status.Phase == "Provisioning" {
 			c := job.DeepCopy()
 			c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
 
-			// Transition from Provisioning to Running on first work pull
-			if job.Status.Phase == "Provisioning" {
-				job.Status.Phase = "Running"
-				job.Status.StartedAt = time.Now().UTC().Format(time.RFC3339)
-				job.Status.LastHeartbeat = job.Status.StartedAt
-				p.persistJob(r.Context(), job)
-				c.Status = job.Status
-				if job.Status.RunnerRef != "" {
-					p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("Agent started %s on %s (%s)", jobKey(job), matchedBMH.Name, sourceIP))
-				}
+			job.Status.Phase = "Running"
+			job.Status.StartedAt = time.Now().UTC().Format(time.RFC3339)
+			job.Status.LastHeartbeat = job.Status.StartedAt
+			p.persistJob(r.Context(), job)
+			c.Status = job.Status
+			if job.Status.RunnerRef != "" {
+				p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("Agent started %s on %s (%s)", jobKey(job), matchedBMH.Name, sourceIP))
 			}
 
 			podWriteJSON(w, http.StatusOK, c)
@@ -565,7 +573,9 @@ func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAgentHeartbeat updates the last heartbeat time for the job.
+// handleAgentHeartbeat updates the last heartbeat time for running jobs.
+// If body contains {"job":"ns/name"}, updates that specific job.
+// Otherwise updates all running jobs for this BMH (parallel agent support).
 func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -585,19 +595,39 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		return
 	}
 
-	for _, job := range p.jobs {
-		if job.Status.BMHRef == matchedBMH.Name && job.Status.Phase == "Running" {
-			job.Status.LastHeartbeat = time.Now().UTC().Format(time.RFC3339)
-			p.persistJob(r.Context(), job)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	// Parse optional job identity from body
+	var hbReq struct {
+		Job string `json:"job"`
+	}
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&hbReq) // ignore errors — field is optional
 	}
 
-	http.Error(w, "no running job found", http.StatusNotFound)
+	now := time.Now().UTC().Format(time.RFC3339)
+	updated := 0
+	for _, job := range p.jobs {
+		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
+			continue
+		}
+		// If job identity provided, only update that one
+		if hbReq.Job != "" && jobKey(job) != hbReq.Job {
+			continue
+		}
+		job.Status.LastHeartbeat = now
+		p.persistJob(r.Context(), job)
+		updated++
+	}
+
+	if updated == 0 {
+		http.Error(w, "no running job found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleAgentLogs accepts log lines from the agent.
+// Supports ?job=ns/name query param for parallel job identity.
+// Falls back to first running job for backward compatibility.
 func (p *MicroKubeProvider) handleAgentLogs(w http.ResponseWriter, r *http.Request) {
 	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -617,12 +647,19 @@ func (p *MicroKubeProvider) handleAgentLogs(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Parse optional job identity from query param
+	jobRef := r.URL.Query().Get("job")
+
 	var matchedJob *Job
 	for _, job := range p.jobs {
-		if job.Status.BMHRef == matchedBMH.Name && job.Status.Phase == "Running" {
-			matchedJob = job
-			break
+		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
+			continue
 		}
+		if jobRef != "" && jobKey(job) != jobRef {
+			continue
+		}
+		matchedJob = job
+		break
 	}
 
 	if matchedJob == nil {
@@ -649,9 +686,13 @@ func (p *MicroKubeProvider) handleAgentLogs(w http.ResponseWriter, r *http.Reque
 type agentCompleteRequest struct {
 	ExitCode     int    `json:"exitCode"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
+	JobName      string `json:"jobName,omitempty"`      // for parallel: specific job name
+	JobNamespace string `json:"jobNamespace,omitempty"` // for parallel: specific job namespace
 }
 
 // handleAgentComplete marks the job as completed/failed.
+// Supports jobName/jobNamespace in request body for parallel job identity.
+// Falls back to first running job for backward compatibility.
 func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.Request) {
 	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -671,22 +712,27 @@ func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	var req agentCompleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Find matching job — by identity if provided, else first running
 	var matchedJob *Job
 	for _, job := range p.jobs {
-		if job.Status.BMHRef == matchedBMH.Name && job.Status.Phase == "Running" {
-			matchedJob = job
-			break
+		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
+			continue
 		}
+		if req.JobName != "" && (job.Name != req.JobName || job.Namespace != req.JobNamespace) {
+			continue
+		}
+		matchedJob = job
+		break
 	}
 
 	if matchedJob == nil {
 		http.Error(w, "no running job found", http.StatusNotFound)
-		return
-	}
-
-	var req agentCompleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
 

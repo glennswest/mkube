@@ -149,8 +149,9 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 			continue
 		}
 
-		// Check maxConcurrent
-		if runner.Spec.MaxConcurrent > 0 {
+		// Check maxConcurrent (pool-wide)
+		maxConc := runner.Spec.MaxConcurrent
+		if maxConc > 0 {
 			activeCount := 0
 			for _, j := range p.jobs {
 				if j.Spec.Pool == runner.Spec.Pool &&
@@ -158,13 +159,13 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 					activeCount++
 				}
 			}
-			if activeCount >= runner.Spec.MaxConcurrent {
+			if activeCount >= maxConc {
 				continue
 			}
 		}
 
-		// Find available host
-		bmhName := p.findAvailableHost(job.Spec.Pool, runner.Spec.AllowOverflow)
+		// Find available host (allows multiple jobs per host up to maxConcurrent)
+		bmhName := p.findAvailableHost(job.Spec.Pool, maxConc, runner.Spec.AllowOverflow)
 		if bmhName == "" {
 			continue
 		}
@@ -232,23 +233,38 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 	}
 }
 
-// findAvailableHost finds a free BMH for the pool.
-func (p *MicroKubeProvider) findAvailableHost(pool string, allowOverflow bool) string {
-	// First: reserved hosts for this pool with no active job
-	for _, hr := range p.hostReservations {
-		if hr.Spec.Pool == pool && hr.Status.ActiveJob == "" && hr.Status.Phase == "Active" {
-			return hr.Spec.BMHRef
+// findAvailableHost finds a BMH for the pool that is under the per-host concurrent limit.
+func (p *MicroKubeProvider) findAvailableHost(pool string, maxConcurrent int, allowOverflow bool) string {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+
+	// Count active jobs per BMH
+	bmhActive := make(map[string]int)
+	for _, j := range p.jobs {
+		if j.Spec.Pool == pool &&
+			(j.Status.Phase == "Scheduling" || j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") {
+			bmhActive[j.Status.BMHRef]++
 		}
 	}
 
-	// Overflow: unreserved BMHs
+	// First: reserved hosts for this pool under the limit
+	for _, hr := range p.hostReservations {
+		if hr.Spec.Pool == pool && hr.Status.Phase == "Active" {
+			if bmhActive[hr.Spec.BMHRef] < maxConcurrent {
+				return hr.Spec.BMHRef
+			}
+		}
+	}
+
+	// Overflow: unreserved BMHs under the limit
 	if allowOverflow {
 		reserved := make(map[string]bool)
 		for _, hr := range p.hostReservations {
 			reserved[hr.Spec.BMHRef] = true
 		}
 		for _, bmh := range p.bareMetalHosts {
-			if !reserved[bmh.Name] {
+			if !reserved[bmh.Name] && bmhActive[bmh.Name] < maxConcurrent {
 				return bmh.Name
 			}
 		}
@@ -258,13 +274,25 @@ func (p *MicroKubeProvider) findAvailableHost(pool string, allowOverflow bool) s
 }
 
 // releaseJobHostDeferred clears the host reservation for a completed/failed job.
+// Only clears ActiveJob if no other active jobs remain on the host.
 func (p *MicroKubeProvider) releaseJobHostDeferred(job *Job, d *schedulerDeferred) {
 	if job.Status.BMHRef == "" {
 		return
 	}
+	// Count remaining active jobs on this BMH (excluding the one being released)
+	remaining := 0
+	for _, j := range p.jobs {
+		if j.Spec.Pool == job.Spec.Pool && j.Status.BMHRef == job.Status.BMHRef &&
+			(j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") &&
+			jobKey(j) != jobKey(job) {
+			remaining++
+		}
+	}
 	for _, hr := range p.hostReservations {
-		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Status.ActiveJob == jobKey(job) {
-			hr.Status.ActiveJob = ""
+		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Spec.Pool == job.Spec.Pool {
+			if remaining == 0 {
+				hr.Status.ActiveJob = ""
+			}
 			d.hrs = append(d.hrs, hr)
 			break
 		}

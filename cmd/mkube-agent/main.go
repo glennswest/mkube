@@ -9,10 +9,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,13 +46,25 @@ type agentJob struct {
 	} `json:"spec"`
 }
 
+// jobKey returns "namespace/name" for a job.
+func (j *agentJob) jobKey() string {
+	return j.Metadata.Namespace + "/" + j.Metadata.Name
+}
+
 func main() {
 	apiURL := os.Getenv("MKUBE_API")
 	if apiURL == "" {
 		apiURL = "http://192.168.200.2:8082"
 	}
 
-	log.Printf("mkube-agent %s (%s) starting, api=%s", version, commit, apiURL)
+	maxWorkers := 4
+	if v := os.Getenv("MKUBE_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxWorkers = n
+		}
+	}
+
+	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d", version, commit, apiURL, maxWorkers)
 
 	// Capture our current image digest at startup for self-update detection.
 	currentDigest := getImageDigest(selfImage)
@@ -57,122 +72,143 @@ func main() {
 		log.Printf("current image digest: %.12s", currentDigest)
 	}
 
-	// Main work loop — after completing a job, poll for the next one.
-	// This keeps the agent alive so the scheduler can assign new jobs to
-	// an already-online host without triggering a PXE reboot.
+	// Semaphore channel limits concurrent workers
+	sem := make(chan struct{}, maxWorkers)
+	var activeJobs sync.Map // track running job keys to avoid duplicates
+	var activeCount int64
+
+	// Main dispatch loop — polls for work and spawns workers
 	for {
-		// Check for self-update between jobs
-		if currentDigest != "" {
+		// Check for self-update when no jobs are running
+		if atomic.LoadInt64(&activeCount) == 0 && currentDigest != "" {
 			if newDigest := getImageDigest(selfImage); newDigest != "" && newDigest != currentDigest {
 				log.Printf("new agent image detected: %.12s → %.12s — requesting container restart", currentDigest, newDigest)
 				requestContainerRestart()
-				// If stormd shutdown didn't kill us, sleep and let stormd handle it
 				time.Sleep(10 * time.Second)
 				continue
 			}
 		}
 
-		job, err := pollForWork(apiURL)
-		if err != nil {
-			log.Printf("no work available: %v — will retry in 30s", err)
-			time.Sleep(30 * time.Second)
+		// Try to get a job
+		job, err := tryGetWork(apiURL)
+		if err != nil || job == nil {
+			// No work available — back off
+			if atomic.LoadInt64(&activeCount) == 0 {
+				time.Sleep(5 * time.Second)
+			} else {
+				// Jobs running, poll faster for additional work
+				time.Sleep(2 * time.Second)
+			}
 			continue
 		}
 
-		log.Printf("job assigned: %s/%s", job.Metadata.Namespace, job.Metadata.Name)
-
-		// Start heartbeat
-		hbStop := make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			heartbeat(apiURL, hbStop)
-		}()
-
-		// Execute job — build container mode or legacy inline script
-		var exitCode int
-		var execErr error
-		if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
-			log.Printf("build container mode: repo=%s script=%s", job.Spec.Repo, job.Spec.BuildScript)
-			exitCode, execErr = executeBuildContainer(apiURL, job)
-		} else if job.Spec.Script != "" {
-			log.Printf("legacy inline script mode")
-			exitCode, execErr = executeScript(apiURL, job)
-		} else {
-			execErr = fmt.Errorf("job has neither repo+buildScript nor script")
-			exitCode = 1
+		// Deduplicate — don't run same job twice
+		key := job.jobKey()
+		if _, loaded := activeJobs.LoadOrStore(key, true); loaded {
+			log.Printf("job %s already running, skipping", key)
+			time.Sleep(2 * time.Second)
+			continue
 		}
 
-		// Stop heartbeat
-		close(hbStop)
-		wg.Wait()
+		// Acquire semaphore slot (blocks if at max concurrency)
+		sem <- struct{}{}
+		atomic.AddInt64(&activeCount, 1)
+		log.Printf("job %s assigned (active: %d/%d)", key, atomic.LoadInt64(&activeCount), maxWorkers)
 
-		// Report completion
-		reportComplete(apiURL, exitCode, execErr)
+		go func(job *agentJob) {
+			defer func() {
+				<-sem
+				activeJobs.Delete(job.jobKey())
+				atomic.AddInt64(&activeCount, -1)
+				log.Printf("job %s worker done (active: %d/%d)", job.jobKey(), atomic.LoadInt64(&activeCount), maxWorkers)
+			}()
+			runJob(apiURL, job)
+		}(job)
 
-		log.Printf("job finished with exit code %d — polling for next job", exitCode)
+		// Small delay before next poll to let server update state
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
-// pollForWork polls GET /api/v1/agent/work until a job is assigned.
-func pollForWork(apiURL string) (*agentJob, error) {
+// tryGetWork makes a single attempt to get work from the server.
+// Returns nil, nil if no work is available (204).
+func tryGetWork(apiURL string) (*agentJob, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	url := apiURL + "/api/v1/agent/work"
+	resp, err := client.Get(apiURL + "/api/v1/agent/work")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	backoff := 5 * time.Second
-	maxRetries := 60 // 5 minutes
-
-	for i := 0; i < maxRetries; i++ {
-		resp, err := client.Get(url)
-		if err != nil {
-			log.Printf("work poll error (attempt %d/%d): %v", i+1, maxRetries, err)
-			time.Sleep(backoff)
-			continue
-		}
-
-		if resp.StatusCode == http.StatusNoContent {
-			resp.Body.Close()
-			log.Printf("no work yet (attempt %d/%d)", i+1, maxRetries)
-			time.Sleep(backoff)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			log.Printf("work poll: %d %s", resp.StatusCode, string(body))
-			time.Sleep(backoff)
-			continue
-		}
-
-		var job agentJob
-		if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("decoding job: %w", err)
-		}
-		resp.Body.Close()
-		return &job, nil
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("work poll: %d %s", resp.StatusCode, string(body))
 	}
 
-	return nil, fmt.Errorf("gave up after %d attempts", maxRetries)
+	var job agentJob
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		return nil, fmt.Errorf("decoding job: %w", err)
+	}
+	return &job, nil
 }
 
-// heartbeat sends periodic heartbeats to mkube.
-func heartbeat(apiURL string, stop <-chan struct{}) {
+// runJob executes a single job end-to-end: heartbeat, execute, report.
+func runJob(apiURL string, job *agentJob) {
+	key := job.jobKey()
+	log.Printf("[%s] starting execution", key)
+
+	// Start job-scoped heartbeat
+	hbStop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		heartbeat(apiURL, key, hbStop)
+	}()
+
+	// Execute job
+	var exitCode int
+	var execErr error
+	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
+		log.Printf("[%s] build container mode: repo=%s script=%s", key, job.Spec.Repo, job.Spec.BuildScript)
+		exitCode, execErr = executeBuildContainer(apiURL, job)
+	} else if job.Spec.Script != "" {
+		log.Printf("[%s] legacy inline script mode", key)
+		exitCode, execErr = executeScript(apiURL, job)
+	} else {
+		execErr = fmt.Errorf("job has neither repo+buildScript nor script")
+		exitCode = 1
+	}
+
+	// Stop heartbeat
+	close(hbStop)
+	wg.Wait()
+
+	// Report completion with job identity
+	reportComplete(apiURL, job, exitCode, execErr)
+	log.Printf("[%s] finished with exit code %d", key, exitCode)
+}
+
+// heartbeat sends periodic heartbeats for a specific job.
+func heartbeat(apiURL string, jobKey string, stop <-chan struct{}) {
 	client := &http.Client{Timeout: 5 * time.Second}
-	url := apiURL + "/api/v1/agent/heartbeat"
+	hbURL := apiURL + "/api/v1/agent/heartbeat"
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	body, _ := json.Marshal(map[string]string{"job": jobKey})
 
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
-			resp, err := client.Post(url, "application/json", strings.NewReader("{}"))
+			resp, err := client.Post(hbURL, "application/json", bytes.NewReader(body))
 			if err != nil {
-				log.Printf("heartbeat error: %v", err)
+				log.Printf("[%s] heartbeat error: %v", jobKey, err)
 				continue
 			}
 			resp.Body.Close()
@@ -181,31 +217,27 @@ func heartbeat(apiURL string, stop <-chan struct{}) {
 }
 
 // executeBuildContainer runs the job in a disposable build container via podman.
-// Flow: pull image → podman run (git clone repo, run buildScript) → stream logs → dispose.
 func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
+	key := job.jobKey()
 	image := job.Spec.BuildImage
 	if image == "" {
 		image = defaultBuildImage
 	}
 
 	// Pull the build image
-	log.Printf("pulling build image: %s", image)
+	log.Printf("[%s] pulling build image: %s", key, image)
 	pullCmd := exec.Command("podman", "pull", "--tls-verify=false", image)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
 		return 1, fmt.Errorf("pulling image %s: %v\n%s", image, err, string(pullOut))
 	}
-	log.Printf("image pulled successfully")
+	log.Printf("[%s] image pulled successfully", key)
 
-	// Build the command to run inside the container.
-	// Ensure git is available (bare images like fedora:rawhide may not have it).
-	// If GIT_TOKEN is set, configure git credential helper for HTTPS clones of private repos.
-	// Clone the repo, cd into it, run the build script.
+	// Build the command to run inside the container
 	var parts []string
 	parts = append(parts, "set -e")
 	parts = append(parts, "command -v git >/dev/null 2>&1 || { echo 'Installing git...'; dnf install -y git 2>&1 | tail -3 || yum install -y git 2>&1 | tail -3 || (apt-get update && apt-get install -y git) 2>&1 | tail -3; }")
 
-	// Configure git auth if GIT_TOKEN is provided
 	if token := job.Spec.Env["GIT_TOKEN"]; token != "" {
 		parts = append(parts,
 			`git config --global credential.helper 'store --file /tmp/.git-credentials'`,
@@ -221,22 +253,23 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	)
 	buildCmd := strings.Join(parts, " && ")
 
-	// Construct podman run args
+	// Container name unique per job
+	containerName := fmt.Sprintf("build-%s-%s", job.Metadata.Namespace, job.Metadata.Name)
+
 	args := []string{
 		"run", "--rm",
-		"--name", fmt.Sprintf("build-%s-%s", job.Metadata.Namespace, job.Metadata.Name),
+		"--name", containerName,
 	}
 
-	// Pass environment variables
 	for k, v := range job.Spec.Env {
 		args = append(args, "-e", k+"="+v)
 	}
 
-	// Mount /data as /output inside the container for artifact collection
-	args = append(args, "-v", "/data:/output")
+	// Mount /data/<jobname> as /output for artifact isolation between parallel jobs
+	outputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
+	os.MkdirAll(outputDir, 0755)
+	args = append(args, "-v", outputDir+":/output")
 
-	// Give the build container access to podman socket if available,
-	// so build scripts can build and push container images.
 	if _, err := os.Stat("/run/podman/podman.sock"); err == nil {
 		args = append(args,
 			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
@@ -246,7 +279,7 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 
 	args = append(args, image, "bash", "-c", buildCmd)
 
-	log.Printf("running: podman %s", strings.Join(args, " "))
+	log.Printf("[%s] running: podman %s", key, strings.Join(args[:6], " ")+"...")
 
 	cmd := exec.Command("podman", args...)
 
@@ -257,8 +290,8 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	cmd.Stdout = tee
 	cmd.Stderr = tee
 
-	// Stream logs in background
-	go streamLogs(apiURL, pr)
+	// Stream logs with job identity
+	go streamLogs(apiURL, key, pr)
 
 	if err := cmd.Start(); err != nil {
 		pw.Close()
@@ -280,35 +313,32 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		}
 	}
 
-	// Commit job logs back to the git repo
 	commitJobLogs(job, logBuf.Bytes(), exitCode)
-
 	return exitCode, nil
 }
 
 // executeScript runs an inline script directly (legacy mode).
 func executeScript(apiURL string, job *agentJob) (int, error) {
-	scriptPath := "/tmp/job.sh"
+	key := job.jobKey()
+	scriptPath := fmt.Sprintf("/tmp/job-%s.sh", job.Metadata.Name)
 	if err := os.WriteFile(scriptPath, []byte(job.Spec.Script), 0755); err != nil {
 		return 1, fmt.Errorf("writing script: %w", err)
 	}
+	defer os.Remove(scriptPath)
 
 	cmd := exec.Command("/bin/bash", scriptPath)
 	cmd.Dir = "/data"
 
-	// Set environment
 	cmd.Env = os.Environ()
 	for k, v := range job.Spec.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
-	// Capture output
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 
-	// Stream logs in background
-	go streamLogs(apiURL, pr)
+	go streamLogs(apiURL, key, pr)
 
 	if err := cmd.Start(); err != nil {
 		pw.Close()
@@ -318,7 +348,6 @@ func executeScript(apiURL string, job *agentJob) (int, error) {
 	err := cmd.Wait()
 	pw.Close()
 
-	// Give log streamer a moment to flush
 	time.Sleep(500 * time.Millisecond)
 
 	exitCode := 0
@@ -333,10 +362,10 @@ func executeScript(apiURL string, job *agentJob) (int, error) {
 	return exitCode, nil
 }
 
-// streamLogs reads from the pipe and sends log chunks to mkube.
-func streamLogs(apiURL string, r io.Reader) {
+// streamLogs reads from the pipe and sends log chunks to mkube with job identity.
+func streamLogs(apiURL string, jobKey string, r io.Reader) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	url := apiURL + "/api/v1/agent/logs"
+	logURL := apiURL + "/api/v1/agent/logs?job=" + url.QueryEscape(jobKey)
 
 	buf := make([]byte, 4096)
 	var batch []byte
@@ -345,9 +374,9 @@ func streamLogs(apiURL string, r io.Reader) {
 		if len(batch) == 0 {
 			return
 		}
-		resp, err := client.Post(url, "text/plain", bytes.NewReader(batch))
+		resp, err := client.Post(logURL, "text/plain", bytes.NewReader(batch))
 		if err != nil {
-			log.Printf("log stream error: %v", err)
+			log.Printf("[%s] log stream error: %v", jobKey, err)
 		} else {
 			resp.Body.Close()
 		}
@@ -385,10 +414,9 @@ func streamLogs(apiURL string, r io.Reader) {
 	}
 }
 
-// reportComplete sends the exit code to mkube.
-func reportComplete(apiURL string, exitCode int, execErr error) {
+// reportComplete sends the exit code to mkube with job identity.
+func reportComplete(apiURL string, job *agentJob, exitCode int, execErr error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	url := apiURL + "/api/v1/agent/complete"
 
 	errMsg := ""
 	if execErr != nil {
@@ -398,19 +426,19 @@ func reportComplete(apiURL string, exitCode int, execErr error) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"exitCode":     exitCode,
 		"errorMessage": errMsg,
+		"jobName":      job.Metadata.Name,
+		"jobNamespace": job.Metadata.Namespace,
 	})
 
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := client.Post(apiURL+"/api/v1/agent/complete", "application/json", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("complete report error: %v", err)
+		log.Printf("[%s] complete report error: %v", job.jobKey(), err)
 		return
 	}
 	resp.Body.Close()
 }
 
 // commitJobLogs clones the job's repo and pushes the build log as logs/job-{datetime}.log.
-// Requires GIT_TOKEN — without auth, git push hangs waiting for credentials.
-// Best-effort — failures are logged but don't affect the job result.
 func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	if job.Spec.Repo == "" {
 		return
@@ -418,35 +446,30 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 
 	token := job.Spec.Env["GIT_TOKEN"]
 	if token == "" {
-		log.Printf("log commit: skipped (no GIT_TOKEN)")
+		log.Printf("[%s] log commit: skipped (no GIT_TOKEN)", job.jobKey())
 		return
 	}
 
 	now := time.Now().UTC()
 	logFile := fmt.Sprintf("logs/job-%s.log", now.Format("2006-01-02-150405"))
-	cloneDir := "/tmp/log-commit"
+	cloneDir := fmt.Sprintf("/tmp/log-commit-%s", job.Metadata.Name)
 
-	// Inject token into HTTPS URL for push auth
 	repoURL := job.Spec.Repo
 	pushURL := strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
 
-	// Clean up any previous log-commit dir
 	os.RemoveAll(cloneDir)
 
-	// Shallow clone with 60s timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", pushURL, cloneDir)
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
-		log.Printf("log commit: clone failed: %v\n%s", err, string(out))
+		log.Printf("[%s] log commit: clone failed: %v\n%s", job.jobKey(), err, string(out))
 		return
 	}
 
-	// Create logs dir and write log file
 	logsDir := cloneDir + "/logs"
 	os.MkdirAll(logsDir, 0755)
 
-	// Add header with job metadata
 	var header bytes.Buffer
 	fmt.Fprintf(&header, "# Job: %s/%s\n", job.Metadata.Namespace, job.Metadata.Name)
 	fmt.Fprintf(&header, "# Date: %s\n", now.Format(time.RFC3339))
@@ -457,11 +480,10 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	header.Write(logData)
 
 	if err := os.WriteFile(cloneDir+"/"+logFile, header.Bytes(), 0644); err != nil {
-		log.Printf("log commit: write failed: %v", err)
+		log.Printf("[%s] log commit: write failed: %v", job.jobKey(), err)
 		return
 	}
 
-	// Git add, commit, push
 	cmds := []struct {
 		name string
 		args []string
@@ -479,12 +501,12 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 		out, err := cmd.CombinedOutput()
 		cmdCancel()
 		if err != nil {
-			log.Printf("log commit: %s failed: %v\n%s", c.name, err, string(out))
+			log.Printf("[%s] log commit: %s failed: %v\n%s", job.jobKey(), c.name, err, string(out))
 			return
 		}
 	}
 
-	log.Printf("log committed: %s", logFile)
+	log.Printf("[%s] log committed: %s", job.jobKey(), logFile)
 	os.RemoveAll(cloneDir)
 }
 
@@ -494,10 +516,7 @@ func shellQuote(s string) string {
 }
 
 // getImageDigest queries the registry for the current digest of an image tag.
-// Returns empty string on any error (non-fatal — update check is best-effort).
 func getImageDigest(image string) string {
-	// Parse image into registry/repo:tag
-	// e.g. "registry.gt.lo:5000/mkube-agent:edge" → registry="registry.gt.lo:5000", repo="mkube-agent", tag="edge"
 	parts := strings.SplitN(image, "/", 2)
 	if len(parts) != 2 {
 		return ""
@@ -512,8 +531,7 @@ func getImageDigest(image string) string {
 		tag = repoTag[idx+1:]
 	}
 
-	// HEAD request to registry v2 manifest endpoint
-	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, tag)
+	reqURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", registry, repo, tag)
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -521,7 +539,7 @@ func getImageDigest(image string) string {
 		},
 	}
 
-	req, err := http.NewRequest("HEAD", url, nil)
+	req, err := http.NewRequest("HEAD", reqURL, nil)
 	if err != nil {
 		return ""
 	}
@@ -541,7 +559,6 @@ func getImageDigest(image string) string {
 }
 
 // requestContainerRestart asks stormd to shut down the entire container.
-// stormd exits → container dies → restart mechanism pulls fresh image.
 func requestContainerRestart() {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Post(stormdAPI+"/api/v1/shutdown", "application/json", strings.NewReader("{}"))
