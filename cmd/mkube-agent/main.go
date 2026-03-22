@@ -249,10 +249,12 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 
 	cmd := exec.Command("podman", args...)
 
-	// Capture output
+	// Capture output — tee to both log streamer and a buffer for git commit
 	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
+	var logBuf bytes.Buffer
+	tee := io.MultiWriter(pw, &logBuf)
+	cmd.Stdout = tee
+	cmd.Stderr = tee
 
 	// Stream logs in background
 	go streamLogs(apiURL, pr)
@@ -276,6 +278,9 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 			return 1, err
 		}
 	}
+
+	// Commit job logs back to the git repo
+	commitJobLogs(job, logBuf.Bytes(), exitCode)
 
 	return exitCode, nil
 }
@@ -400,6 +405,79 @@ func reportComplete(apiURL string, exitCode int, execErr error) {
 		return
 	}
 	resp.Body.Close()
+}
+
+// commitJobLogs clones the job's repo and pushes the build log as logs/job-{datetime}.log.
+// Best-effort — failures are logged but don't affect the job result.
+func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
+	if job.Spec.Repo == "" {
+		return
+	}
+
+	now := time.Now().UTC()
+	logFile := fmt.Sprintf("logs/job-%s.log", now.Format("2006-01-02-150405"))
+	cloneDir := "/tmp/log-commit"
+
+	// Build git URL with auth if available
+	repoURL := job.Spec.Repo
+	token := job.Spec.Env["GIT_TOKEN"]
+	pushURL := repoURL
+	if token != "" {
+		// Inject token into HTTPS URL: https://github.com/... → https://x-access-token:TOKEN@github.com/...
+		pushURL = strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
+	}
+
+	// Clean up any previous log-commit dir
+	os.RemoveAll(cloneDir)
+
+	// Shallow clone
+	cloneCmd := exec.Command("git", "clone", "--depth", "1", pushURL, cloneDir)
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		log.Printf("log commit: clone failed: %v\n%s", err, string(out))
+		return
+	}
+
+	// Create logs dir and write log file
+	logsDir := cloneDir + "/logs"
+	os.MkdirAll(logsDir, 0755)
+
+	// Add header with job metadata
+	var header bytes.Buffer
+	fmt.Fprintf(&header, "# Job: %s/%s\n", job.Metadata.Namespace, job.Metadata.Name)
+	fmt.Fprintf(&header, "# Date: %s\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&header, "# Exit code: %d\n", exitCode)
+	fmt.Fprintf(&header, "# Repo: %s\n", job.Spec.Repo)
+	fmt.Fprintf(&header, "# Script: %s\n", job.Spec.BuildScript)
+	fmt.Fprintf(&header, "# Image: %s\n\n", job.Spec.BuildImage)
+	header.Write(logData)
+
+	if err := os.WriteFile(cloneDir+"/"+logFile, header.Bytes(), 0644); err != nil {
+		log.Printf("log commit: write failed: %v", err)
+		return
+	}
+
+	// Git add, commit, push
+	cmds := []struct {
+		name string
+		args []string
+	}{
+		{"config", []string{"git", "-C", cloneDir, "config", "user.email", "mkube-agent@gt.lo"}},
+		{"config", []string{"git", "-C", cloneDir, "config", "user.name", "mkube-agent"}},
+		{"add", []string{"git", "-C", cloneDir, "add", logFile}},
+		{"commit", []string{"git", "-C", cloneDir, "commit", "-m", fmt.Sprintf("build: job %s exit=%d", job.Metadata.Name, exitCode)}},
+		{"push", []string{"git", "-C", cloneDir, "push"}},
+	}
+
+	for _, c := range cmds {
+		cmd := exec.Command(c.args[0], c.args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("log commit: %s failed: %v\n%s", c.name, err, string(out))
+			return
+		}
+	}
+
+	log.Printf("log committed: %s", logFile)
+	os.RemoveAll(cloneDir)
 }
 
 // shellQuote wraps a string in single quotes for safe shell interpolation.
