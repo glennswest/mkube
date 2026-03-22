@@ -1,0 +1,248 @@
+package console
+
+import "net/http"
+
+func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
+	body := `<h1>Job Scheduling</h1>
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('jobs')">Jobs</div>
+  <div class="tab" onclick="switchTab('runners')">Job Runners</div>
+  <div class="tab" onclick="switchTab('reservations')">Host Reservations</div>
+  <div class="tab" onclick="switchTab('queue')">Queue</div>
+</div>
+
+<div id="jobs" class="tab-content active">
+  <div class="toolbar">
+    <select id="job-ns" onchange="loadJobs()"><option value="">All Namespaces</option></select>
+    <select id="job-phase" onchange="loadJobs()"><option value="">All Phases</option><option>Pending</option><option>Provisioning</option><option>Running</option><option>Completed</option><option>Failed</option><option>Cancelled</option></select>
+  </div>
+  <table><thead><tr><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Age</th><th>Actions</th></tr></thead>
+  <tbody id="jobs-tbl"></tbody></table>
+</div>
+
+<div id="runners" class="tab-content">
+  <div class="flex mb">
+    <button class="btn btn-primary" onclick="showCreateRunner()">Create Runner</button>
+  </div>
+  <table><thead><tr><th>Name</th><th>Pool</th><th>Template</th><th>Max Concurrent</th><th>Idle Timeout</th><th>Reclaim</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody id="runners-tbl"></tbody></table>
+</div>
+
+<div id="reservations" class="tab-content">
+  <div class="flex mb">
+    <button class="btn btn-primary" onclick="showCreateRes()">Create Reservation</button>
+  </div>
+  <table><thead><tr><th>Name</th><th>Namespace</th><th>BMH Ref</th><th>Pool</th><th>Owner</th><th>Purpose</th><th>Actions</th></tr></thead>
+  <tbody id="res-tbl"></tbody></table>
+</div>
+
+<div id="queue" class="tab-content">
+  <div class="card"><div class="terminal" id="queue-json" style="max-height:400px"></div></div>
+</div>
+
+<div class="card mt"><h3>Job Logs</h3>
+<div class="toolbar">
+  <select id="log-job" onchange="loadJobLogs()"><option value="">Select a job...</option></select>
+</div>
+<div class="terminal" id="job-logs"></div></div>
+
+<!-- Create Runner Modal -->
+<div class="modal-overlay" id="runner-modal">
+<div class="modal">
+  <h3>Create Job Runner</h3>
+  <div class="kv mb">
+    <div class="k">Name</div><div class="v"><input type="text" id="jr-name" style="width:100%"></div>
+    <div class="k">Pool</div><div class="v"><input type="text" id="jr-pool" value="build" style="width:100%"></div>
+    <div class="k">Template</div><div class="v"><input type="text" id="jr-template" placeholder="fcos/agent-runner" style="width:100%"></div>
+    <div class="k">Max Concurrent</div><div class="v"><input type="text" id="jr-max" value="10" style="width:100%"></div>
+    <div class="k">Idle Timeout (s)</div><div class="v"><input type="text" id="jr-idle" value="300" style="width:100%"></div>
+    <div class="k">Reclaim Policy</div><div class="v"><select id="jr-reclaim" style="width:100%"><option>PowerOff</option><option>Delete</option><option>Retain</option></select></div>
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="hideModal('runner-modal')">Cancel</button>
+    <button class="btn btn-primary" onclick="createRunner()">Create</button>
+  </div>
+</div></div>
+
+<!-- Create Reservation Modal -->
+<div class="modal-overlay" id="res-modal">
+<div class="modal">
+  <h3>Create Host Reservation</h3>
+  <div class="kv mb">
+    <div class="k">Name</div><div class="v"><input type="text" id="hr-name" style="width:100%"></div>
+    <div class="k">Namespace</div><div class="v"><input type="text" id="hr-ns" value="default" style="width:100%"></div>
+    <div class="k">BMH Ref</div><div class="v"><input type="text" id="hr-bmh" placeholder="server1" style="width:100%"></div>
+    <div class="k">Pool</div><div class="v"><input type="text" id="hr-pool" value="build" style="width:100%"></div>
+    <div class="k">Owner</div><div class="v"><input type="text" id="hr-owner" value="ci" style="width:100%"></div>
+    <div class="k">Purpose</div><div class="v"><input type="text" id="hr-purpose" style="width:100%"></div>
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="hideModal('res-modal')">Cancel</button>
+    <button class="btn btn-primary" onclick="createRes()">Create</button>
+  </div>
+</div></div>`
+
+	js := `
+function switchTab(id){
+  document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function showCreateRunner(){ document.getElementById('runner-modal').classList.add('show'); }
+function showCreateRes(){ document.getElementById('res-modal').classList.add('show'); }
+function hideModal(id){ document.getElementById(id).classList.remove('show'); }
+
+// ── Jobs ──
+async function loadJobs(){
+  const data=await apiGet(API+'/api/v1/jobs');
+  const nsFilter=document.getElementById('job-ns').value;
+  const phaseFilter=document.getElementById('job-phase').value.toLowerCase();
+  let items=data?.items||[];
+  if(nsFilter) items=items.filter(j=>j.metadata.namespace===nsFilter);
+  if(phaseFilter) items=items.filter(j=>(j.status?.phase||j.spec?.phase||'').toLowerCase()===phaseFilter);
+
+  // Populate ns filter
+  const nss=[...new Set((data?.items||[]).map(j=>j.metadata.namespace||'default'))].sort();
+  const sel=document.getElementById('job-ns');
+  if(sel.options.length<=1) nss.forEach(n=>{const o=document.createElement('option');o.value=n;o.text=n;sel.add(o);});
+
+  // Populate job log selector
+  const logSel=document.getElementById('log-job');
+  const cur=logSel.value;
+  logSel.innerHTML='<option value="">Select a job...</option>';
+  (data?.items||[]).forEach(j=>{
+    const ns=j.metadata.namespace||'default';
+    const o=document.createElement('option');
+    o.value=ns+'/'+j.metadata.name;
+    o.text=ns+'/'+j.metadata.name+' ('+((j.status?.phase||j.spec?.phase)||'—')+')';
+    logSel.add(o);
+  });
+  if(cur) logSel.value=cur;
+
+  const tb=document.getElementById('jobs-tbl');
+  tb.innerHTML='';
+  items.forEach(j=>{
+    const ns=j.metadata.namespace||'default';
+    const s=j.spec||{};
+    const st=j.status||{};
+    const phase=st.phase||s.phase||'Pending';
+    const bmh=st.assignedHost||s.assignedHost||'—';
+    const canCancel=['pending','provisioning','running'].includes(phase.toLowerCase());
+    tb.innerHTML+='<tr><td>'+escapeHtml(j.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
+      +'<td>'+statusBadge(phase)+'</td><td>'+escapeHtml(s.pool||'—')+'</td>'
+      +'<td>'+(s.priority||0)+'</td><td>'+escapeHtml(bmh)+'</td>'
+      +'<td>'+timeSince(j.metadata?.creationTimestamp)+'</td>'
+      +'<td>'+(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+ns+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button>':'')+'</td></tr>';
+  });
+}
+
+async function cancelJob(ns,name){
+  if(!confirm('Cancel job '+name+'?')) return;
+  await apiPost(API+'/api/v1/namespaces/'+ns+'/jobs/'+name+'/cancel');
+  loadJobs();
+}
+
+// ── Job Runners ──
+async function loadRunners(){
+  const data=await apiGet(API+'/api/v1/jobrunners');
+  const tb=document.getElementById('runners-tbl');
+  tb.innerHTML='';
+  (data?.items||[]).forEach(r=>{
+    const s=r.spec||{};
+    const st=r.status||{};
+    tb.innerHTML+='<tr><td>'+escapeHtml(r.metadata.name)+'</td>'
+      +'<td>'+escapeHtml(s.pool||'—')+'</td>'
+      +'<td>'+escapeHtml(s.template||s.bootConfigRef||'—')+'</td>'
+      +'<td>'+(s.maxConcurrent||1)+'</td>'
+      +'<td>'+(s.idleTimeout||0)+'s</td>'
+      +'<td>'+escapeHtml(s.reclaimPolicy||'PowerOff')+'</td>'
+      +'<td>'+statusBadge(st.state||'Active')+'</td>'
+      +'<td><button class="btn btn-danger" onclick="delRunner(\''+escapeHtml(r.metadata.name)+'\')">Delete</button></td></tr>';
+  });
+}
+
+async function createRunner(){
+  const body={
+    apiVersion:'v1',kind:'JobRunner',
+    metadata:{name:document.getElementById('jr-name').value},
+    spec:{
+      pool:document.getElementById('jr-pool').value,
+      template:document.getElementById('jr-template').value,
+      maxConcurrent:parseInt(document.getElementById('jr-max').value)||10,
+      idleTimeout:parseInt(document.getElementById('jr-idle').value)||300,
+      reclaimPolicy:document.getElementById('jr-reclaim').value,
+    }
+  };
+  await apiPost(API+'/api/v1/jobrunners',body);
+  hideModal('runner-modal');
+  loadRunners();
+}
+
+async function delRunner(name){
+  if(!confirm('Delete runner '+name+'?')) return;
+  await apiDelete(API+'/api/v1/jobrunners/'+name);
+  loadRunners();
+}
+
+// ── Host Reservations ──
+async function loadRes(){
+  const data=await apiGet(API+'/api/v1/hostreservations');
+  const tb=document.getElementById('res-tbl');
+  tb.innerHTML='';
+  (data?.items||[]).forEach(h=>{
+    const ns=h.metadata.namespace||'default';
+    const s=h.spec||{};
+    tb.innerHTML+='<tr><td>'+escapeHtml(h.metadata.name)+'</td><td>'+escapeHtml(ns)+'</td>'
+      +'<td>'+escapeHtml(s.bmhRef||'—')+'</td><td>'+escapeHtml(s.pool||'—')+'</td>'
+      +'<td>'+escapeHtml(s.owner||'—')+'</td><td>'+escapeHtml(s.purpose||'—')+'</td>'
+      +'<td><button class="btn btn-danger" onclick="delRes(\''+ns+'\',\''+escapeHtml(h.metadata.name)+'\')">Delete</button></td></tr>';
+  });
+}
+
+async function createRes(){
+  const ns=document.getElementById('hr-ns').value||'default';
+  const body={
+    apiVersion:'v1',kind:'HostReservation',
+    metadata:{name:document.getElementById('hr-name').value,namespace:ns},
+    spec:{
+      bmhRef:document.getElementById('hr-bmh').value,
+      pool:document.getElementById('hr-pool').value,
+      owner:document.getElementById('hr-owner').value,
+      purpose:document.getElementById('hr-purpose').value,
+    }
+  };
+  await apiPost(API+'/api/v1/namespaces/'+ns+'/hostreservations',body);
+  hideModal('res-modal');
+  loadRes();
+}
+
+async function delRes(ns,name){
+  if(!confirm('Delete reservation '+name+'?')) return;
+  await apiDelete(API+'/api/v1/namespaces/'+ns+'/hostreservations/'+name);
+  loadRes();
+}
+
+// ── Queue ──
+async function loadQueue(){
+  const data=await apiGet(API+'/api/v1/jobqueue');
+  document.getElementById('queue-json').textContent=JSON.stringify(data,null,2);
+}
+
+// ── Job Logs ──
+async function loadJobLogs(){
+  const sel=document.getElementById('log-job').value;
+  if(!sel){ document.getElementById('job-logs').innerHTML=''; return; }
+  const [ns,name]=sel.split('/');
+  const logs=await fetch(API+'/api/v1/namespaces/'+ns+'/jobs/'+name+'/logs').then(r=>r.text()).catch(()=>'');
+  document.getElementById('job-logs').innerHTML=ansiToHtml(logs);
+}
+
+async function loadAll(){
+  await Promise.all([loadJobs(),loadRunners(),loadRes(),loadQueue()]);
+}
+loadAll(); setInterval(loadAll,15000);
+`
+	write(w, c.pageWithJS("Jobs", "Jobs", body, js))
+}

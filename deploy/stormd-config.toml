@@ -34,3 +34,7 @@ url = "http://localhost:8082/healthz"
 interval_secs = 10
 failure_threshold = 3
 initial_delay_secs = 30
+
+[process.ui]
+label = "Console"
+proxy = "http://127.0.0.1:8082/ui/"

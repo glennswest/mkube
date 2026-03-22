@@ -46,6 +46,7 @@ go test ./...
 ### Key Packages
 | Package | Purpose |
 |---------|---------|
+| `pkg/console/` | Built-in web dashboard UI (stormd extension, Dracula theme) |
 | `pkg/provider/` | Pod lifecycle, deployments, BMH, consistency, API routes |
 | `pkg/network/` | Multi-network IPAM, veth/bridge management |
 | `pkg/storage/` | OCI→tarball, volume provisioning, image cache |
@@ -417,6 +418,7 @@ mk get hostreservations -A         # All host reservations
 - TOML dotted key fix: Zone names containing dots (e.g. `g8.lo`) must be quoted in TOML (`"g8.lo"`) or they're parsed as dotted key paths (table `g8`, key `lo`). Caused all DNS pods to crash with TOML parse error.
 - DNS pod endless restart loop: `generateMinimalTOML` iterated `p.networks` (Go map, random order) for forward zones. Output changed every call, causing `syncConfigMapsToDisk` to detect "changes" every 10s reconcile cycle, endlessly restarting DNS pods. Fixed by sorting peer zones alphabetically.
 - Job scheduler PXE reboot of online hosts: Scheduler overwrote BMH template/bootConfigRef/image even when server was already online. BMH operator saw config change → triggered PXE reboot. Fixed: when host is already online, skip all boot config changes — agent picks up new job via work poll.
+- Built-in web console UI: Integrated standalone `console` Rust project into mkube as Go `pkg/console`. 13 pages (Dashboard, Nodes, Pods, Deployments, Networks, BMH, BootConfigs, Registries, Storage, Jobs, CloudID, Logs). Served at `/ui/` on mkube's existing port 8082. stormd extension via `[process.ui]` config. CORS headers for iframe proxy. CloudID template management (CRUD, assignments, oneshot, backup/restore). Enhanced job runner management (create/delete runners and reservations, queue view, job logs).
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Owns ALL host state and state machines. Architecture:
@@ -434,7 +436,7 @@ mk get hostreservations -A         # All host reservations
    - BMH ownership model — users can "build" clusters by requesting hardware
    - New project repo with subprojects, small scratch containers
 2. **DNS 2-replica deployment**: Run 2 DNS replicas per zone using Deployment controller. Requires anti-affinity support (future multi-node).
-3. **UI Dashboard**: Show containers, logs, memory, events, DNS. API already exposes most data.
+3. ~~**UI Dashboard**~~: Done — built-in web console at `/ui/` with 13 pages, stormd extension, CloudID template management, job runner management.
 4. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
 5. **Track external microdns instances**: gw DNS on pvex needs proper sync.
 6. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume` in `pkg/storage/manager_test.go`.

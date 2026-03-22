@@ -260,11 +260,21 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			}
 		}()
 
+		// CORS headers for cross-origin console access (stormd iframe proxy).
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		// Endpoints that don't access shared state — skip mutex entirely.
 		// /healthz must NEVER be blocked by lock contention, otherwise stormd
 		// kills mkube when a long-running operation holds the write lock.
-		switch r.URL.Path {
-		case "/healthz", "/version", "/apis":
+		// Console UI pages (/ui/) are pure HTML generation, no shared state.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/version" || r.URL.Path == "/apis" ||
+			strings.HasPrefix(r.URL.Path, "/ui/") {
 			h.ServeHTTP(w, r)
 			return
 		}

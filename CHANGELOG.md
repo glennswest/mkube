@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### 2026-03-22
+- **feat:** Built-in web console UI — integrated the standalone `console` project directly into mkube as a `pkg/console` Go package. Serves a full Dracula-themed web dashboard at `/ui/` on mkube's existing HTTP server (port 8082). 13 pages: Dashboard, Nodes (with stormd process/mount integration), Pods, Deployments, Networks (DNS/DHCP tabs + smoketest), BMH (power control), BootConfigs, Registries, Storage (PVCs/iSCSI CDROMs/Disks), Jobs (enhanced with runners/reservations/queue/logs), Logs, and CloudID template management.
+- **feat:** CloudID template management UI — complete CRUD for ignition/kickstart/cloud-config templates, host-to-template assignments, oneshot state management, backup/restore. Calls cloudid REST API at configurable URL.
+- **feat:** Enhanced job runner management — create/delete job runners with pool/template/timeout/reclaim config, create/delete host reservations, job queue view, per-job log viewer with ANSI rendering, job cancellation.
+- **feat:** stormd UI extension — added `[process.ui]` section to stormd config (`label = "Console"`, `proxy = "http://127.0.0.1:8082/ui/"`). Console appears as a tab in stormd's nav bar, accessible via iframe proxy.
+- **feat:** CORS headers — API endpoints now include `Access-Control-Allow-Origin: *` headers for cross-origin console access (stormd iframe proxy). OPTIONS preflight requests handled.
+- **feat:** Console config — new `console` section in config.yaml with `apiBase` and `cloudidURL` fields for JS API fetch URLs.
+
+### 2026-03-22 (earlier)
 - **fix:** mkube-agent now loops forever instead of one-shot exit — after completing a job, immediately polls for the next one. Eliminates the gap where jobs couldn't be picked up because the agent had exited. stormd still supervises as safety net for crashes.
 - **feat:** mkube-agent self-update detection — between jobs, checks registry for new digest of its own image (`mkube-agent:edge`). On mismatch, calls `POST stormd /api/v1/shutdown` to trigger container-level restart (fresh image pull). Falls back to process exit if stormd endpoint not available yet.
 - **feat:** kernel-build repo created (github.com/glennswest/kernel-build) — Linux kernel build script for stress-testing the job scheduling system. Downloads latest stable kernel, applies config fragment (io_uring, NVMe, VFIO, virtio, network drivers), builds bzImage + modules + initramfs.

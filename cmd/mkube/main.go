@@ -19,6 +19,7 @@ import (
 
 	"github.com/glennswest/mkube/pkg/cluster"
 	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/console"
 	"github.com/glennswest/mkube/pkg/discovery"
 	"github.com/glennswest/mkube/pkg/dns"
 	"github.com/glennswest/mkube/pkg/dzo"
@@ -563,6 +564,11 @@ func runSharedServices(
 
 	// ── Register routes and start HTTP server ───────────────────────
 	p.RegisterRoutes(mux)
+
+	// ── Console UI (stormd extension) ────────────────────────────────
+	consoleUI := console.New(cfg.Console)
+	consoleUI.RegisterRoutes(mux)
+	log.Infow("BOOT: console UI registered at /ui/")
 
 	go func() {
 		srv := &http.Server{

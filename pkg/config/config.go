@@ -30,6 +30,7 @@ type Config struct {
 	NATS       NATSConfig      `yaml:"nats"`
 	Cluster    ClusterConfig   `yaml:"cluster"`
 	BMH        BMHConfig       `yaml:"bmh"`
+	Console    ConsoleConfig   `yaml:"console"`
 
 	// Deprecated: single-network config for backward compatibility.
 	// If present and Networks is empty, it is migrated into Networks.
@@ -81,6 +82,13 @@ type ClusterConfig struct {
 type PeerConfig struct {
 	Name    string `yaml:"name"`    // peer node name, e.g. "pvex"
 	Address string `yaml:"address"` // peer HTTP address, e.g. "http://192.168.1.160:8082"
+}
+
+// ConsoleConfig configures the built-in web console UI.
+type ConsoleConfig struct {
+	Enabled    bool   `yaml:"enabled"`    // enable console UI at /ui/ (default true)
+	APIBase    string `yaml:"apiBase"`    // mkube API base URL for JS fetches (e.g. "http://192.168.200.2:8082")
+	CloudidURL string `yaml:"cloudidURL"` // cloudid API URL (e.g. "http://192.168.200.20:8090")
 }
 
 // BMHConfig configures BareMetalHost management.
