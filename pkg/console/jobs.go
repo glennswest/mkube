@@ -137,6 +137,8 @@ let _lastLogText='';
 let _allJobData=[];
 
 function selectJob(ns,name){
+  ns=decodeURIComponent(ns);
+  name=decodeURIComponent(name);
   const key=ns+'/'+name;
   if(_selectedJob===key){
     _selectedJob=null;
@@ -227,12 +229,12 @@ function renderJobDetail(){
   ];
   statusFields.forEach(([k,v])=>{
     if(v!==undefined&&v!==null&&v!==''){
-      specVal=String(v);
-      if(k==='Error') specVal='<span style="color:#e94560">'+escapeHtml(specVal)+'</span>';
-      else if(k==='Exit Code'&&v!=='0') specVal='<span style="color:#e94560">'+escapeHtml(specVal)+'</span>';
-      else if(k==='Exit Code'&&v==='0') specVal='<span style="color:#50fa7b">'+escapeHtml(specVal)+'</span>';
-      else specVal=escapeHtml(specVal);
-      statusHtml+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+specVal+'</div>';
+      let sv=String(v);
+      if(k==='Error') sv='<span style="color:#e94560">'+escapeHtml(sv)+'</span>';
+      else if(k==='Exit Code'&&v!=='0') sv='<span style="color:#e94560">'+escapeHtml(sv)+'</span>';
+      else if(k==='Exit Code'&&v==='0') sv='<span style="color:#50fa7b">'+escapeHtml(sv)+'</span>';
+      else sv=escapeHtml(sv);
+      statusHtml+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+sv+'</div>';
     }
   });
   document.getElementById('detail-status').innerHTML=statusHtml;
@@ -255,9 +257,13 @@ async function pollLogs(){
   if(!_selectedJob) return;
   const [ns,name]=_selectedJob.split('/');
   try{
-    const text=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs').then(r=>r.text());
+    const resp=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(ns)+'/jobs/'+encodeURIComponent(name)+'/logs');
     if(!_selectedJob||_selectedJob!==ns+'/'+name) return;
-
+    const text=await resp.text();
+    if(!resp.ok){
+      document.getElementById('job-logs').innerHTML='<span class="muted">'+escapeHtml(text||'Failed to load logs ('+resp.status+')')+'</span>';
+      return;
+    }
     // Only update if logs changed
     if(text!==_lastLogText){
       _lastLogText=text;
@@ -270,6 +276,8 @@ async function pollLogs(){
     }
   }catch(e){
     console.error('log poll error',e);
+    const el=document.getElementById('job-logs');
+    if(el&&el.innerHTML.includes('Loading')) el.innerHTML='<span class="muted">Failed to connect</span>';
   }
 }
 
@@ -334,9 +342,9 @@ async function cancelJob(ns,name){
 }
 
 async function delJob(ns,name){
-  if(!confirm('Delete job '+name+'?')) return;
+  if(!confirm('Delete job '+decodeURIComponent(name)+'?')) return;
   await apiDelete(API+'/api/v1/namespaces/'+ns+'/jobs/'+name);
-  const key=decodeURIComponent(ns)+'/'+name;
+  const key=decodeURIComponent(ns)+'/'+decodeURIComponent(name);
   if(_selectedJob===key){
     _selectedJob=null;
     _selectedJobData=null;
