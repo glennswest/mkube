@@ -337,7 +337,7 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 			continue
 		}
 
-		// Check if DHCP pools need re-seed: empty pools, or domain_search stale
+		// Check if DHCP pools need re-seed: empty pools, domain_search stale, or NTP missing
 		needsSeed := false
 		if net.Spec.DHCP.Enabled || p.networkHasDHCPFromSnapshot(net.Name, rdcNetsSnap) {
 			pools, err := dnsClient.ListDHCPPools(ctx, endpoint)
@@ -346,8 +346,8 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 					"network", net.Name, "endpoint", endpoint)
 				needsSeed = true
 			}
-			// Check if domain_search is stale (fewer zones than expected)
 			if !needsSeed && err == nil && len(pools) > 0 {
+				// Check if domain_search is stale (fewer zones than expected)
 				zoneCount := 0
 				for _, n := range rdcNetsSnap {
 					if n.Spec.DNS.Zone != "" {
@@ -357,6 +357,12 @@ func (p *MicroKubeProvider) reconcileDNSConfig(ctx context.Context) {
 				if len(pools[0].DomainSearch) < zoneCount {
 					p.deps.Logger.Debugw("domain_search stale, re-seeding",
 						"network", net.Name, "have", len(pools[0].DomainSearch), "want", zoneCount)
+					needsSeed = true
+				}
+				// Check if NTP servers are missing (should have at least gateway)
+				if !needsSeed && len(pools[0].NTPServers) == 0 {
+					p.deps.Logger.Debugw("NTP servers missing from pool, re-seeding",
+						"network", net.Name)
 					needsSeed = true
 				}
 			}
