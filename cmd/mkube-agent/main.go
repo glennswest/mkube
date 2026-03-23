@@ -327,11 +327,18 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	// Container name unique per job
 	containerName := fmt.Sprintf("build-%s-%s", job.Metadata.Namespace, job.Metadata.Name)
 
+	// Build container needs real filesystem for podman storage — overlay-on-overlay
+	// doesn't work, and fuse-overlayfs needs /dev/fuse which may not exist.
+	// Bind-mount a directory on the host's XFS data disk so native overlay works.
+	buildStorageLocal := "/data/build-storage"
+	buildStorageHost := fmt.Sprintf("%s/build-storage", hostDataDir())
+	os.MkdirAll(buildStorageLocal, 0755)
+
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
 		"--privileged",
-		"--device", "/dev/fuse",
+		"-v", buildStorageHost + ":/var/lib/containers",
 	}
 
 	for k, v := range job.Spec.Env {
