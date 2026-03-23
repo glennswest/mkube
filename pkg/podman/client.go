@@ -306,12 +306,25 @@ func (c *Client) waitContainer(ctx context.Context, id string) (int, error) {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return -1, fmt.Errorf("wait read: %w", err)
+	}
+	bodyStr := strings.TrimSpace(string(body))
+
+	// Podman libpod /wait returns a plain integer exit code
+	var exitCode int
+	if err := json.Unmarshal([]byte(bodyStr), &exitCode); err == nil {
+		return exitCode, nil
+	}
+
+	// Fall back to JSON object format (older/compat API)
 	var result struct {
 		StatusCode int    `json:"StatusCode"`
 		Error      string `json:"Error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return -1, fmt.Errorf("wait decode: %w", err)
+	if err := json.Unmarshal([]byte(bodyStr), &result); err != nil {
+		return -1, fmt.Errorf("wait decode: %w (body: %s)", err, bodyStr)
 	}
 	if result.Error != "" {
 		return result.StatusCode, fmt.Errorf("wait: %s", result.Error)
