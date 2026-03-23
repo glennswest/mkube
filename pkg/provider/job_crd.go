@@ -761,20 +761,20 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		}
 	}
 
-	// Accept heartbeats with env even when no job is running (startup report)
-	if updated == 0 && hbReq.Env == nil {
-		http.Error(w, "no running job found", http.StatusNotFound)
-		return
-	}
-
 	// Check if the specific job has been cancelled — signal the agent to stop
 	if hbReq.Job != "" {
-		if job, ok := p.jobs[hbReq.Job]; ok && job.Status.Phase == "Cancelled" {
+		if job, ok := p.jobs[hbReq.Job]; ok && (job.Status.Phase == "Cancelled" || job.Status.Phase == "TimedOut") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]bool{"cancel": true})
 			return
 		}
+	}
+
+	// Accept heartbeats with env even when no job is running (startup report)
+	if updated == 0 && hbReq.Env == nil {
+		http.Error(w, "no running job found", http.StatusNotFound)
+		return
 	}
 
 	w.WriteHeader(http.StatusOK)

@@ -315,16 +315,27 @@ func heartbeat(apiURL string, jobKey string, stop <-chan struct{}, cancelCh chan
 				log.Printf("[%s] heartbeat error: %v", jobKey, err)
 				continue
 			}
-			// Check response for cancellation signal
-			if !cancelled && resp.Body != nil {
-				var hbResp struct {
-					Cancel bool `json:"cancel"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&hbResp) == nil && hbResp.Cancel {
+			if !cancelled {
+				// 404 = job no longer running on server (cancelled/timed out)
+				if resp.StatusCode == http.StatusNotFound {
+					log.Printf("[%s] heartbeat 404 — job no longer running on server", jobKey)
 					cancelled = true
 					select {
 					case cancelCh <- struct{}{}:
 					default:
+					}
+				} else if resp.Body != nil {
+					// Check response body for explicit cancel signal
+					var hbResp struct {
+						Cancel bool `json:"cancel"`
+					}
+					if json.NewDecoder(resp.Body).Decode(&hbResp) == nil && hbResp.Cancel {
+						log.Printf("[%s] cancel signal received from server", jobKey)
+						cancelled = true
+						select {
+						case cancelCh <- struct{}{}:
+						default:
+						}
 					}
 				}
 			}
