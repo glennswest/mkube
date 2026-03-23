@@ -1,12 +1,6 @@
-# Agent container — needs podman + git to run build containers
+# Agent container — uses host podman via socket, only needs git for log commits
 FROM fedora:rawhide
-RUN dnf install -y podman git && dnf clean all
-# Use native overlay (not fuse-overlayfs) — container runs --privileged
-RUN mkdir -p /etc/containers && \
-    echo '[storage]' > /etc/containers/storage.conf && \
-    echo 'driver = "overlay"' >> /etc/containers/storage.conf && \
-    echo '[storage.options.overlay]' >> /etc/containers/storage.conf && \
-    echo 'mount_program = ""' >> /etc/containers/storage.conf
+RUN dnf install -y git && dnf clean all
 RUN mkdir -p /var/stormd/logs /data
 COPY stormd /stormd
 COPY mkube-agent /app/mkube-agent
