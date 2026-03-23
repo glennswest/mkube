@@ -8,7 +8,7 @@ type navItem struct {
 }
 
 // Nav links use relative paths so they work both when accessed directly
-// at :8082/ui/ and through stormd proxy at :9080/ui/proxy/mkube/.
+// at :8082/ui/ and through stormd proxy at :9080/ui/ext/mkube/.
 var navItems = []navItem{
 	{"Dashboard", "./"},
 	{"Nodes", "nodes"},
@@ -45,7 +45,7 @@ func page(title, active, body string) string {
 <script>
 (function(){
   var p=location.pathname;
-  var m=p.match(/^(\/ui\/proxy\/[^\/]+\/)/);
+  var m=p.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
   var b=document.createElement('base');
   b.href=m?m[1]:'/ui/';
   document.head.prepend(b);
@@ -67,7 +67,7 @@ func (c *Console) pageWithJS(title, active, body, extraJS string) string {
 <script>
 (function(){
   var p=location.pathname;
-  var m=p.match(/^(\/ui\/proxy\/[^\/]+\/)/);
+  var m=p.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
   var b=document.createElement('base');
   b.href=m?m[1]:'/ui/';
   document.head.prepend(b);
