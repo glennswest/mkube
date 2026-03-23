@@ -66,6 +66,27 @@ func main() {
 
 	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d", version, commit, apiURL, maxWorkers)
 
+	// Diagnostic: check /data mount at startup
+	if fi, err := os.Stat("/data"); err != nil {
+		log.Printf("WARNING: /data does not exist: %v", err)
+		// Try to create it as fallback
+		if err := os.MkdirAll("/data", 0755); err != nil {
+			log.Printf("FATAL: cannot create /data: %v", err)
+		} else {
+			log.Printf("/data created as fallback directory")
+		}
+	} else {
+		log.Printf("/data exists: dir=%v", fi.IsDir())
+		// List contents for diagnostics
+		if entries, err := os.ReadDir("/data"); err == nil {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			log.Printf("/data contents: %v", names)
+		}
+	}
+
 	// Ensure TMPDIR exists on the data disk — podman uses it for blob
 	// downloads during image pulls. Without this, pulls write to /var/tmp
 	// on the OS disk which is typically small (10-20GB).
@@ -292,7 +313,13 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 
 	// Mount /data/<jobname> as /output for artifact isolation between parallel jobs
 	outputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
-	os.MkdirAll(outputDir, 0755)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Printf("[%s] WARNING: failed to create output dir %s: %v", key, outputDir, err)
+	}
+	// Verify the directory exists before passing to podman
+	if _, err := os.Stat(outputDir); err != nil {
+		log.Printf("[%s] ERROR: output dir %s does not exist after MkdirAll: %v", key, outputDir, err)
+	}
 	args = append(args, "-v", outputDir+":/output")
 
 	if _, err := os.Stat("/run/podman/podman.sock"); err == nil {
