@@ -34,7 +34,7 @@ type ISCSIDisk struct {
 
 // ISCSIDiskSpec defines the desired state of an ISCSIDisk.
 type ISCSIDiskSpec struct {
-	Source      string `json:"source"`                // source ISCSICdrom name, ISCSIDisk name, or raw image path
+	Source      string `json:"source,omitempty"`      // source ISCSICdrom name, ISCSIDisk name, or raw path (empty = empty thin volume)
 	SizeGB      int    `json:"sizeGB"`                // disk size in GB (must be >= source size)
 	Format      string `json:"format,omitempty"`      // raw | qcow2 (default: raw)
 	Host        string `json:"host,omitempty"`        // BMH name this disk is bound to

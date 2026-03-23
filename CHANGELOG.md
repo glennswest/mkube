@@ -4,6 +4,7 @@
 
 ### 2026-03-23
 - **feat:** ISCSIDisk supports creating empty thin volumes — `spec.source` is now optional. When omitted, creates a sparse file of the requested size with no source data. Useful for blank data disks.
+- **feat:** Console UI: iSCSI Disks tab now has Create, Clone, and Delete actions. Create modal supports empty thin volumes or cloning from existing CDROMs/disks with pool and host selection. Clone modal pre-fills source name. Delete with confirmation dialog.
 
 ### 2026-03-23 (Job Cancellation + Timeout)
 - **feat:** Agent detects server-side job cancellation via heartbeat response. When server returns `{"cancel": true}`, agent stops the build container and reports exit code 137.

@@ -21,7 +21,8 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
   <table><thead><tr><th>Name</th><th>Version</th><th>Phase</th><th>Size</th><th>Subscribers</th><th>Created</th></tr></thead><tbody id="cdroms-tbl"></tbody></table>
 </div>
 <div id="disks" class="tab-content">
-  <table><thead><tr><th>Name</th><th>Host</th><th>Pool</th><th>Size</th><th>Phase</th><th>Source</th><th>Created</th><th>Last Used</th></tr></thead><tbody id="disks-tbl"></tbody></table>
+  <div style="margin-bottom:8px"><button class="btn btn-primary" onclick="showCreateDisk()">Create Disk</button></div>
+  <table><thead><tr><th>Name</th><th>Host</th><th>Pool</th><th>Size</th><th>Phase</th><th>Source</th><th>Created</th><th></th></tr></thead><tbody id="disks-tbl"></tbody></table>
 </div>
 <div id="move-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
   <div class="card" style="min-width:320px;max-width:400px">
@@ -35,6 +36,39 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
       <button class="btn btn-primary" onclick="doMove()">Move</button>
     </div>
     <div id="move-status" style="font-size:12px;margin-top:8px"></div>
+  </div>
+</div>
+<div class="modal-overlay" id="disk-modal">
+  <div class="modal" style="max-width:420px">
+    <h3 id="disk-modal-title">Create iSCSI Disk</h3>
+    <div class="kv mb">
+      <div class="k">Name</div><div class="v"><input type="text" id="dk-name" placeholder="my-disk" style="width:100%"></div>
+      <div class="k">Size (GB)</div><div class="v"><input type="number" id="dk-size" value="20" min="1" style="width:100%"></div>
+      <div class="k">Source</div><div class="v"><select id="dk-source" style="width:100%"><option value="">(empty — thin volume)</option></select></div>
+      <div class="k">Storage Pool</div><div class="v"><select id="dk-pool" style="width:100%"></select></div>
+      <div class="k">Host</div><div class="v"><input type="text" id="dk-host" placeholder="(optional)" style="width:100%"></div>
+      <div class="k">Description</div><div class="v"><input type="text" id="dk-desc" placeholder="(optional)" style="width:100%"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="hideModal('disk-modal')">Cancel</button>
+      <button class="btn btn-primary" id="dk-submit" onclick="submitCreateDisk()">Create</button>
+    </div>
+    <div id="dk-status" style="font-size:12px;margin-top:8px"></div>
+  </div>
+</div>
+<div class="modal-overlay" id="clone-modal">
+  <div class="modal" style="max-width:420px">
+    <h3>Clone iSCSI Disk</h3>
+    <div class="kv mb">
+      <div class="k">Source</div><div class="v"><input type="text" id="cl-source" disabled style="width:100%"></div>
+      <div class="k">New Name</div><div class="v"><input type="text" id="cl-name" placeholder="my-disk-clone" style="width:100%"></div>
+      <div class="k">Host</div><div class="v"><input type="text" id="cl-host" placeholder="(optional)" style="width:100%"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="hideModal('clone-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCloneDisk()">Clone</button>
+    </div>
+    <div id="cl-status" style="font-size:12px;margin-top:8px"></div>
   </div>
 </div>`
 
@@ -61,6 +95,8 @@ function pctUsed(used,total){
 
 var _poolNames=[];
 var _defaultPool='';
+var _cdromNames=[];
+var _diskNames=[];
 
 function pvcPool(p){
   var ann=p.metadata?.annotations||{};
@@ -109,6 +145,10 @@ async function load(){
     if(p.spec?.default) _defaultPool=p.metadata.name;
   });
   if(!_defaultPool&&_poolNames.length>0) _defaultPool=_poolNames[0];
+
+  // Track source options for create modal
+  _cdromNames=cdromItems.filter(function(c){return (c.spec?.phase||c.status?.phase)==='Ready';}).map(function(c){return c.metadata.name;});
+  _diskNames=diskItems.filter(function(d){return (d.spec?.phase||d.status?.phase)==='Ready';}).map(function(d){return d.metadata.name;});
 
   var poolIdx=buildPoolIndex(poolItems,pvcItems,diskItems);
 
@@ -217,11 +257,113 @@ async function load(){
     diskItems.forEach(function(d){
       var s=d.spec||{};
       var st=d.status||{};
-      diskRows.push('<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||_defaultPool||'—')+'</td><td>'+fmtSize(s.size||st.size)+'</td><td>'+statusBadge(s.phase||st.phase||'—')+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+timeSince(st.lastUsed||s.lastUsed)+'</td></tr>');
+      var phase=s.phase||st.phase||'—';
+      var isReady=phase==='Ready';
+      var actions='';
+      if(isReady) actions+='<button class="btn" style="font-size:10px;padding:2px 6px;margin-right:4px" onclick="showCloneDisk(\''+escapeHtml(d.metadata.name)+'\')">Clone</button>';
+      actions+='<button class="btn btn-danger" style="font-size:10px;padding:2px 6px" onclick="deleteDisk(\''+escapeHtml(d.metadata.name)+'\')">Delete</button>';
+      diskRows.push('<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||_defaultPool||'—')+'</td><td>'+fmtSize(s.sizeGB?s.sizeGB*1024*1024*1024:(s.size||st.diskSize||st.size))+'</td><td>'+statusBadge(phase)+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+actions+'</td></tr>');
     });
     dt.innerHTML=diskRows.join('');
   }
   initSort('disks-tbl');reapplySort('disks-tbl');
+}
+
+// ── Create Disk ──
+function showCreateDisk(){
+  document.getElementById('dk-name').value='';
+  document.getElementById('dk-size').value='20';
+  document.getElementById('dk-host').value='';
+  document.getElementById('dk-desc').value='';
+  document.getElementById('dk-status').textContent='';
+  // Populate source options
+  var sel=document.getElementById('dk-source');
+  sel.innerHTML='<option value="">(empty — thin volume)</option>';
+  _cdromNames.forEach(function(n){
+    sel.innerHTML+='<option value="'+escapeHtml(n)+'">cdrom: '+escapeHtml(n)+'</option>';
+  });
+  _diskNames.forEach(function(n){
+    sel.innerHTML+='<option value="'+escapeHtml(n)+'">disk: '+escapeHtml(n)+'</option>';
+  });
+  // Populate pool options
+  var psel=document.getElementById('dk-pool');
+  psel.innerHTML='';
+  _poolNames.forEach(function(n){
+    var opt=document.createElement('option');
+    opt.value=n;opt.textContent=n;
+    if(n===_defaultPool) opt.selected=true;
+    psel.appendChild(opt);
+  });
+  if(_poolNames.length===0) psel.innerHTML='<option value="">default</option>';
+  document.getElementById('disk-modal').classList.add('show');
+}
+
+async function submitCreateDisk(){
+  var name=document.getElementById('dk-name').value.trim();
+  var sizeGB=parseInt(document.getElementById('dk-size').value);
+  var source=document.getElementById('dk-source').value;
+  var pool=document.getElementById('dk-pool').value;
+  var host=document.getElementById('dk-host').value.trim();
+  var desc=document.getElementById('dk-desc').value.trim();
+  var st=document.getElementById('dk-status');
+  if(!name){st.textContent='Name is required';st.style.color='var(--red)';return;}
+  if(!sizeGB||sizeGB<1){st.textContent='Size must be at least 1 GB';st.style.color='var(--red)';return;}
+  st.textContent='Creating...';st.style.color='var(--comment)';
+  var body={metadata:{name:name},spec:{sizeGB:sizeGB}};
+  if(source) body.spec.source=source;
+  if(pool) body.spec.storagePool=pool;
+  if(host) body.spec.host=host;
+  if(desc) body.spec.description=desc;
+  try{
+    var res=await fetch(API+'/api/v1/iscsi-disks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(res.ok){
+      st.textContent='Created successfully';st.style.color='var(--green)';
+      setTimeout(function(){hideModal('disk-modal');load();},1000);
+    } else {
+      var txt=await res.text();
+      st.textContent='Error: '+txt;st.style.color='var(--red)';
+    }
+  }catch(e){st.textContent='Error: '+e;st.style.color='var(--red)';}
+}
+
+// ── Clone Disk ──
+function showCloneDisk(sourceName){
+  document.getElementById('cl-source').value=sourceName;
+  document.getElementById('cl-name').value=sourceName+'-clone';
+  document.getElementById('cl-host').value='';
+  document.getElementById('cl-status').textContent='';
+  document.getElementById('clone-modal').classList.add('show');
+}
+
+async function submitCloneDisk(){
+  var source=document.getElementById('cl-source').value;
+  var newName=document.getElementById('cl-name').value.trim();
+  var host=document.getElementById('cl-host').value.trim();
+  var st=document.getElementById('cl-status');
+  if(!newName){st.textContent='New name is required';st.style.color='var(--red)';return;}
+  st.textContent='Cloning...';st.style.color='var(--comment)';
+  var body={newName:newName};
+  if(host) body.host=host;
+  try{
+    var res=await fetch(API+'/api/v1/iscsi-disks/'+encodeURIComponent(source)+'/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(res.ok){
+      st.textContent='Clone started';st.style.color='var(--green)';
+      setTimeout(function(){hideModal('clone-modal');load();},1000);
+    } else {
+      var txt=await res.text();
+      st.textContent='Error: '+txt;st.style.color='var(--red)';
+    }
+  }catch(e){st.textContent='Error: '+e;st.style.color='var(--red)';}
+}
+
+// ── Delete Disk ──
+async function deleteDisk(name){
+  if(!confirm('Delete iSCSI disk "'+name+'"? This removes the disk file and iSCSI target.')) return;
+  try{
+    var res=await fetch(API+'/api/v1/iscsi-disks/'+encodeURIComponent(name),{method:'DELETE'});
+    if(res.ok){load();}
+    else{var txt=await res.text();alert('Delete failed: '+txt);}
+  }catch(e){alert('Delete failed: '+e);}
 }
 
 var _moveResource='';
