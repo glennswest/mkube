@@ -88,7 +88,7 @@ Base URL: `http://192.168.200.2:8082`
 | `POST` | `/api/v1/iscsi-cdroms` | Create iSCSI CDROM |
 | `PUT` | `/api/v1/iscsi-cdroms/{name}` | Update iSCSI CDROM |
 | `PATCH` | `/api/v1/iscsi-cdroms/{name}` | Patch iSCSI CDROM |
-| `DELETE` | `/api/v1/iscsi-cdroms/{name}` | Delete iSCSI CDROM |
+| `DELETE` | `/api/v1/iscsi-cdroms/{name}` | Delete iSCSI CDROM (removes ISO; `?keepISO=true` to preserve) |
 | `POST` | `/api/v1/iscsi-cdroms/{name}/upload` | Upload ISO |
 | `POST` | `/api/v1/iscsi-cdroms/{name}/subscribe` | Subscribe host to CDROM |
 | `POST` | `/api/v1/iscsi-cdroms/{name}/unsubscribe` | Unsubscribe host |
