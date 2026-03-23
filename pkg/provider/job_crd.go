@@ -717,12 +717,13 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Parse optional job identity from body
+	// Parse optional job identity and status from body
 	var hbReq struct {
-		Job string `json:"job"`
+		Job    string `json:"job"`
+		Status string `json:"status"` // if set, appended to runner log as event
 	}
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&hbReq) // ignore errors — field is optional
+		json.NewDecoder(r.Body).Decode(&hbReq) // ignore errors — fields are optional
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -738,6 +739,13 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		job.Status.LastHeartbeat = now
 		p.persistJob(r.Context(), job)
 		updated++
+	}
+
+	// Append status message to runner log if provided
+	if hbReq.Status != "" && hbReq.Job != "" {
+		if job, ok := p.jobs[hbReq.Job]; ok && job.Status.RunnerRef != "" {
+			p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("%s: %s", hbReq.Job, hbReq.Status))
+		}
 	}
 
 	if updated == 0 {

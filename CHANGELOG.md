@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### 2026-03-22 (Agent Status Reporting + Runner Log Cleanup)
+- **feat:** Agent reports detailed status to runner log — pulling image (with name), image ready, starting build (with repo + script), build running, build complete/failed. Status messages sent via heartbeat `status` field, appear as timestamped events in runner log.
+- **fix:** Runner log no longer flooded with raw build output — build output stays in per-job logs only. Runner log shows only scheduler events (Scheduled, Started, FAILED, COMPLETED) and agent status messages.
+- **fix:** Job logs cleared when job is resubmitted (PUT/PATCH back to Pending).
+- **fix:** Agent nested podman host path resolution — `/data` inside agent container maps to `/var/data` on host. Nested podman `-v` mounts now use host-visible path (`/var/data/jobname:/output`).
+
+### 2026-03-22 (Lock-Free Consistency + UI Fixes)
+- **fix:** Consistency heavy checks (podLiveness, microDNS) now fully lock-free — snapshot pod/network data under brief RLock (microseconds), release lock before any network I/O (TCP probes, REST API calls). Prevents holding RLock for 30-60s during liveness probes. Old `runConsistencyChecks` (dead code) removed.
+- **fix:** Startup consistency build delayed 30s — prevents API lock contention during first page loads after deploy.
+- **fix:** Storage pool cards show physical drives — "Drives: 2" for RAID, "Drives: 1" for single disk. Renamed iSCSI disks to separate line (only shown when present). Fixed pool type display: "RAID-0 (2 drives)" instead of raw "raid", device model for hardware pools instead of "hardware".
+- **fix:** Storage pool table type column shows RAID multiplier — "RAID-0 (2x)" instead of just "RAID-0".
+- **feat:** Registries page enhanced — summary cards with online/offline status, hostname URL, image count, pod count, and storage pool availability. Table now shows Images, Pods, Status, Store Path columns. Image count fetched from registry's `/v2/_catalog` endpoint (HTTPS with skip-verify fallback to HTTP).
+
 ### 2026-03-22 (UI Performance + Consistency Lock Fix)
 - **fix:** Consistency check no longer blocks all API endpoints — removed from global middleware RLock. Check now runs asynchronously in background, HTTP handler returns cached report instantly. Each sub-check acquires its own brief RLock (microseconds) and releases between checks, allowing writers to proceed. Background cache refreshes every 120s + on demand. Root cause: consistency check held RLock for 57 seconds via middleware, any pending writer (scheduler, CRUD) blocked ALL new readers (Go RWMutex fairness) → networks, registries, and all other pages hung.
 - **feat:** API data prefetching — on app load, all common API endpoints are prefetched in parallel into an in-memory cache (15s TTL). First navigation to any page is instant. `apiGet()` checks cache before making fetch calls.

@@ -224,10 +224,10 @@ func runJob(apiURL string, job *agentJob) {
 	var exitCode int
 	var execErr error
 	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
-		log.Printf("[%s] build container mode: repo=%s script=%s", key, job.Spec.Repo, job.Spec.BuildScript)
+		reportStatus(apiURL, key, fmt.Sprintf("Build container job: %s → %s", job.Spec.Repo, job.Spec.BuildScript))
 		exitCode, execErr = executeBuildContainer(apiURL, job)
 	} else if job.Spec.Script != "" {
-		log.Printf("[%s] legacy inline script mode", key)
+		reportStatus(apiURL, key, "Inline script job")
 		exitCode, execErr = executeScript(apiURL, job)
 	} else {
 		execErr = fmt.Errorf("job has neither repo+buildScript nor script")
@@ -274,6 +274,18 @@ func heartbeat(apiURL string, jobKey string, stop <-chan struct{}) {
 	}
 }
 
+// reportStatus sends a status message to the runner log via heartbeat endpoint.
+func reportStatus(apiURL string, jobKey string, msg string) {
+	log.Printf("[%s] %s", jobKey, msg)
+	client := &http.Client{Timeout: 5 * time.Second}
+	body, _ := json.Marshal(map[string]string{"job": jobKey, "status": msg})
+	resp, err := client.Post(apiURL+"/api/v1/agent/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
 // executeBuildContainer runs the job in a disposable build container via podman.
 func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	key := job.jobKey()
@@ -283,13 +295,14 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	}
 
 	// Pull the build image
-	log.Printf("[%s] pulling build image: %s", key, image)
+	reportStatus(apiURL, key, fmt.Sprintf("Pulling build image %s", image))
 	pullCmd := exec.Command("podman", "pull", "--tls-verify=false", image)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
+		reportStatus(apiURL, key, fmt.Sprintf("FAILED to pull %s", image))
 		return 1, fmt.Errorf("pulling image %s: %v\n%s", image, err, string(pullOut))
 	}
-	log.Printf("[%s] image pulled successfully", key)
+	reportStatus(apiURL, key, fmt.Sprintf("Image %s ready", image))
 
 	// Build the command to run inside the container
 	var parts []string
@@ -342,7 +355,8 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 
 	args = append(args, image, "bash", "-c", buildCmd)
 
-	log.Printf("[%s] running: podman %s", key, strings.Join(args[:6], " ")+"...")
+	reportStatus(apiURL, key, fmt.Sprintf("Starting build: git clone %s → ./%s (image: %s)",
+		job.Spec.Repo, job.Spec.BuildScript, image))
 
 	cmd := exec.Command("podman", args...)
 
@@ -358,8 +372,11 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 
 	if err := cmd.Start(); err != nil {
 		pw.Close()
+		reportStatus(apiURL, key, fmt.Sprintf("FAILED to start container: %v", err))
 		return 1, fmt.Errorf("starting build container: %w", err)
 	}
+
+	reportStatus(apiURL, key, fmt.Sprintf("Build running in container %s", containerName))
 
 	err = cmd.Wait()
 	pw.Close()
@@ -374,6 +391,12 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		} else {
 			return 1, err
 		}
+	}
+
+	if exitCode == 0 {
+		reportStatus(apiURL, key, "Build completed successfully")
+	} else {
+		reportStatus(apiURL, key, fmt.Sprintf("Build FAILED (exit code %d)", exitCode))
 	}
 
 	commitJobLogs(job, logBuf.Bytes(), exitCode)
