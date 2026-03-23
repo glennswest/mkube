@@ -61,6 +61,7 @@ type agentJob struct {
 		BuildImage  string            `json:"buildImage"`
 		Script      string            `json:"script"`
 		Env         map[string]string `json:"env"`
+		Timeout     int               `json:"timeout"` // seconds, 0 = default (2h)
 	} `json:"spec"`
 }
 
@@ -225,25 +226,56 @@ func runJob(apiURL string, job *agentJob) {
 	key := job.jobKey()
 	log.Printf("[%s] starting execution", key)
 
+	// Build timeout from job spec (default 2h)
+	timeout := 2 * time.Hour
+	if job.Spec.Timeout > 0 {
+		timeout = time.Duration(job.Spec.Timeout) * time.Second
+	}
+
+	// Cancellable context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Heartbeat goroutine — also watches for server-side cancellation
 	hbStop := make(chan struct{})
+	cancelSignal := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		heartbeat(apiURL, key, hbStop)
+		heartbeat(apiURL, key, hbStop, cancelSignal)
+	}()
+
+	// Cancel context when server signals cancellation
+	go func() {
+		select {
+		case <-cancelSignal:
+			log.Printf("[%s] cancellation signal received from server", key)
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	var exitCode int
 	var execErr error
 	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
-		reportStatus(apiURL, key, fmt.Sprintf("Build container job: %s → %s", job.Spec.Repo, job.Spec.BuildScript))
-		exitCode, execErr = executeBuildContainer(apiURL, job)
+		reportStatus(apiURL, key, fmt.Sprintf("Build container job: %s → %s (timeout: %s)", job.Spec.Repo, job.Spec.BuildScript, timeout))
+		exitCode, execErr = executeBuildContainer(ctx, apiURL, job)
 	} else if job.Spec.Script != "" {
 		reportStatus(apiURL, key, "Inline script job")
 		exitCode, execErr = executeScript(apiURL, job)
 	} else {
 		execErr = fmt.Errorf("job has neither repo+buildScript nor script")
 		exitCode = 1
+	}
+
+	// Determine if cancellation/timeout caused the failure
+	if ctx.Err() == context.Canceled {
+		execErr = fmt.Errorf("cancelled")
+		exitCode = 137
+	} else if ctx.Err() == context.DeadlineExceeded {
+		execErr = fmt.Errorf("timed out after %s", timeout)
+		exitCode = 137
 	}
 
 	close(hbStop)
@@ -263,13 +295,15 @@ func runJob(apiURL string, job *agentJob) {
 }
 
 // heartbeat sends periodic heartbeats for a specific job.
-func heartbeat(apiURL string, jobKey string, stop <-chan struct{}) {
+// If the server responds with {"cancel": true}, signals the cancelCh.
+func heartbeat(apiURL string, jobKey string, stop <-chan struct{}, cancelCh chan<- struct{}) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	hbURL := apiURL + "/api/v1/agent/heartbeat"
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	body, _ := json.Marshal(map[string]string{"job": jobKey})
+	cancelled := false
 
 	for {
 		select {
@@ -280,6 +314,19 @@ func heartbeat(apiURL string, jobKey string, stop <-chan struct{}) {
 			if err != nil {
 				log.Printf("[%s] heartbeat error: %v", jobKey, err)
 				continue
+			}
+			// Check response for cancellation signal
+			if !cancelled && resp.Body != nil {
+				var hbResp struct {
+					Cancel bool `json:"cancel"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&hbResp) == nil && hbResp.Cancel {
+					cancelled = true
+					select {
+					case cancelCh <- struct{}{}:
+					default:
+					}
+				}
 			}
 			resp.Body.Close()
 		}
@@ -299,14 +346,13 @@ func reportStatus(apiURL string, jobKey string, msg string) {
 }
 
 // executeBuildContainer runs the job in a disposable build container via podman socket API.
-func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
+// The ctx controls cancellation and timeout — when cancelled, the build container is stopped.
+func executeBuildContainer(ctx context.Context, apiURL string, job *agentJob) (int, error) {
 	key := job.jobKey()
 	image := job.Spec.BuildImage
 	if image == "" {
 		image = defaultBuildImage
 	}
-
-	ctx := context.Background()
 
 	// Pull the build image via socket API
 	reportStatus(apiURL, key, fmt.Sprintf("Pulling build image %s", image))
@@ -430,6 +476,22 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	result, err := podmanClient.Run(ctx, cfg, onLog)
 	flushTicker.Stop()
 	flushLogs(true) // final flush
+
+	// If context was cancelled/timed out, stop the build container
+	if ctx.Err() != nil {
+		reason := "cancelled"
+		if ctx.Err() == context.DeadlineExceeded {
+			reason = "timed out"
+		}
+		reportStatus(apiURL, key, fmt.Sprintf("Build %s — stopping container %s", reason, containerName))
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if stopErr := podmanClient.StopContainer(stopCtx, containerName, 10); stopErr != nil {
+			log.Printf("[%s] stop container failed: %v — force removing", key, stopErr)
+			_ = podmanClient.RemoveContainer(stopCtx, containerName, true)
+		}
+		stopCancel()
+		return 137, ctx.Err()
+	}
 
 	if err != nil {
 		reportStatus(apiURL, key, fmt.Sprintf("FAILED: %v", err))

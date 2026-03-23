@@ -399,6 +399,30 @@ func extractLogData(raw []byte) []byte {
 
 // ── Remove / Prune ──────────────────────────────────────────────────────────
 
+// StopContainer stops a running container with a timeout (seconds).
+func (c *Client) StopContainer(ctx context.Context, id string, timeoutSecs int) error {
+	params := url.Values{"t": {fmt.Sprintf("%d", timeoutSecs)}}
+	ctx2, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs+10)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx2, "POST", apiBase+"/containers/"+id+"/stop?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode == 304 {
+		return nil // already stopped
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("stop container %s: status %d", id, resp.StatusCode)
+	}
+	return nil
+}
+
 // RemoveContainer removes a container by ID or name.
 func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) error {
 	params := url.Values{"force": {fmt.Sprintf("%v", force)}}

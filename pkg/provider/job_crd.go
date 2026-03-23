@@ -766,6 +766,17 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		http.Error(w, "no running job found", http.StatusNotFound)
 		return
 	}
+
+	// Check if the specific job has been cancelled — signal the agent to stop
+	if hbReq.Job != "" {
+		if job, ok := p.jobs[hbReq.Job]; ok && job.Status.Phase == "Cancelled" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]bool{"cancel": true})
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
