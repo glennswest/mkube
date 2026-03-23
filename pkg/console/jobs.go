@@ -486,6 +486,8 @@ async function loadRunnerEnv(){
   let infoHtml='';
   const fields=[
     ['Host',hostName],
+    ['Agent Version',env.agentVersion&&env.agentVersion!=='dev'?env.agentVersion+(env.agentCommit?' ('+env.agentCommit.substring(0,8)+')':''):null],
+    ['Agent Commit',!env.agentVersion||env.agentVersion==='dev'?env.agentCommit:null],
     ['Podman',env.podmanVersion],
     ['Storage Driver',env.storageDriver],
     ['Storage Path',env.storagePath],

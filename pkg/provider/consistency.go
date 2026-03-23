@@ -150,9 +150,11 @@ func (p *MicroKubeProvider) runConsistencyChecksLockPerCheck(ctx context.Context
 	report.Checks.JobRunners = rlockCheck(p.checkJobRunnerCRDs)
 	report.Checks.Jobs = rlockCheck(p.checkJobCRDs)
 	report.Checks.StoragePools = rlockCheck(p.checkStoragePoolCRDs)
-	report.Checks.MicroDNS = rlockCheck(p.checkMicroDNSServices)
+	// MicroDNS and PodLiveness manage their own locks (snapshot pattern)
+	// because they do heavy network I/O that must not hold RLock.
+	report.Checks.MicroDNS = p.checkMicroDNSServicesLockFree(ctx)
 	report.Checks.SmokeTests = rlockCheckNoCtx(p.checkSmokeTests)
-	report.Checks.PodLiveness = rlockCheck(p.checkPodLiveness)
+	report.Checks.PodLiveness = p.checkPodLivenessLockFree(ctx)
 
 	for _, items := range [][]CheckItem{
 		report.Checks.Containers,
@@ -224,68 +226,6 @@ func (p *MicroKubeProvider) handleConsistencyRepair(w http.ResponseWriter, r *ht
 	})
 }
 
-func (p *MicroKubeProvider) runConsistencyChecks(ctx context.Context) ConsistencyReport {
-	report := ConsistencyReport{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	report.Checks.Containers = p.checkContainers(ctx)
-	report.Checks.DNS = p.checkDNS(ctx)
-	report.Checks.Manifest = p.checkManifest()
-	report.Checks.IPAM = p.checkIPAM(ctx)
-	report.Checks.Network = p.checkNetworkHealth(ctx)
-	report.Checks.Deployments = p.checkDeployments()
-	report.Checks.PVCs = p.checkPVCs(ctx)
-	report.Checks.Networks = p.checkNetworkCRDs(ctx)
-	report.Checks.BMHs = p.checkBMHs()
-	report.Checks.Registries = p.checkRegistryCRDs(ctx)
-	report.Checks.ISCSICdroms = p.checkISCSICdromCRDs(ctx)
-	report.Checks.ISCSIDisks = p.checkISCSIDiskCRDs(ctx)
-	report.Checks.BootConfigs = p.checkBootConfigCRDs(ctx)
-	report.Checks.HostReservations = p.checkHostReservationCRDs(ctx)
-	report.Checks.JobRunners = p.checkJobRunnerCRDs(ctx)
-	report.Checks.Jobs = p.checkJobCRDs(ctx)
-	report.Checks.StoragePools = p.checkStoragePoolCRDs(ctx)
-	report.Checks.MicroDNS = p.checkMicroDNSServices(ctx)
-	report.Checks.SmokeTests = p.checkSmokeTests()
-	report.Checks.PodLiveness = p.checkPodLiveness(ctx)
-
-	for _, items := range [][]CheckItem{
-		report.Checks.Containers,
-		report.Checks.DNS,
-		report.Checks.Manifest,
-		report.Checks.IPAM,
-		report.Checks.Network,
-		report.Checks.Deployments,
-		report.Checks.PVCs,
-		report.Checks.Networks,
-		report.Checks.BMHs,
-		report.Checks.Registries,
-		report.Checks.ISCSICdroms,
-		report.Checks.ISCSIDisks,
-		report.Checks.BootConfigs,
-		report.Checks.HostReservations,
-		report.Checks.JobRunners,
-		report.Checks.Jobs,
-		report.Checks.StoragePools,
-		report.Checks.MicroDNS,
-		report.Checks.SmokeTests,
-		report.Checks.PodLiveness,
-	} {
-		for _, item := range items {
-			switch item.Status {
-			case "pass":
-				report.Summary.Pass++
-			case "fail":
-				report.Summary.Fail++
-			case "warn":
-				report.Summary.Warn++
-			}
-		}
-	}
-
-	return report
-}
 
 // checkContainers verifies each manifest container exists and is running,
 // and that its veth exists.
@@ -1940,6 +1880,168 @@ func (p *MicroKubeProvider) checkMicroDNSServices(ctx context.Context) []CheckIt
 	return items
 }
 
+// checkMicroDNSServicesLockFree is the lock-free version of checkMicroDNSServices.
+// It snapshots network data under a brief RLock, then does all REST API and DNS
+// probing without any lock held.
+func (p *MicroKubeProvider) checkMicroDNSServicesLockFree(ctx context.Context) []CheckItem {
+	dnsClient := p.deps.NetworkMgr.DNSClient()
+	if dnsClient == nil {
+		return nil
+	}
+
+	// Snapshot network data under brief RLock
+	type netSnapshot struct {
+		name        string
+		zone        string
+		server      string
+		endpoint    string
+		externalDNS bool
+		dhcpEnabled bool
+		hasDHCP     bool
+		resvCount   int
+		peerZones   []string // peer network zones for forwarder check
+	}
+	var nets []netSnapshot
+
+	p.mu.RLock()
+	for _, net := range p.networks {
+		if net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
+			continue
+		}
+		endpoint := net.Spec.DNS.Endpoint
+		if endpoint == "" {
+			endpoint = "http://" + net.Spec.DNS.Server + ":8080"
+		}
+		// Count expected reservations from this network + relayed peers
+		expected := len(net.Spec.DHCP.Reservations)
+		hasDHCP := net.Spec.DHCP.Enabled || p.networkHasDHCP(net.Name)
+		for _, peer := range p.networks {
+			if peer.Name != net.Name && peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
+				expected += len(peer.Spec.DHCP.Reservations)
+			}
+		}
+		// Collect peer zones for forwarder check
+		var peerZones []string
+		for _, peer := range p.networks {
+			if peer.Name != net.Name && peer.Spec.DNS.Zone != "" && peer.Spec.DNS.Server != "" {
+				peerZones = append(peerZones, peer.Spec.DNS.Zone)
+			}
+		}
+		nets = append(nets, netSnapshot{
+			name:        net.Name,
+			zone:        net.Spec.DNS.Zone,
+			server:      net.Spec.DNS.Server,
+			endpoint:    endpoint,
+			externalDNS: net.Spec.ExternalDNS,
+			dhcpEnabled: net.Spec.DHCP.Enabled,
+			hasDHCP:     hasDHCP,
+			resvCount:   expected,
+			peerZones:   peerZones,
+		})
+	}
+	p.mu.RUnlock()
+
+	// Now do all network I/O without any lock
+	var items []CheckItem
+	for _, net := range nets {
+		// 1. REST API health
+		if err := dnsClient.HealthCheck(ctx, net.endpoint); err != nil {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("microdns-api/%s", net.name),
+				Status:  "fail",
+				Message: fmt.Sprintf("REST API unreachable: %v", err),
+			})
+			continue
+		}
+		items = append(items, CheckItem{
+			Name:    fmt.Sprintf("microdns-api/%s", net.name),
+			Status:  "pass",
+			Message: "REST API healthy",
+			Details: net.endpoint,
+		})
+
+		// 2. DHCP pools
+		if net.hasDHCP {
+			pools, err := dnsClient.ListDHCPPools(ctx, net.endpoint)
+			if err != nil {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("microdns-dhcp-pools/%s", net.name),
+					Status:  "warn",
+					Message: fmt.Sprintf("cannot check DHCP pools: %v", err),
+				})
+			} else if len(pools) == 0 {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("microdns-dhcp-pools/%s", net.name),
+					Status:  "fail",
+					Message: "no DHCP pools configured (database may be empty after restart)",
+				})
+			} else {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("microdns-dhcp-pools/%s", net.name),
+					Status:  "pass",
+					Message: fmt.Sprintf("%d DHCP pool(s) configured", len(pools)),
+				})
+			}
+
+			// 3. DHCP reservations
+			reservations, err := dnsClient.ListDHCPReservations(ctx, net.endpoint)
+			if err != nil {
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("microdns-dhcp-reservations/%s", net.name),
+					Status:  "warn",
+					Message: fmt.Sprintf("cannot check DHCP reservations: %v", err),
+				})
+			} else {
+				status := "pass"
+				msg := fmt.Sprintf("%d reservation(s) active", len(reservations))
+				if net.resvCount > 0 && len(reservations) < net.resvCount {
+					status = "warn"
+					msg = fmt.Sprintf("%d/%d reservations (some missing)", len(reservations), net.resvCount)
+				}
+				items = append(items, CheckItem{
+					Name:    fmt.Sprintf("microdns-dhcp-reservations/%s", net.name),
+					Status:  status,
+					Message: msg,
+				})
+			}
+		}
+
+		// 4. DNS forwarders
+		forwarders, err := dnsClient.ListDNSForwarders(ctx, net.endpoint)
+		if err != nil {
+			continue
+		}
+
+		existingZones := make(map[string]bool, len(forwarders))
+		for _, f := range forwarders {
+			existingZones[f.Zone] = true
+		}
+
+		var missing []string
+		for _, pz := range net.peerZones {
+			if !existingZones[pz] {
+				missing = append(missing, pz)
+			}
+		}
+
+		if len(missing) > 0 {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("microdns-forwarders/%s", net.name),
+				Status:  "fail",
+				Message: fmt.Sprintf("missing forwarders: %s", strings.Join(missing, ", ")),
+			})
+		} else {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("microdns-forwarders/%s", net.name),
+				Status:  "pass",
+				Message: fmt.Sprintf("%d forwarder(s) configured", len(forwarders)),
+			})
+		}
+	}
+
+	return items
+}
+
 // checkSmokeTests reads the latest smoke test results for all networks
 // and reports them as consistency check items.
 func (p *MicroKubeProvider) checkSmokeTests() []CheckItem {
@@ -1998,70 +2100,84 @@ func (p *MicroKubeProvider) checkSmokeTests() []CheckItem {
 	return items
 }
 
-// checkPodLiveness probes declared TCP ports on all tracked running pods.
-// This catches the case where RouterOS reports a container as "running"
-// but the process inside is dead or unresponsive.
-func (p *MicroKubeProvider) checkPodLiveness(ctx context.Context) []CheckItem {
-	var items []CheckItem
+// checkPodLivenessLockFree probes declared TCP ports on all tracked running pods.
+// Snapshot-based: takes a brief RLock to copy pod list, then releases before
+// doing any network I/O (TCP probes). This prevents holding the lock for 30-60s.
+func (p *MicroKubeProvider) checkPodLivenessLockFree(ctx context.Context) []CheckItem {
+	// Snapshot pod data under brief RLock
+	type probeTarget struct {
+		podName   string
+		contName  string
+		vethName  string
+		rosName   string
+		tcpPorts  []int32
+	}
+	var targets []probeTarget
 
+	p.mu.RLock()
 	for _, pod := range p.pods {
 		for i, c := range pod.Spec.Containers {
-			// Only check containers that declare TCP ports
 			tcpPorts := collectTCPPorts(c)
 			if len(tcpPorts) == 0 {
 				continue
 			}
+			targets = append(targets, probeTarget{
+				podName:  pod.Name,
+				contName: c.Name,
+				vethName: vethName(pod, i),
+				rosName:  sanitizeName(pod, c.Name),
+				tcpPorts: tcpPorts,
+			})
+		}
+	}
+	p.mu.RUnlock()
 
-			// Get pod IP from veth
-			vn := vethName(pod, i)
-			podIP, _, ok := p.deps.NetworkMgr.GetPortInfo(vn)
-			if !ok || podIP == "" {
-				items = append(items, CheckItem{
-					Name:    fmt.Sprintf("liveness/%s/%s", pod.Name, c.Name),
-					Status:  "warn",
-					Message: "no IP allocated, cannot probe",
-				})
-				continue
-			}
+	// Now probe without any lock held
+	var items []CheckItem
+	for _, t := range targets {
+		podIP, _, ok := p.deps.NetworkMgr.GetPortInfo(t.vethName)
+		if !ok || podIP == "" {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("liveness/%s/%s", t.podName, t.contName),
+				Status:  "warn",
+				Message: "no IP allocated, cannot probe",
+			})
+			continue
+		}
 
-			// Verify container is running in RouterOS first
-			rosName := sanitizeName(pod, c.Name)
-			ct, err := p.deps.Runtime.GetContainer(ctx, rosName)
-			if err != nil || ct == nil || !ct.IsRunning() {
-				// Not running — other checks already report this
-				continue
-			}
+		ct, err := p.deps.Runtime.GetContainer(ctx, t.rosName)
+		if err != nil || ct == nil || !ct.IsRunning() {
+			continue
+		}
 
-			// Probe each declared TCP port
-			allReachable := true
-			var portResults []string
-			for _, port := range tcpPorts {
-				addr := fmt.Sprintf("%s:%d", podIP, port)
-				conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-				if err != nil {
-					allReachable = false
-					portResults = append(portResults, fmt.Sprintf("%d=FAIL", port))
-				} else {
-					conn.Close()
-					portResults = append(portResults, fmt.Sprintf("%d=OK", port))
-				}
-			}
-
-			if allReachable {
-				items = append(items, CheckItem{
-					Name:    fmt.Sprintf("liveness/%s/%s", pod.Name, c.Name),
-					Status:  "pass",
-					Message: "all ports reachable",
-					Details: fmt.Sprintf("ip=%s ports=%s", podIP, strings.Join(portResults, ",")),
-				})
+		allReachable := true
+		var portResults []string
+		for _, port := range t.tcpPorts {
+			addr := fmt.Sprintf("%s:%d", podIP, port)
+			conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+			if err != nil {
+				allReachable = false
+				portResults = append(portResults, fmt.Sprintf("%d=FAIL", port))
 			} else {
-				items = append(items, CheckItem{
-					Name:    fmt.Sprintf("liveness/%s/%s", pod.Name, c.Name),
-					Status:  "fail",
-					Message: "port(s) unreachable on running container",
-					Details: fmt.Sprintf("ip=%s ports=%s", podIP, strings.Join(portResults, ",")),
-				})
+				conn.Close()
+				portResults = append(portResults, fmt.Sprintf("%d=OK", port))
 			}
+		}
+
+		if allReachable {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("liveness/%s/%s", t.podName, t.contName),
+				Status:  "pass",
+				Message: "all ports reachable",
+				Details: fmt.Sprintf("ip=%s ports=%s", podIP, strings.Join(portResults, ",")),
+			})
+		} else {
+			items = append(items, CheckItem{
+				Name:    fmt.Sprintf("liveness/%s/%s", t.podName, t.contName),
+				Status:  "fail",
+				Message: "port(s) unreachable on running container",
+				Details: fmt.Sprintf("ip=%s ports=%s", podIP, strings.Join(portResults, ",")),
+			})
 		}
 	}
 

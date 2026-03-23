@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/glennswest/mkube/pkg/podman"
 )
 
 var (
@@ -29,7 +31,11 @@ const (
 	defaultRegistry   = "registry.gt.lo:5000"
 	selfImage         = "registry.gt.lo:5000/mkube-agent:edge"
 	stormdAPI         = "http://127.0.0.1:9080"
+	podmanSocket      = "/run/podman/podman.sock"
 )
+
+// podmanClient is the global podman API client (set in main).
+var podmanClient *podman.Client
 
 // hostDataDir returns the host-visible path for /data.
 // Nested podman resolves volume mount paths against the HOST filesystem,
@@ -76,12 +82,19 @@ func main() {
 		}
 	}
 
-	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d", version, commit, apiURL, maxWorkers)
+	// Podman socket path (configurable for testing)
+	sock := os.Getenv("PODMAN_SOCKET")
+	if sock == "" {
+		sock = podmanSocket
+	}
+	podmanClient = podman.New(sock)
+
+	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d, socket=%s",
+		version, commit, apiURL, maxWorkers, sock)
 
 	// Diagnostic: check /data mount at startup
 	if fi, err := os.Stat("/data"); err != nil {
 		log.Printf("WARNING: /data does not exist: %v", err)
-		// Try to create it as fallback
 		if err := os.MkdirAll("/data", 0755); err != nil {
 			log.Printf("FATAL: cannot create /data: %v", err)
 		} else {
@@ -89,7 +102,6 @@ func main() {
 		}
 	} else {
 		log.Printf("/data exists: dir=%v", fi.IsDir())
-		// List contents for diagnostics
 		if entries, err := os.ReadDir("/data"); err == nil {
 			names := make([]string, 0, len(entries))
 			for _, e := range entries {
@@ -99,13 +111,10 @@ func main() {
 		}
 	}
 
-	// Ensure TMPDIR exists on the data disk — podman uses it for blob
-	// downloads during image pulls. Without this, pulls write to /var/tmp
-	// on the OS disk which is typically small (10-20GB).
+	// Ensure TMPDIR exists on the data disk
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
 		os.MkdirAll(tmpDir, 0755)
 	} else {
-		// Default: use /data/tmp if /data exists (mounted from host data disk)
 		if fi, err := os.Stat("/data"); err == nil && fi.IsDir() {
 			os.MkdirAll("/data/tmp", 0755)
 			os.Setenv("TMPDIR", "/data/tmp")
@@ -113,8 +122,7 @@ func main() {
 		}
 	}
 
-	// Clean up stale container storage on startup — previous images, stopped
-	// containers, and dangling layers accumulate across job runs.
+	// Clean up stale container storage on startup
 	pruneContainerStorage("startup")
 
 	// Collect and report podman environment on startup
@@ -134,10 +142,10 @@ func main() {
 
 	// Semaphore channel limits concurrent workers
 	sem := make(chan struct{}, maxWorkers)
-	var activeJobs sync.Map // track running job keys to avoid duplicates
+	var activeJobs sync.Map
 	var activeCount int64
 
-	// Main dispatch loop — polls for work and spawns workers
+	// Main dispatch loop
 	for {
 		// Check for self-update when no jobs are running
 		if atomic.LoadInt64(&activeCount) == 0 && currentDigest != "" {
@@ -149,20 +157,16 @@ func main() {
 			}
 		}
 
-		// Try to get a job
 		job, err := tryGetWork(apiURL)
 		if err != nil || job == nil {
-			// No work available — back off
 			if atomic.LoadInt64(&activeCount) == 0 {
 				time.Sleep(5 * time.Second)
 			} else {
-				// Jobs running, poll faster for additional work
 				time.Sleep(2 * time.Second)
 			}
 			continue
 		}
 
-		// Deduplicate — don't run same job twice
 		key := job.jobKey()
 		if _, loaded := activeJobs.LoadOrStore(key, true); loaded {
 			log.Printf("job %s already running, skipping", key)
@@ -170,7 +174,6 @@ func main() {
 			continue
 		}
 
-		// Acquire semaphore slot (blocks if at max concurrency)
 		sem <- struct{}{}
 		atomic.AddInt64(&activeCount, 1)
 		log.Printf("job %s assigned (active: %d/%d)", key, atomic.LoadInt64(&activeCount), maxWorkers)
@@ -185,13 +188,11 @@ func main() {
 			runJob(apiURL, job)
 		}(job)
 
-		// Small delay before next poll to let server update state
 		time.Sleep(500 * time.Millisecond)
 	}
 }
 
 // tryGetWork makes a single attempt to get work from the server.
-// Returns nil, nil if no work is available (204).
 func tryGetWork(apiURL string) (*agentJob, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL + "/api/v1/agent/work")
@@ -220,7 +221,6 @@ func runJob(apiURL string, job *agentJob) {
 	key := job.jobKey()
 	log.Printf("[%s] starting execution", key)
 
-	// Start job-scoped heartbeat
 	hbStop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -229,7 +229,6 @@ func runJob(apiURL string, job *agentJob) {
 		heartbeat(apiURL, key, hbStop)
 	}()
 
-	// Execute job
 	var exitCode int
 	var execErr error
 	if job.Spec.Repo != "" && job.Spec.BuildScript != "" {
@@ -243,16 +242,12 @@ func runJob(apiURL string, job *agentJob) {
 		exitCode = 1
 	}
 
-	// Stop heartbeat
 	close(hbStop)
 	wg.Wait()
 
-	// Report completion with job identity
 	reportComplete(apiURL, job, exitCode, execErr)
 	log.Printf("[%s] finished with exit code %d", key, exitCode)
 
-	// Clean up container storage after each job — remove unused images
-	// older than 24h to prevent disk exhaustion from large build images.
 	pruneContainerStorage(key)
 
 	// Re-report podman environment (images may have changed)
@@ -260,7 +255,6 @@ func runJob(apiURL string, job *agentJob) {
 		sendEnvHeartbeat(apiURL, env)
 	}
 
-	// Clean job output directory if empty (artifact collection already happened)
 	cleanJobOutputDir(job)
 }
 
@@ -300,7 +294,7 @@ func reportStatus(apiURL string, jobKey string, msg string) {
 	resp.Body.Close()
 }
 
-// executeBuildContainer runs the job in a disposable build container via podman.
+// executeBuildContainer runs the job in a disposable build container via podman socket API.
 func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	key := job.jobKey()
 	image := job.Spec.BuildImage
@@ -308,13 +302,13 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		image = defaultBuildImage
 	}
 
-	// Pull the build image
+	ctx := context.Background()
+
+	// Pull the build image via socket API
 	reportStatus(apiURL, key, fmt.Sprintf("Pulling build image %s", image))
-	pullCmd := exec.Command("podman", "pull", "--tls-verify=false", image)
-	pullOut, err := pullCmd.CombinedOutput()
-	if err != nil {
-		reportStatus(apiURL, key, fmt.Sprintf("FAILED to pull %s", image))
-		return 1, fmt.Errorf("pulling image %s: %v\n%s", image, err, string(pullOut))
+	if err := podmanClient.Pull(ctx, image, false); err != nil {
+		reportStatus(apiURL, key, fmt.Sprintf("FAILED to pull %s: %v", image, err))
+		return 1, fmt.Errorf("pulling image %s: %w", image, err)
 	}
 	reportStatus(apiURL, key, fmt.Sprintf("Image %s ready", image))
 
@@ -338,90 +332,104 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	)
 	buildCmd := strings.Join(parts, " && ")
 
-	// Container name unique per job
 	containerName := fmt.Sprintf("build-%s-%s", job.Metadata.Namespace, job.Metadata.Name)
 
-	// Build container needs real filesystem for podman storage — overlay-on-overlay
-	// doesn't work, and fuse-overlayfs needs /dev/fuse which may not exist.
-	// Bind-mount a directory on the host's XFS data disk so native overlay works.
-	buildStorageLocal := "/data/build-storage"
+	// Build mounts
 	buildStorageHost := fmt.Sprintf("%s/build-storage", hostDataDir())
-	os.MkdirAll(buildStorageLocal, 0755)
+	os.MkdirAll("/data/build-storage", 0755)
 
-	args := []string{
-		"run", "--rm",
-		"--name", containerName,
-		"--privileged",
-		"-v", buildStorageHost + ":/var/lib/containers",
-	}
-
-	// Pass the host's DNS server to the build container — nested podman creates
-	// its own network namespace (pasta/slirp4netns) which may not inherit DNS.
-	for _, ns := range getNameservers() {
-		args = append(args, "--dns", ns)
-	}
-
-	for k, v := range job.Spec.Env {
-		args = append(args, "-e", k+"="+v)
-	}
-
-	// Mount output dir for artifact isolation between parallel jobs.
-	// Create the dir using the container-local path (/data/...) but pass
-	// the host-visible path to nested podman (which resolves against the host).
 	localOutputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
 	hostOutputDir := fmt.Sprintf("%s/%s", hostDataDir(), job.Metadata.Name)
 	if err := os.MkdirAll(localOutputDir, 0755); err != nil {
 		log.Printf("[%s] WARNING: failed to create output dir %s: %v", key, localOutputDir, err)
 	}
-	args = append(args, "-v", hostOutputDir+":/output")
 
-	if _, err := os.Stat("/run/podman/podman.sock"); err == nil {
-		args = append(args,
-			"-v", "/run/podman/podman.sock:/run/podman/podman.sock",
-			"--security-opt", "label=disable",
-		)
+	mounts := []podman.Mount{
+		{Source: buildStorageHost, Dest: "/var/lib/containers"},
+		{Source: hostOutputDir, Dest: "/output"},
 	}
 
-	args = append(args, image, "bash", "-c", buildCmd)
+	// Mount podman socket if available (for builds that need nested podman)
+	if _, err := os.Stat(podmanSocket); err == nil {
+		mounts = append(mounts, podman.Mount{Source: podmanSocket, Dest: podmanSocket})
+	}
+
+	cfg := podman.ContainerConfig{
+		Name:       containerName,
+		Image:      image,
+		Command:    []string{"bash", "-c", buildCmd},
+		Env:        job.Spec.Env,
+		Mounts:     mounts,
+		Privileged: true,
+		Remove:     true,
+		DNS:        getNameservers(),
+	}
 
 	reportStatus(apiURL, key, fmt.Sprintf("Starting build: git clone %s → ./%s (image: %s)",
 		job.Spec.Repo, job.Spec.BuildScript, image))
 
-	cmd := exec.Command("podman", args...)
-
-	// Capture output — tee to both log streamer and a buffer for git commit
-	pr, pw := io.Pipe()
+	// Stream logs to mkube as they arrive
+	logURL := apiURL + "/api/v1/agent/logs?job=" + url.QueryEscape(key)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 	var logBuf bytes.Buffer
-	tee := io.MultiWriter(pw, &logBuf)
-	cmd.Stdout = tee
-	cmd.Stderr = tee
+	var logMu sync.Mutex
+	var batchBuf []byte
+	lastFlush := time.Now()
 
-	// Stream logs with job identity
-	go streamLogs(apiURL, key, pr)
-
-	if err := cmd.Start(); err != nil {
-		pw.Close()
-		reportStatus(apiURL, key, fmt.Sprintf("FAILED to start container: %v", err))
-		return 1, fmt.Errorf("starting build container: %w", err)
+	flushLogs := func(force bool) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		if len(batchBuf) == 0 {
+			return
+		}
+		if !force && len(batchBuf) < 4096 && time.Since(lastFlush) < time.Second {
+			return
+		}
+		resp, err := httpClient.Post(logURL, "text/plain", bytes.NewReader(batchBuf))
+		if err != nil {
+			log.Printf("[%s] log stream error: %v", key, err)
+		} else {
+			resp.Body.Close()
+		}
+		batchBuf = batchBuf[:0]
+		lastFlush = time.Now()
 	}
 
-	reportStatus(apiURL, key, fmt.Sprintf("Build running in container %s", containerName))
+	// Periodic log flusher
+	flushTicker := time.NewTicker(1 * time.Second)
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		for {
+			select {
+			case <-flushTicker.C:
+				flushLogs(false)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-	err = cmd.Wait()
-	pw.Close()
-
-	// Give log streamer a moment to flush
-	time.Sleep(500 * time.Millisecond)
-
-	exitCode := 0
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return 1, err
+	onLog := func(chunk []byte) {
+		logBuf.Write(chunk)
+		logMu.Lock()
+		batchBuf = append(batchBuf, chunk...)
+		logMu.Unlock()
+		if len(batchBuf) > 4096 {
+			flushLogs(true)
 		}
 	}
 
+	result, err := podmanClient.Run(ctx, cfg, onLog)
+	flushTicker.Stop()
+	flushLogs(true) // final flush
+
+	if err != nil {
+		reportStatus(apiURL, key, fmt.Sprintf("FAILED: %v", err))
+		return 1, err
+	}
+
+	exitCode := result.ExitCode
 	if exitCode == 0 {
 		reportStatus(apiURL, key, "Build completed successfully")
 	} else {
@@ -625,34 +633,23 @@ func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
 	os.RemoveAll(cloneDir)
 }
 
-// pruneContainerStorage removes unused container images and build cache.
-// On startup it does a full prune; after jobs it prunes images older than 24h.
-func pruneContainerStorage(context string) {
-	log.Printf("[%s] pruning container storage", context)
+// pruneContainerStorage removes unused images and stopped containers via socket API.
+func pruneContainerStorage(ctx2 string) {
+	log.Printf("[%s] pruning container storage", ctx2)
 
-	// Remove all stopped containers (should be none with --rm, but just in case)
-	rmCmd := exec.Command("podman", "container", "prune", "-f")
-	rmCmd.CombinedOutput()
+	bgCtx := context.Background()
 
-	// Remove dangling (untagged) images
-	danglingCmd := exec.Command("podman", "image", "prune", "-f")
-	if out, err := danglingCmd.CombinedOutput(); err == nil {
-		if s := strings.TrimSpace(string(out)); s != "" {
-			log.Printf("[%s] pruned dangling images: %s", context, s)
-		}
+	if n, err := podmanClient.PruneContainers(bgCtx); err == nil && n > 0 {
+		log.Printf("[%s] pruned %d stopped containers", ctx2, n)
 	}
 
-	// Remove unused images older than 24h (keeps the currently-pulled build image)
-	oldCmd := exec.Command("podman", "image", "prune", "-af", "--filter", "until=24h")
-	if out, err := oldCmd.CombinedOutput(); err == nil {
-		if s := strings.TrimSpace(string(out)); s != "" {
-			log.Printf("[%s] pruned old images: %s", context, s)
-		}
+	if n, err := podmanClient.PruneImages(bgCtx, false, ""); err == nil && n > 0 {
+		log.Printf("[%s] pruned %d dangling images", ctx2, n)
 	}
 
-	// Remove build cache
-	buildCmd := exec.Command("podman", "builder", "prune", "-af")
-	buildCmd.CombinedOutput()
+	if n, err := podmanClient.PruneImages(bgCtx, true, "24h"); err == nil && n > 0 {
+		log.Printf("[%s] pruned %d old images", ctx2, n)
+	}
 
 	// Clean TMPDIR if it exists
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
@@ -661,27 +658,17 @@ func pruneContainerStorage(context string) {
 			os.RemoveAll(tmpDir + "/" + e.Name())
 		}
 		if len(entries) > 0 {
-			log.Printf("[%s] cleaned %d tmp entries from %s", context, len(entries), tmpDir)
-		}
-	}
-
-	// Log remaining disk usage
-	dfCmd := exec.Command("df", "-h", "/var/lib/containers")
-	if out, err := dfCmd.CombinedOutput(); err == nil {
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		if len(lines) > 1 {
-			log.Printf("[%s] container storage: %s", context, strings.TrimSpace(lines[len(lines)-1]))
+			log.Printf("[%s] cleaned %d tmp entries from %s", ctx2, len(entries), tmpDir)
 		}
 	}
 }
 
 // cleanJobOutputDir removes the job's output directory if it's empty.
-// Non-empty dirs are preserved (contain artifacts the user may want).
 func cleanJobOutputDir(job *agentJob) {
 	outputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
 	entries, err := os.ReadDir(outputDir)
 	if err != nil {
-		return // dir doesn't exist or not readable
+		return
 	}
 	if len(entries) == 0 {
 		os.Remove(outputDir)
@@ -694,8 +681,12 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
+// ── Podman environment collection ───────────────────────────────────────────
+
 // agentEnvironment mirrors the AgentEnvironment type from mkube provider.
 type agentEnvironment struct {
+	AgentVersion  string       `json:"agentVersion,omitempty"`
+	AgentCommit   string       `json:"agentCommit,omitempty"`
 	PodmanVersion string       `json:"podmanVersion"`
 	StorageDriver string       `json:"storageDriver"`
 	StoragePath   string       `json:"storagePath"`
@@ -712,64 +703,40 @@ type agentImage struct {
 	Size string `json:"size"`
 }
 
-// collectPodmanEnv runs `podman info` and `podman images` to gather runtime details.
+// collectPodmanEnv gathers runtime details via the podman socket API.
 func collectPodmanEnv() *agentEnvironment {
-	infoCmd := exec.Command("podman", "info", "--format", "json")
-	infoOut, err := infoCmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	info, err := podmanClient.Info(ctx)
 	if err != nil {
 		log.Printf("podman info failed: %v", err)
 		return nil
 	}
 
-	var info struct {
-		Version struct {
-			Version string `json:"version"`
-		} `json:"version"`
-		Store struct {
-			GraphDriverName string `json:"graphDriverName"`
-			GraphRoot       string `json:"graphRoot"`
-		} `json:"store"`
-		Host struct {
-			CgroupsVersion string `json:"cgroupVersion"`
-			OS             string `json:"os"`
-			Arch           string `json:"arch"`
-		} `json:"host"`
-	}
-	if err := json.Unmarshal(infoOut, &info); err != nil {
-		log.Printf("podman info parse failed: %v", err)
-		return nil
-	}
-
 	env := &agentEnvironment{
-		PodmanVersion: info.Version.Version,
-		StorageDriver: info.Store.GraphDriverName,
-		StoragePath:   info.Store.GraphRoot,
-		CgroupVersion: info.Host.CgroupsVersion,
-		OS:            info.Host.OS,
-		Arch:          info.Host.Arch,
+		AgentVersion:  version,
+		AgentCommit:   commit,
+		PodmanVersion: info.Version,
+		StorageDriver: info.StorageDriver,
+		StoragePath:   info.StoragePath,
+		CgroupVersion: info.CgroupVersion,
+		OS:            info.OS,
+		Arch:          info.Arch,
 	}
 
-	// Collect images
-	imgCmd := exec.Command("podman", "images", "--format", "json")
-	imgOut, err := imgCmd.Output()
+	images, err := podmanClient.Images(ctx)
 	if err == nil {
-		var images []struct {
-			Names []string `json:"Names"`
-			Size  int64    `json:"Size"`
-			Arch  string   `json:"Arch"`
-		}
-		if err := json.Unmarshal(imgOut, &images); err == nil {
-			for _, img := range images {
-				name := "<none>"
-				if len(img.Names) > 0 {
-					name = img.Names[0]
-				}
-				env.Images = append(env.Images, agentImage{
-					Name: name,
-					Arch: img.Arch,
-					Size: formatSize(img.Size),
-				})
+		for _, img := range images {
+			name := "<none>"
+			if len(img.Names) > 0 {
+				name = img.Names[0]
 			}
+			env.Images = append(env.Images, agentImage{
+				Name: name,
+				Arch: img.Arch,
+				Size: formatSize(img.Size),
+			})
 		}
 	}
 

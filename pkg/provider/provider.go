@@ -162,8 +162,13 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.DiscoverStoragePools(context.Background())
 	p.startDHCPSubscription(context.Background())
 	go p.RunResourceWatchers(context.Background())
-	// Seed consistency cache on startup so the first dashboard visit has data.
-	p.refreshConsistencyCache("startup")
+	// Seed consistency cache after startup settles — delay 30s so the initial
+	// heavy checks (pod liveness, microdns services) don't block API endpoints
+	// during the first page loads after deploy.
+	go func() {
+		time.Sleep(30 * time.Second)
+		p.refreshConsistencyCache("startup")
+	}()
 	go p.runConsistencyCacheTimer()
 }
 

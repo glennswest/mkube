@@ -123,16 +123,36 @@ async function load(){
       var color=pct>90?'var(--red)':pct>75?'var(--orange)':'var(--green)';
       var def=p.spec?.default?' (default)':'';
       var pi=poolIdx[p.metadata.name]||{disks:[],pvcs:[]};
-      var diskList=pi.disks.length>0?pi.disks.map(function(n){return escapeHtml(n);}).join(', '):'none';
       var pvcList=pi.pvcs.length>0?pi.pvcs.map(function(n){return escapeHtml(n);}).join(', '):'none';
+      // Format type line: "RAID-0 (2 drives)" or "TEAM TM8PS7001T · SATA 6.0 Gbps"
+      var typeStr='';
+      if(st.raidType){
+        typeStr='RAID-'+st.raidType;
+        if(st.raidDevices) typeStr+=' ('+st.raidDevices+' drives)';
+      } else {
+        var parts=[];
+        if(st.deviceModel) parts.push(st.deviceModel);
+        if(st.interface) parts.push(st.interface);
+        typeStr=parts.join(' \u00b7 ')||st.deviceType||'unknown';
+      }
+      // Physical drives count
+      var driveCount=st.raidDevices||1;
+      var driveLabel=driveCount===1?'1 drive':driveCount+' drives';
+      // iSCSI disks (only show if any)
+      var iscsiLine='';
+      if(pi.disks.length>0){
+        var diskList=pi.disks.map(function(n){return escapeHtml(n);}).join(', ');
+        iscsiLine='<div style="font-size:11px;color:var(--comment);margin-top:2px"><b>iSCSI Disks</b> ('+pi.disks.length+'): '+diskList+'</div>';
+      }
       return '<div class="card" style="min-width:220px;flex:1;max-width:340px">'+
         '<h4>'+escapeHtml(p.metadata.name)+def+'</h4>'+
-        '<div style="font-size:12px;color:var(--comment)">'+escapeHtml(st.deviceType||'')+' '+escapeHtml(st.interface||'')+'</div>'+
+        '<div style="font-size:12px;color:var(--comment)">'+escapeHtml(typeStr)+'</div>'+
         '<div style="margin:8px 0;background:var(--selection);border-radius:4px;height:16px;overflow:hidden">'+
         '<div style="width:'+pct+'%;height:100%;background:'+color+';border-radius:4px;transition:width 0.3s"></div></div>'+
         '<div style="font-size:12px">'+fmtPoolBytes(st.usedBytes)+' / '+fmtPoolBytes(st.totalBytes)+' ('+pct+'%)</div>'+
-        '<div style="font-size:11px;color:var(--comment);margin-top:6px"><b>Disks</b> ('+pi.disks.length+'): '+diskList+'</div>'+
+        '<div style="font-size:11px;color:var(--comment);margin-top:6px"><b>Drives</b>: '+driveLabel+'</div>'+
         '<div style="font-size:11px;color:var(--comment);margin-top:2px"><b>PVCs</b> ('+pi.pvcs.length+'): '+pvcList+'</div>'+
+        iscsiLine+
         '</div>';
     }).join('')+'</div>';
   }
@@ -145,7 +165,7 @@ async function load(){
     poolItems.forEach(function(p){
       var sp=p.spec||{};var st=p.status||{};
       var pi=poolIdx[p.metadata.name]||{disks:[],pvcs:[]};
-      var devType=st.raidType?('RAID-'+st.raidType):(st.deviceType||'—');
+      var devType=st.raidType?('RAID-'+st.raidType+(st.raidDevices?' ('+st.raidDevices+'x)':'')):(st.deviceModel||st.deviceType||'—');
       poolRows.push('<tr><td>'+escapeHtml(p.metadata.name)+'</td><td>'+escapeHtml(devType)+'</td><td>'+escapeHtml(st.interface||'—')+'</td><td>'+escapeHtml(sp.mountPoint||'—')+'</td><td>'+fmtPoolBytes(st.totalBytes)+'</td><td>'+fmtPoolBytes(st.usedBytes)+'</td><td>'+fmtPoolBytes(st.availBytes)+'</td><td>'+statusBadge(st.phase||'—')+'</td><td>'+(sp.default?'Yes':'')+'</td><td>'+pi.disks.length+'</td><td>'+pi.pvcs.length+'</td></tr>');
     });
     plt.innerHTML=poolRows.join('');

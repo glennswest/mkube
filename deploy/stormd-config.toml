@@ -36,5 +36,5 @@ failure_threshold = 3
 initial_delay_secs = 30
 
 [process.ui]
-label = "Console"
+label = "Management"
 proxy = "http://127.0.0.1:8082/ui/"

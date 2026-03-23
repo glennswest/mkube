@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,9 +48,10 @@ type RegistrySpec struct {
 
 // RegistryStatus reports the observed state of a Registry.
 type RegistryStatus struct {
-	Phase    string `json:"phase"`              // Active, Degraded, Error
-	Alive    bool   `json:"alive,omitempty"`
-	PodCount int    `json:"podCount,omitempty"`
+	Phase      string `json:"phase"`                    // Active, Degraded, Error
+	Alive      bool   `json:"alive,omitempty"`
+	PodCount   int    `json:"podCount,omitempty"`
+	ImageCount int    `json:"imageCount,omitempty"`     // number of repositories in catalog
 }
 
 // RegistryList is a list of Registry objects.
@@ -493,6 +495,11 @@ func (p *MicroKubeProvider) enrichRegistryStatus(ctx context.Context, reg *Regis
 			}
 		}
 		reg.Status.Alive = probeHTTP(reg.Spec.StaticIP, port, "/v2/", 3*time.Second)
+
+		// Image catalog count
+		if reg.Status.Alive {
+			reg.Status.ImageCount = fetchRegistryCatalogCount(reg.Spec.StaticIP, port, 3*time.Second)
+		}
 	}
 }
 
@@ -509,6 +516,35 @@ func probeHTTP(host, port, path string, timeout time.Duration) bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 500
+}
+
+// fetchRegistryCatalogCount queries a registry's /v2/_catalog and returns the
+// number of repositories. Tries HTTPS (skip-verify) first, falls back to HTTP.
+func fetchRegistryCatalogCount(host, port string, timeout time.Duration) int {
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{
+		MaxConnsPerHost:   1,
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+	}}
+	for _, scheme := range []string{"https", "http"} {
+		url := fmt.Sprintf("%s://%s:%s/v2/_catalog", scheme, host, port)
+		resp, err := client.Get(url)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			continue
+		}
+		var result struct {
+			Repositories []string `json:"repositories"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+			return 0
+		}
+		return len(result.Repositories)
+	}
+	return 0
 }
 
 // ─── Watch ──────────────────────────────────────────────────────────────────

@@ -46,6 +46,8 @@ type HostReservationStatus struct {
 
 // AgentEnvironment describes the container runtime on the agent host.
 type AgentEnvironment struct {
+	AgentVersion  string       `json:"agentVersion,omitempty"`
+	AgentCommit   string       `json:"agentCommit,omitempty"`
 	PodmanVersion string       `json:"podmanVersion"`
 	StorageDriver string       `json:"storageDriver"`
 	StoragePath   string       `json:"storagePath"`
