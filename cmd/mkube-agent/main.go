@@ -31,6 +31,18 @@ const (
 	stormdAPI         = "http://127.0.0.1:9080"
 )
 
+// hostDataDir returns the host-visible path for /data.
+// Nested podman resolves volume mount paths against the HOST filesystem,
+// not the container's mount namespace. So when the agent container has
+// -v /var/data:/data, nested podman needs -v /var/data/jobname:/output
+// (the host path), not -v /data/jobname:/output (the container path).
+func hostDataDir() string {
+	if v := os.Getenv("HOST_DATA_DIR"); v != "" {
+		return v
+	}
+	return "/var/data"
+}
+
 // agentJob mirrors the Job type from mkube, with only the fields the agent needs.
 type agentJob struct {
 	Metadata struct {
@@ -311,16 +323,15 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		args = append(args, "-e", k+"="+v)
 	}
 
-	// Mount /data/<jobname> as /output for artifact isolation between parallel jobs
-	outputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Printf("[%s] WARNING: failed to create output dir %s: %v", key, outputDir, err)
+	// Mount output dir for artifact isolation between parallel jobs.
+	// Create the dir using the container-local path (/data/...) but pass
+	// the host-visible path to nested podman (which resolves against the host).
+	localOutputDir := fmt.Sprintf("/data/%s", job.Metadata.Name)
+	hostOutputDir := fmt.Sprintf("%s/%s", hostDataDir(), job.Metadata.Name)
+	if err := os.MkdirAll(localOutputDir, 0755); err != nil {
+		log.Printf("[%s] WARNING: failed to create output dir %s: %v", key, localOutputDir, err)
 	}
-	// Verify the directory exists before passing to podman
-	if _, err := os.Stat(outputDir); err != nil {
-		log.Printf("[%s] ERROR: output dir %s does not exist after MkdirAll: %v", key, outputDir, err)
-	}
-	args = append(args, "-v", outputDir+":/output")
+	args = append(args, "-v", hostOutputDir+":/output")
 
 	if _, err := os.Stat("/run/podman/podman.sock"); err == nil {
 		args = append(args,
