@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-23
+- **fix:** Console base href detection now recognizes stormd `/ui/ext/` proxy path in addition to `/ui/proxy/`, fixing broken navigation when accessing Management tab through stormd.
+- **fix:** Console apiBase changed from raw container IP (`192.168.200.2`) to DNS name (`mkube.gt.lo`), fixing API calls hanging when browser can't reach the internal container IP directly.
 - **fix:** iSCSI CDROM delete now removes the ISO file by default, preventing the ISO scanner from resurrecting deleted CDROMs. Use `?keepISO=true` to preserve the file.
 - **feat:** ISCSIDisk supports creating empty thin volumes — `spec.source` is now optional. When omitted, creates a sparse file of the requested size with no source data. Useful for blank data disks.
 - **feat:** Console UI: iSCSI Disks tab now has Create, Clone, and Delete actions. Create modal supports empty thin volumes or cloning from existing CDROMs/disks with pool and host selection. Clone modal pre-fills source name. Delete with confirmation dialog.

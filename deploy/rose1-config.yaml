@@ -189,7 +189,7 @@ cluster:
 
 console:
   enabled: true
-  apiBase: "http://192.168.200.2:8082"
+  apiBase: "http://mkube.gt.lo:8082"
   cloudidURL: "http://192.168.200.20:8090"
 
 bmh:

@@ -18,7 +18,7 @@ type Console struct {
 func New(cfg config.ConsoleConfig) *Console {
 	api := cfg.APIBase
 	if api == "" {
-		api = "http://192.168.200.2:8082"
+		api = "http://mkube.gt.lo:8082"
 	}
 	cid := cfg.CloudidURL
 	if cid == "" {
