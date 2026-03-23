@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-23 (Job Cancellation + Timeout)
+- **feat:** Agent detects server-side job cancellation via heartbeat response. When server returns `{"cancel": true}`, agent stops the build container and reports exit code 137.
+- **feat:** Build timeout support — uses job `spec.timeout` (seconds), defaults to 2 hours. On timeout, build container is stopped and cleaned up.
+- **feat:** Added `StopContainer` method to podman client (`POST /containers/{id}/stop`).
+- **fix:** Heartbeat interval reduced from 30s to 10s for faster cancellation detection.
+- **fix:** Server heartbeat handler returns cancel signal when job phase is "Cancelled", enabling agent-side cleanup.
+
 ### 2026-03-23 (Agent Scratch Image + Fixes)
 - **fix:** Agent scratch image now built correctly via `make deploy-agent` (GOARCH=amd64 + x86_64 stormd). Previous manual build had exec format error.
 - **fix:** NATS pod key separator mismatch — `stampImageDigest` used "/" while all other pod operations used ".". Created undeletable duplicate entries. Fixed separator, added cleanup in delete handler, migration in loadFromStore.
