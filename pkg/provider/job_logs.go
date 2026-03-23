@@ -96,10 +96,9 @@ func (p *MicroKubeProvider) appendJobLogs(ctx context.Context, jobKey string, li
 		}
 	}
 
-	// Also feed runner log buffer
-	if job, ok := p.jobs[jobKey]; ok && job.Status.RunnerRef != "" {
-		p.appendRunnerLogs(job.Status.RunnerRef, lines)
-	}
+	// Note: build output is NOT fed to the runner log — runner log only
+	// gets scheduler events (Scheduled, Started, FAILED, COMPLETED) via
+	// appendRunnerEvent. Raw build output stays in per-job logs only.
 }
 
 // getJobLogs returns log lines, falling back to NATS if not in memory.

@@ -305,6 +305,14 @@ func (p *MicroKubeProvider) handleUpdateJob(w http.ResponseWriter, r *http.Reque
 		job.Status = old.Status
 	}
 
+	// Clear logs when a job is reset to Pending (resubmit)
+	if job.Status.Phase == "Pending" && old.Status.Phase != "Pending" {
+		p.deleteJobLogs(key)
+		if p.deps.Store != nil && p.deps.Store.JobLogs != nil {
+			_ = p.deps.Store.JobLogs.Delete(r.Context(), strings.ReplaceAll(key, "/", "."))
+		}
+	}
+
 	p.persistJob(r.Context(), &job)
 	p.jobs[key] = &job
 	p.triggerScheduler()
@@ -338,6 +346,14 @@ func (p *MicroKubeProvider) handlePatchJob(w http.ResponseWriter, r *http.Reques
 	merged.Namespace = ns
 	merged.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
 	merged.CreationTimestamp = existing.CreationTimestamp
+
+	// Clear logs when a job is reset to Pending (resubmit)
+	if merged.Status.Phase == "Pending" && existing.Status.Phase != "Pending" {
+		p.deleteJobLogs(key)
+		if p.deps.Store != nil && p.deps.Store.JobLogs != nil {
+			_ = p.deps.Store.JobLogs.Delete(r.Context(), strings.ReplaceAll(key, "/", "."))
+		}
+	}
 
 	p.persistJob(r.Context(), merged)
 	p.jobs[key] = merged
