@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-23 (Agent Socket API Rewrite + Version Display)
+- **feat:** New `pkg/podman` library — pure Go client for Podman REST API via Unix socket (`/run/podman/podman.sock`). Methods: Info, Images, Pull, Run, RemoveContainer, PruneContainers, PruneImages. No external dependencies.
+- **refactor:** Agent rewritten to use podman socket API instead of shelling out to `podman` CLI. Eliminates dependency on podman binary in agent container's PATH.
+- **feat:** Agent version and git commit reported in heartbeat `env` payload (injected via ldflags). Displayed in Runner detail UI panel alongside podman version.
+- **fix:** Podman `/containers/{id}/wait` endpoint returns plain integer exit code (not JSON object). Fixed `waitContainer` to try integer parse first, fall back to object format.
+- **chore:** Removed obsolete standalone console pod (`infra/console`) — console is built into mkube.
+
 ### 2026-03-22 (Agent Podman Environment + Build DNS Fix)
 - **feat:** Agent reports podman environment (version, storage driver, cgroups, OS/arch, images) via heartbeat on startup and after each job. Stored on HostReservation status as `agentEnv`.
 - **feat:** Runner detail panel shows "Runtime Environment" card with podman info and "Container Images" table with name, arch, size from the host reservation.
