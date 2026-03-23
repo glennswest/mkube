@@ -492,17 +492,22 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 
 	pod, err := p.GetPod(r.Context(), ns, name)
 	if err != nil {
-		// Pod not tracked — check NATS store for orphaned entries
+		// Pod not tracked — check NATS store for orphaned entries (try both key formats)
 		if p.deps.Store != nil {
-			storeKey := ns + "." + name
+			dotKey := ns + "." + name
+			slashKey := ns + "/" + name
 			var storePod corev1.Pod
-			if _, getErr := p.deps.Store.Pods.GetJSON(r.Context(), storeKey, &storePod); getErr == nil {
-				// Found in NATS but not tracked — delete from store only
-				if delErr := p.deps.Store.Pods.Delete(r.Context(), storeKey); delErr != nil {
-					p.deps.Logger.Warnw("failed to delete orphaned pod from store", "key", storeKey, "error", delErr)
-				} else {
-					p.deps.Logger.Infow("deleted orphaned pod from store", "key", storeKey)
-				}
+			found := false
+			if _, getErr := p.deps.Store.Pods.GetJSON(r.Context(), dotKey, &storePod); getErr == nil {
+				found = true
+				_ = p.deps.Store.Pods.Delete(r.Context(), dotKey)
+			}
+			if _, getErr := p.deps.Store.Pods.GetJSON(r.Context(), slashKey, &storePod); getErr == nil {
+				found = true
+				_ = p.deps.Store.Pods.Delete(r.Context(), slashKey)
+			}
+			if found {
+				p.deps.Logger.Infow("deleted orphaned pod from store", "pod", ns+"/"+name)
 				podWriteJSON(w, http.StatusOK, metav1.Status{
 					TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
 					Status:   "Success",
@@ -530,6 +535,10 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 		if err := p.deps.Store.Pods.Delete(r.Context(), storeKey); err != nil {
 			p.deps.Logger.Warnw("failed to delete pod from store", "key", storeKey, "error", err)
 		}
+		// Also clean up stale "/" key variant (bug fix: stampImageDigest
+		// previously used "/" separator instead of ".")
+		slashKey := ns + "/" + name
+		_ = p.deps.Store.Pods.Delete(r.Context(), slashKey)
 	}
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{

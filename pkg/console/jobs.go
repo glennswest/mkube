@@ -190,7 +190,7 @@ function selectJob(ns,name){
   document.querySelectorAll('#jobs-tbl tr').forEach(r=>{if(r.dataset.jobKey===key) r.classList.add('selected');});
   // Show detail panel
   renderJobDetail();
-  _lastLogText='';
+  _lastLogText=null;
   document.getElementById('job-logs').innerHTML='<span class="muted">Loading logs...</span>';
   document.getElementById('log-line-count').textContent='';
   startLogPoll();
@@ -298,8 +298,8 @@ async function pollLogs(){
       document.getElementById('job-logs').innerHTML='<span class="muted">'+escapeHtml(text||'Failed to load logs ('+resp.status+')')+'</span>';
       return;
     }
-    // Only update if logs changed
-    if(text!==_lastLogText){
+    // Only update if logs changed (use sentinel to distinguish initial state from empty response)
+    if(text!==_lastLogText||_lastLogText===null){
       _lastLogText=text;
       const el=document.getElementById('job-logs');
       const html=ansiToHtml(text);

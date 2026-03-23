@@ -2323,12 +2323,30 @@ func (p *MicroKubeProvider) loadFromStore(ctx context.Context) ([]*corev1.Pod, [
 		p.deps.Logger.Warnw("failed to list pods from store", "error", err)
 		return nil, nil
 	}
+	seen := make(map[string]bool) // track ns.name to dedup
 	for _, key := range podKeys {
 		var pod corev1.Pod
 		if _, err := p.deps.Store.Pods.GetJSON(ctx, key, &pod); err != nil {
 			p.deps.Logger.Warnw("failed to read pod from store", "key", key, "error", err)
 			continue
 		}
+		// Migration: clean up stale "/" key entries (stampImageDigest bug).
+		// Canonical key format is "ns.name". Delete "/" variants and re-save as ".".
+		if strings.Contains(key, "/") {
+			canonicalKey := pod.Namespace + "." + pod.Name
+			_ = p.deps.Store.Pods.Delete(ctx, key)
+			if _, err := p.deps.Store.Pods.PutJSON(ctx, canonicalKey, &pod); err != nil {
+				p.deps.Logger.Warnw("failed to migrate pod key", "old", key, "new", canonicalKey, "error", err)
+			} else {
+				p.deps.Logger.Infow("migrated pod store key", "old", key, "new", canonicalKey)
+			}
+		}
+		// Deduplicate — same pod may exist under both key formats
+		dedupKey := pod.Namespace + "." + pod.Name
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
 		// Migration: fix DNS pods with orphaned volumeMounts (mount exists but no volume definition).
 		// This was caused by boot-order.yaml missing PVC volume definitions for DNS data volumes.
 		if p.fixOrphanedVolumeMounts(&pod, ctx) {
@@ -2496,7 +2514,7 @@ func (p *MicroKubeProvider) stampImageDigest(ctx context.Context, pod *corev1.Po
 	}
 	// Persist to NATS so the annotation survives restart
 	if p.deps.Store != nil {
-		storeKey := pod.Namespace + "/" + pod.Name
+		storeKey := pod.Namespace + "." + pod.Name
 		if _, err := p.deps.Store.Pods.PutJSON(context.Background(), storeKey, pod); err != nil {
 			p.deps.Logger.Debugw("failed to persist digest annotation", "pod", storeKey, "error", err)
 		}
