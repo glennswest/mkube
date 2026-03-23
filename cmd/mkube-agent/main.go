@@ -330,6 +330,8 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 	args := []string{
 		"run", "--rm",
 		"--name", containerName,
+		"--privileged",
+		"--device", "/dev/fuse",
 	}
 
 	for k, v := range job.Spec.Env {
