@@ -1,6 +1,5 @@
-# Agent container — uses host podman via socket, only needs git for log commits
-FROM fedora:rawhide
-RUN dnf install -y git && dnf clean all
+# Agent container — talks to host podman via socket, git runs inside build containers
+FROM fedora:latest
 RUN mkdir -p /var/stormd/logs /data
 COPY stormd /stormd
 COPY mkube-agent /app/mkube-agent

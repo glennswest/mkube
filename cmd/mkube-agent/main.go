@@ -443,7 +443,7 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		reportStatus(apiURL, key, fmt.Sprintf("Build FAILED (exit code %d)", exitCode))
 	}
 
-	commitJobLogs(job, logBuf.Bytes(), exitCode)
+	// Logs are streamed to mkube in real-time; no need for git commit
 	return exitCode, nil
 }
 
@@ -568,77 +568,6 @@ func reportComplete(apiURL string, job *agentJob, exitCode int, execErr error) {
 	resp.Body.Close()
 }
 
-// commitJobLogs clones the job's repo and pushes the build log as logs/job-{datetime}.log.
-func commitJobLogs(job *agentJob, logData []byte, exitCode int) {
-	if job.Spec.Repo == "" {
-		return
-	}
-
-	token := job.Spec.Env["GIT_TOKEN"]
-	if token == "" {
-		log.Printf("[%s] log commit: skipped (no GIT_TOKEN)", job.jobKey())
-		return
-	}
-
-	now := time.Now().UTC()
-	logFile := fmt.Sprintf("logs/job-%s.log", now.Format("2006-01-02-150405"))
-	cloneDir := fmt.Sprintf("/tmp/log-commit-%s", job.Metadata.Name)
-
-	repoURL := job.Spec.Repo
-	pushURL := strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
-
-	os.RemoveAll(cloneDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", pushURL, cloneDir)
-	if out, err := cloneCmd.CombinedOutput(); err != nil {
-		log.Printf("[%s] log commit: clone failed: %v\n%s", job.jobKey(), err, string(out))
-		return
-	}
-
-	logsDir := cloneDir + "/logs"
-	os.MkdirAll(logsDir, 0755)
-
-	var header bytes.Buffer
-	fmt.Fprintf(&header, "# Job: %s/%s\n", job.Metadata.Namespace, job.Metadata.Name)
-	fmt.Fprintf(&header, "# Date: %s\n", now.Format(time.RFC3339))
-	fmt.Fprintf(&header, "# Exit code: %d\n", exitCode)
-	fmt.Fprintf(&header, "# Repo: %s\n", job.Spec.Repo)
-	fmt.Fprintf(&header, "# Script: %s\n", job.Spec.BuildScript)
-	fmt.Fprintf(&header, "# Image: %s\n\n", job.Spec.BuildImage)
-	header.Write(logData)
-
-	if err := os.WriteFile(cloneDir+"/"+logFile, header.Bytes(), 0644); err != nil {
-		log.Printf("[%s] log commit: write failed: %v", job.jobKey(), err)
-		return
-	}
-
-	cmds := []struct {
-		name string
-		args []string
-	}{
-		{"config", []string{"git", "-C", cloneDir, "config", "user.email", "mkube-agent@gt.lo"}},
-		{"config", []string{"git", "-C", cloneDir, "config", "user.name", "mkube-agent"}},
-		{"add", []string{"git", "-C", cloneDir, "add", logFile}},
-		{"commit", []string{"git", "-C", cloneDir, "commit", "-m", fmt.Sprintf("build: job %s exit=%d", job.Metadata.Name, exitCode)}},
-		{"push", []string{"git", "-C", cloneDir, "push"}},
-	}
-
-	for _, c := range cmds {
-		cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		cmd := exec.CommandContext(cmdCtx, c.args[0], c.args[1:]...)
-		out, err := cmd.CombinedOutput()
-		cmdCancel()
-		if err != nil {
-			log.Printf("[%s] log commit: %s failed: %v\n%s", job.jobKey(), c.name, err, string(out))
-			return
-		}
-	}
-
-	log.Printf("[%s] log committed: %s", job.jobKey(), logFile)
-	os.RemoveAll(cloneDir)
-}
 
 // pruneContainerStorage removes unused images and stopped containers via socket API.
 func pruneContainerStorage(ctx2 string) {
