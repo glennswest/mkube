@@ -7,7 +7,8 @@ REGISTRY  ?= registry.gt.lo:5000
 IMAGE     := $(REGISTRY)/$(BINARY):edge
 MKUBE_API ?= http://192.168.200.2:8082
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
-STORMD    := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
+STORMD        := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
+STORMD_AMD64  := ../stormd/target/x86_64-unknown-linux-musl/release/stormd
 
 .PHONY: build build-local tarball deploy deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-agent build-all \
@@ -141,11 +142,12 @@ build-test:
 test-integration: build-test
 	./dist/mkube-test --api $(MKUBE_API)
 
-## Build mkube-agent container image (x86_64, stormdbase)
+## Build mkube-agent container image (x86_64, stormd from local build)
 build-agent-image: build-agent
 	cp dist/mkube-agent cmd/mkube-agent/mkube-agent
+	cp $(STORMD_AMD64) cmd/mkube-agent/stormd
 	podman build --format docker --platform linux/amd64 --tls-verify=false -f cmd/mkube-agent/Containerfile -t $(REGISTRY)/mkube-agent:edge cmd/mkube-agent/
-	rm -f cmd/mkube-agent/mkube-agent
+	rm -f cmd/mkube-agent/mkube-agent cmd/mkube-agent/stormd
 
 ## Push mkube-agent container image to local registry
 push-agent:
