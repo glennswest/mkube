@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-03-22 (Agent Podman Environment + Build DNS Fix)
+- **feat:** Agent reports podman environment (version, storage driver, cgroups, OS/arch, images) via heartbeat on startup and after each job. Stored on HostReservation status as `agentEnv`.
+- **feat:** Runner detail panel shows "Runtime Environment" card with podman info and "Container Images" table with name, arch, size from the host reservation.
+- **fix:** Build containers inside agent failed DNS resolution (nested podman creates own network namespace). Agent now reads `/etc/resolv.conf` and passes `--dns` to build containers.
+- **feat:** New types `AgentEnvironment`, `AgentImage` on `HostReservationStatus`.
+- **fix:** Heartbeat handler accepts env-only heartbeats (no running job required) for startup reporting.
+
 ### 2026-03-22 (Agent Status Reporting + Runner Log Cleanup)
 - **feat:** Agent reports detailed status to runner log — pulling image (with name), image ready, starting build (with repo + script), build running, build complete/failed. Status messages sent via heartbeat `status` field, appear as timestamped events in runner log.
 - **fix:** Runner log no longer flooded with raw build output — build output stays in per-job logs only. Runner log shows only scheduler events (Scheduled, Started, FAILED, COMPLETED) and agent status messages.
