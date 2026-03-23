@@ -1,6 +1,5 @@
-# Agent container — talks to host podman via socket, git runs inside build containers
-FROM fedora:latest
-RUN mkdir -p /var/stormd/logs /data
+# Agent container — static binaries, no OS needed
+FROM scratch
 COPY stormd /stormd
 COPY mkube-agent /app/mkube-agent
 COPY config.toml /etc/stormd/config.toml
