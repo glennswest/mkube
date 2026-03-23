@@ -358,6 +358,9 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		mounts = append(mounts, podman.Mount{Source: podmanSocket, Dest: podmanSocket})
 	}
 
+	// Force-remove any stale container from a previous crashed run
+	_ = podmanClient.RemoveContainer(ctx, containerName, true)
+
 	cfg := podman.ContainerConfig{
 		Name:       containerName,
 		Image:      image,
