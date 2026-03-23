@@ -117,6 +117,15 @@ func main() {
 	// containers, and dangling layers accumulate across job runs.
 	pruneContainerStorage("startup")
 
+	// Collect and report podman environment on startup
+	agentEnv := collectPodmanEnv()
+	if agentEnv != nil {
+		log.Printf("podman %s, driver=%s, cgroup=%s, %s/%s",
+			agentEnv.PodmanVersion, agentEnv.StorageDriver,
+			agentEnv.CgroupVersion, agentEnv.OS, agentEnv.Arch)
+		sendEnvHeartbeat(apiURL, agentEnv)
+	}
+
 	// Capture our current image digest at startup for self-update detection.
 	currentDigest := getImageDigest(selfImage)
 	if currentDigest != "" {
@@ -246,6 +255,11 @@ func runJob(apiURL string, job *agentJob) {
 	// older than 24h to prevent disk exhaustion from large build images.
 	pruneContainerStorage(key)
 
+	// Re-report podman environment (images may have changed)
+	if env := collectPodmanEnv(); env != nil {
+		sendEnvHeartbeat(apiURL, env)
+	}
+
 	// Clean job output directory if empty (artifact collection already happened)
 	cleanJobOutputDir(job)
 }
@@ -339,6 +353,12 @@ func executeBuildContainer(apiURL string, job *agentJob) (int, error) {
 		"--name", containerName,
 		"--privileged",
 		"-v", buildStorageHost + ":/var/lib/containers",
+	}
+
+	// Pass the host's DNS server to the build container — nested podman creates
+	// its own network namespace (pasta/slirp4netns) which may not inherit DNS.
+	for _, ns := range getNameservers() {
+		args = append(args, "--dns", ns)
 	}
 
 	for k, v := range job.Spec.Env {
@@ -672,6 +692,139 @@ func cleanJobOutputDir(job *agentJob) {
 // shellQuote wraps a string in single quotes for safe shell interpolation.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// agentEnvironment mirrors the AgentEnvironment type from mkube provider.
+type agentEnvironment struct {
+	PodmanVersion string       `json:"podmanVersion"`
+	StorageDriver string       `json:"storageDriver"`
+	StoragePath   string       `json:"storagePath"`
+	CgroupVersion string       `json:"cgroupVersion"`
+	OS            string       `json:"os"`
+	Arch          string       `json:"arch"`
+	Images        []agentImage `json:"images,omitempty"`
+	ReportedAt    string       `json:"reportedAt"`
+}
+
+type agentImage struct {
+	Name string `json:"name"`
+	Arch string `json:"arch"`
+	Size string `json:"size"`
+}
+
+// collectPodmanEnv runs `podman info` and `podman images` to gather runtime details.
+func collectPodmanEnv() *agentEnvironment {
+	infoCmd := exec.Command("podman", "info", "--format", "json")
+	infoOut, err := infoCmd.Output()
+	if err != nil {
+		log.Printf("podman info failed: %v", err)
+		return nil
+	}
+
+	var info struct {
+		Version struct {
+			Version string `json:"version"`
+		} `json:"version"`
+		Store struct {
+			GraphDriverName string `json:"graphDriverName"`
+			GraphRoot       string `json:"graphRoot"`
+		} `json:"store"`
+		Host struct {
+			CgroupsVersion string `json:"cgroupVersion"`
+			OS             string `json:"os"`
+			Arch           string `json:"arch"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(infoOut, &info); err != nil {
+		log.Printf("podman info parse failed: %v", err)
+		return nil
+	}
+
+	env := &agentEnvironment{
+		PodmanVersion: info.Version.Version,
+		StorageDriver: info.Store.GraphDriverName,
+		StoragePath:   info.Store.GraphRoot,
+		CgroupVersion: info.Host.CgroupsVersion,
+		OS:            info.Host.OS,
+		Arch:          info.Host.Arch,
+	}
+
+	// Collect images
+	imgCmd := exec.Command("podman", "images", "--format", "json")
+	imgOut, err := imgCmd.Output()
+	if err == nil {
+		var images []struct {
+			Names []string `json:"Names"`
+			Size  int64    `json:"Size"`
+			Arch  string   `json:"Arch"`
+		}
+		if err := json.Unmarshal(imgOut, &images); err == nil {
+			for _, img := range images {
+				name := "<none>"
+				if len(img.Names) > 0 {
+					name = img.Names[0]
+				}
+				env.Images = append(env.Images, agentImage{
+					Name: name,
+					Arch: img.Arch,
+					Size: formatSize(img.Size),
+				})
+			}
+		}
+	}
+
+	return env
+}
+
+// sendEnvHeartbeat sends the agent environment to mkube via the heartbeat endpoint.
+func sendEnvHeartbeat(apiURL string, env *agentEnvironment) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	body, _ := json.Marshal(map[string]interface{}{
+		"job": "",
+		"env": env,
+	})
+	resp, err := client.Post(apiURL+"/api/v1/agent/heartbeat", "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("env heartbeat failed: %v", err)
+		return
+	}
+	resp.Body.Close()
+	log.Printf("agent environment reported (%d images)", len(env.Images))
+}
+
+// formatSize formats bytes to human-readable (e.g. "1.8G", "256M").
+func formatSize(b int64) string {
+	const (
+		gb = 1024 * 1024 * 1024
+		mb = 1024 * 1024
+	)
+	switch {
+	case b >= gb:
+		return fmt.Sprintf("%.1fG", float64(b)/float64(gb))
+	case b >= mb:
+		return fmt.Sprintf("%.0fM", float64(b)/float64(mb))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
+// getNameservers reads nameserver entries from /etc/resolv.conf.
+func getNameservers() []string {
+	data, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return nil
+	}
+	var servers []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "nameserver ") {
+			ns := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+			if ns != "" {
+				servers = append(servers, ns)
+			}
+		}
+	}
+	return servers
 }
 
 // getImageDigest queries the registry for the current digest of an image tag.

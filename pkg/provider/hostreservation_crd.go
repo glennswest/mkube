@@ -36,11 +36,31 @@ type HostReservationSpec struct {
 
 // HostReservationStatus reports the observed state of a HostReservation.
 type HostReservationStatus struct {
-	Phase      string `json:"phase"`                // Active, Expired, Released
-	BMHNetwork string `json:"bmhNetwork,omitempty"` // resolved from BMH
-	BMHIP      string `json:"bmhIP,omitempty"`      // resolved from BMH
-	ActiveJob  string `json:"activeJob,omitempty"`   // currently running job key
-	ReservedAt string `json:"reservedAt,omitempty"`
+	Phase      string            `json:"phase"`                // Active, Expired, Released
+	BMHNetwork string            `json:"bmhNetwork,omitempty"` // resolved from BMH
+	BMHIP      string            `json:"bmhIP,omitempty"`      // resolved from BMH
+	ActiveJob  string            `json:"activeJob,omitempty"`   // currently running job key
+	ReservedAt string            `json:"reservedAt,omitempty"`
+	AgentEnv   *AgentEnvironment `json:"agentEnv,omitempty"` // reported by mkube-agent
+}
+
+// AgentEnvironment describes the container runtime on the agent host.
+type AgentEnvironment struct {
+	PodmanVersion string       `json:"podmanVersion"`
+	StorageDriver string       `json:"storageDriver"`
+	StoragePath   string       `json:"storagePath"`
+	CgroupVersion string       `json:"cgroupVersion"`
+	OS            string       `json:"os"`
+	Arch          string       `json:"arch"`
+	Images        []AgentImage `json:"images,omitempty"`
+	ReportedAt    string       `json:"reportedAt"`
+}
+
+// AgentImage describes a container image available on the agent host.
+type AgentImage struct {
+	Name string `json:"name"`
+	Arch string `json:"arch"`
+	Size string `json:"size"`
 }
 
 // HostReservationList is a list of HostReservation objects.
@@ -54,6 +74,14 @@ type HostReservationList struct {
 func (h *HostReservation) DeepCopy() *HostReservation {
 	out := *h
 	out.ObjectMeta = *h.ObjectMeta.DeepCopy()
+	if h.Status.AgentEnv != nil {
+		env := *h.Status.AgentEnv
+		if h.Status.AgentEnv.Images != nil {
+			env.Images = make([]AgentImage, len(h.Status.AgentEnv.Images))
+			copy(env.Images, h.Status.AgentEnv.Images)
+		}
+		out.Status.AgentEnv = &env
+	}
 	return &out
 }
 

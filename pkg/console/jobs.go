@@ -60,6 +60,18 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
         <div id="runner-active-jobs"><span class="muted">No active jobs</span></div>
       </div>
     </div>
+    <div id="runner-env-panel" style="display:none;margin-top:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card" style="margin-bottom:0">
+          <h3>Runtime Environment</h3>
+          <div class="kv" id="runner-env-info"></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <h3>Container Images</h3>
+          <div id="runner-env-images"><span class="muted">No images reported</span></div>
+        </div>
+      </div>
+    </div>
     <div class="card mt" style="margin-bottom:0">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h3 style="margin:0" id="runner-log-title">Runner Activity Log</h3>
@@ -442,12 +454,65 @@ function renderRunnerDetail(){
     ajDiv.innerHTML=ajHtml;
   }
 
+  // Load runtime environment from host reservations
+  loadRunnerEnv();
+
   // Start polling runner activity log
   _runnerLastLogText='';
   document.getElementById('runner-logs').innerHTML='<span class="muted">Loading activity log...</span>';
   document.getElementById('runner-log-line-count').textContent='';
   document.getElementById('runner-log-title').textContent='Activity Log: '+_selectedRunner;
   startRunnerLogPoll();
+}
+
+async function loadRunnerEnv(){
+  const envPanel=document.getElementById('runner-env-panel');
+  const envInfo=document.getElementById('runner-env-info');
+  const envImages=document.getElementById('runner-env-images');
+  if(!_selectedRunnerData){envPanel.style.display='none';return;}
+  const pool=_selectedRunnerData.spec?.pool||'';
+  if(!pool){envPanel.style.display='none';return;}
+
+  // Fetch host reservations and find one with agentEnv for this pool
+  const hrData=await apiGet(API+'/api/v1/hostreservations');
+  const hrs=(hrData?.items||[]).filter(h=>h.spec?.pool===pool&&h.status?.agentEnv);
+  if(hrs.length===0){envPanel.style.display='none';return;}
+
+  envPanel.style.display='block';
+  // Show env from first host that has it (most hosts in same pool have same config)
+  const env=hrs[0].status.agentEnv;
+  const hostName=hrs[0].spec?.bmhRef||hrs[0].metadata?.name||'?';
+
+  let infoHtml='';
+  const fields=[
+    ['Host',hostName],
+    ['Podman',env.podmanVersion],
+    ['Storage Driver',env.storageDriver],
+    ['Storage Path',env.storagePath],
+    ['Cgroups',env.cgroupVersion],
+    ['OS / Arch',env.os+'/'+env.arch],
+    ['Reported',env.reportedAt?timeSince(env.reportedAt)+' ago':'—'],
+  ];
+  fields.forEach(([k,v])=>{
+    if(v) infoHtml+='<div class="k">'+escapeHtml(k)+'</div><div class="v">'+escapeHtml(String(v))+'</div>';
+  });
+  if(hrs.length>1) infoHtml+='<div class="k">Hosts</div><div class="v">'+hrs.length+' hosts reporting</div>';
+  envInfo.innerHTML=infoHtml;
+
+  // Images table
+  const imgs=env.images||[];
+  if(imgs.length===0){
+    envImages.innerHTML='<span class="muted">No images on host</span>';
+  } else {
+    let imgHtml='<table style="font-size:11px"><thead><tr><th>Image</th><th>Arch</th><th>Size</th></tr></thead><tbody>';
+    imgs.forEach(img=>{
+      // Shorten image name for display
+      let name=img.name||'<none>';
+      imgHtml+='<tr><td>'+escapeHtml(name)+'</td><td>'+escapeHtml(img.arch||'—')+'</td><td>'+escapeHtml(img.size||'—')+'</td></tr>';
+    });
+    imgHtml+='</tbody></table>';
+    envImages.innerHTML=imgHtml;
+  }
 }
 
 function startRunnerLogPoll(){

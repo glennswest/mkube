@@ -717,13 +717,26 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Parse optional job identity and status from body
+	// Parse optional job identity, status, and agent env from body
 	var hbReq struct {
-		Job    string `json:"job"`
-		Status string `json:"status"` // if set, appended to runner log as event
+		Job    string            `json:"job"`
+		Status string            `json:"status"`         // if set, appended to runner log as event
+		Env    *AgentEnvironment `json:"env,omitempty"`   // agent runtime environment
 	}
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&hbReq) // ignore errors — fields are optional
+	}
+
+	// Store agent environment on the HostReservation if provided
+	if hbReq.Env != nil {
+		hbReq.Env.ReportedAt = time.Now().UTC().Format(time.RFC3339)
+		for _, hr := range p.hostReservations {
+			if hr.Spec.BMHRef == matchedBMH.Name {
+				hr.Status.AgentEnv = hbReq.Env
+				p.persistHostReservation(r.Context(), hr)
+				break
+			}
+		}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -748,7 +761,8 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 		}
 	}
 
-	if updated == 0 {
+	// Accept heartbeats with env even when no job is running (startup report)
+	if updated == 0 && hbReq.Env == nil {
 		http.Error(w, "no running job found", http.StatusNotFound)
 		return
 	}
