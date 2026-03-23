@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -125,10 +126,13 @@ func (c *Client) Images(ctx context.Context) ([]ImageInfo, error) {
 // ── Pull ────────────────────────────────────────────────────────────────────
 
 // Pull downloads an image. Set tlsVerify=false for insecure registries.
+// Automatically requests the host's native architecture.
 func (c *Client) Pull(ctx context.Context, image string, tlsVerify bool) error {
 	params := url.Values{
 		"reference": {image},
 		"tlsVerify": {fmt.Sprintf("%v", tlsVerify)},
+		"Arch":      {runtime.GOARCH},
+		"OS":        {runtime.GOOS},
 	}
 
 	ctx2, cancel := context.WithTimeout(ctx, 10*time.Minute)
