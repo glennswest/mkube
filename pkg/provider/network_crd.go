@@ -83,6 +83,7 @@ type NetworkDHCPSpec struct {
 	BootFile      string                  `json:"bootFile,omitempty"`
 	BootFileEFI   string                  `json:"bootFileEfi,omitempty"`
 	ServerNetwork string                  `json:"serverNetwork,omitempty"` // DHCP relay target
+	NTPServers    []string                `json:"ntpServers,omitempty"`    // NTP servers (option 42), defaults to gateway
 	Reservations  []NetworkDHCPReservation `json:"reservations,omitempty"`
 }
 

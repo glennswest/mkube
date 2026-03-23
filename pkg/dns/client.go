@@ -483,6 +483,7 @@ type DHCPPool struct {
 	BootFileEFI   string   `json:"boot_file_efi,omitempty"`
 	IPXEBootURL   string   `json:"ipxe_boot_url,omitempty"`
 	RootPath      string   `json:"root_path,omitempty"`
+	NTPServers    []string `json:"ntp_servers,omitempty"`
 }
 
 // ListDHCPPools returns all DHCP pools from a microdns instance.

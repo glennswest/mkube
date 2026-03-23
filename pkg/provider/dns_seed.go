@@ -106,6 +106,12 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 	p.mu.RUnlock()
 	sort.Strings(domainSearch[1:]) // keep local zone first, sort the rest
 
+	// NTP servers: explicit config, or default to gateway (router typically serves NTP)
+	ntpServers := source.Spec.DHCP.NTPServers
+	if len(ntpServers) == 0 && source.Spec.Gateway != "" {
+		ntpServers = []string{source.Spec.Gateway}
+	}
+
 	pool := dns.DHCPPool{
 		Name:          source.Name + "-pool",
 		RangeStart:    source.Spec.DHCP.RangeStart,
@@ -119,6 +125,7 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		NextServer:    source.Spec.DHCP.NextServer,
 		BootFile:      source.Spec.DHCP.BootFile,
 		BootFileEFI:   source.Spec.DHCP.BootFileEFI,
+		NTPServers:    ntpServers,
 	}
 
 	// For data networks: set default iSCSI root_path to baremetalservices.
