@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-23
+- **feat:** ISCSIDisk supports creating empty thin volumes — `spec.source` is now optional. When omitted, creates a sparse file of the requested size with no source data. Useful for blank data disks.
+
 ### 2026-03-23 (Job Cancellation + Timeout)
 - **feat:** Agent detects server-side job cancellation via heartbeat response. When server returns `{"cancel": true}`, agent stops the build container and reports exit code 137.
 - **feat:** Build timeout support — uses job `spec.timeout` (seconds), defaults to 2 hours. On timeout, build container is stopped and cleaned up.

@@ -182,21 +182,20 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 		return
 	}
 
-	if disk.Spec.Source == "" {
-		http.Error(w, "spec.source is required", http.StatusBadRequest)
-		return
-	}
-
 	if disk.Spec.SizeGB <= 0 {
 		http.Error(w, "spec.sizeGB must be > 0", http.StatusBadRequest)
 		return
 	}
 
-	// Resolve source: ISCSICdrom, ISCSIDisk, or raw path
-	sourcePath, sourceType, err := p.resolveISCSIDiskSource(disk.Spec.Source)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid source: %v", err), http.StatusBadRequest)
-		return
+	// Resolve source if provided (empty source = empty thin volume)
+	var sourcePath, sourceType string
+	if disk.Spec.Source != "" {
+		var err error
+		sourcePath, sourceType, err = p.resolveISCSIDiskSource(disk.Spec.Source)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid source: %v", err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	disk.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSIDisk"}
@@ -228,7 +227,7 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 	p.iscsiDisks[disk.Name] = &disk
 	p.persistISCSIDisk(r.Context(), &disk)
 
-	// Clone in background
+	// Provision in background (clone from source, or create empty thin volume)
 	go p.cloneISCSIDisk(context.Background(), disk.Name, sourcePath, sourceType, diskPath, disk.Spec.SizeGB)
 
 	podWriteJSON(w, http.StatusCreated, &disk)
@@ -591,58 +590,67 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 
 	targetBytes := int64(sizeGB) * 1024 * 1024 * 1024
 
-	// Detect source format and convert if needed
-	sf := detectSourceFormat(sourcePath)
-	effectivePath := sourcePath
-
-	if sf.needsConversion() {
-		log.Infow("source needs conversion", "path", sourcePath,
-			"compressed", sf.compressed, "format", sf.diskFormat)
-
-		var err error
-		effectivePath, err = p.convertSourceToRaw(ctx, sourcePath, sf, log)
-		if err != nil {
-			p.setDiskError(ctx, name, fmt.Sprintf("converting source: %v", err))
+	if sourcePath == "" {
+		// Empty thin volume: just create a sparse file, no copying
+		if err := createSparseFile(diskPath, targetBytes); err != nil {
+			p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
 			return
 		}
-		defer os.Remove(effectivePath) // clean up intermediate file
-		log.Infow("source converted to raw", "intermediate", effectivePath)
+		log.Infow("empty thin volume created", "path", diskPath, "sizeGB", sizeGB)
+	} else {
+		// Detect source format and convert if needed
+		sf := detectSourceFormat(sourcePath)
+		effectivePath := sourcePath
 
-		// For converted sources, treat as raw path
-		sourceType = "path"
-	}
+		if sf.needsConversion() {
+			log.Infow("source needs conversion", "path", sourcePath,
+				"compressed", sf.compressed, "format", sf.diskFormat)
 
-	// Create sparse disk file of target size
-	if err := createSparseFile(diskPath, targetBytes); err != nil {
-		p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
-		return
-	}
-	log.Infow("sparse disk file created", "path", diskPath, "sizeGB", sizeGB)
-
-	// Copy source into the disk
-	switch sourceType {
-	case "cdrom":
-		// ISO source: dd the ISO into the beginning of the raw disk
-		if err := ddCopy(effectivePath, diskPath); err != nil {
-			os.Remove(diskPath)
-			p.setDiskError(ctx, name, fmt.Sprintf("copying ISO to disk: %v", err))
-			return
-		}
-		log.Infow("ISO copied to disk", "source", effectivePath)
-	case "disk", "path":
-		// Disk-to-disk: cp --sparse=auto
-		if err := sparseCopy(effectivePath, diskPath); err != nil {
-			os.Remove(diskPath)
-			p.setDiskError(ctx, name, fmt.Sprintf("copying disk: %v", err))
-			return
-		}
-		// If target is larger, extend the file
-		if fi, err := os.Stat(diskPath); err == nil && fi.Size() < targetBytes {
-			if err := truncateFile(diskPath, targetBytes); err != nil {
-				log.Warnw("failed to extend disk after copy", "error", err)
+			var err error
+			effectivePath, err = p.convertSourceToRaw(ctx, sourcePath, sf, log)
+			if err != nil {
+				p.setDiskError(ctx, name, fmt.Sprintf("converting source: %v", err))
+				return
 			}
+			defer os.Remove(effectivePath) // clean up intermediate file
+			log.Infow("source converted to raw", "intermediate", effectivePath)
+
+			// For converted sources, treat as raw path
+			sourceType = "path"
 		}
-		log.Infow("disk copied", "source", effectivePath)
+
+		// Create sparse disk file of target size
+		if err := createSparseFile(diskPath, targetBytes); err != nil {
+			p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
+			return
+		}
+		log.Infow("sparse disk file created", "path", diskPath, "sizeGB", sizeGB)
+
+		// Copy source into the disk
+		switch sourceType {
+		case "cdrom":
+			// ISO source: dd the ISO into the beginning of the raw disk
+			if err := ddCopy(effectivePath, diskPath); err != nil {
+				os.Remove(diskPath)
+				p.setDiskError(ctx, name, fmt.Sprintf("copying ISO to disk: %v", err))
+				return
+			}
+			log.Infow("ISO copied to disk", "source", effectivePath)
+		case "disk", "path":
+			// Disk-to-disk: cp --sparse=auto
+			if err := sparseCopy(effectivePath, diskPath); err != nil {
+				os.Remove(diskPath)
+				p.setDiskError(ctx, name, fmt.Sprintf("copying disk: %v", err))
+				return
+			}
+			// If target is larger, extend the file
+			if fi, err := os.Stat(diskPath); err == nil && fi.Size() < targetBytes {
+				if err := truncateFile(diskPath, targetBytes); err != nil {
+					log.Warnw("failed to extend disk after copy", "error", err)
+				}
+			}
+			log.Infow("disk copied", "source", effectivePath)
+		}
 	}
 
 	// Configure iSCSI target on RouterOS
