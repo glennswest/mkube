@@ -92,6 +92,10 @@ func main() {
 	log.Printf("mkube-agent %s (%s) starting, api=%s, maxConcurrent=%d, socket=%s",
 		version, commit, apiURL, maxWorkers, sock)
 
+	// Log DNS servers for build containers
+	dns := getNameservers()
+	log.Printf("build container DNS: %v", dns)
+
 	// Diagnostic: check /data mount at startup
 	if fi, err := os.Stat("/data"); err != nil {
 		log.Printf("WARNING: /data does not exist: %v", err)
@@ -775,12 +779,51 @@ func formatSize(b int64) string {
 	}
 }
 
-// getNameservers reads nameserver entries from /etc/resolv.conf.
+// getNameservers returns DNS servers for build containers.
+// Priority: MKUBE_DNS env var > systemd-resolved upstream > resolv.conf > fallback 8.8.8.8
 func getNameservers() []string {
-	data, err := os.ReadFile("/etc/resolv.conf")
-	if err != nil {
-		return nil
+	// Explicit DNS override (set by mkube on agent container)
+	if dns := os.Getenv("MKUBE_DNS"); dns != "" {
+		var servers []string
+		for _, s := range strings.Split(dns, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				servers = append(servers, s)
+			}
+		}
+		if len(servers) > 0 {
+			return servers
+		}
 	}
+
+	// Try systemd-resolved's actual upstream config
+	if data, err := os.ReadFile("/run/systemd/resolve/resolv.conf"); err == nil {
+		servers := parseNameservers(data)
+		if len(servers) > 0 {
+			return servers
+		}
+	}
+
+	// Fall back to /etc/resolv.conf, filtering out stub resolver
+	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		servers := parseNameservers(data)
+		// Filter out 127.0.0.53 (systemd-resolved stub — unreachable from nested containers)
+		var real []string
+		for _, s := range servers {
+			if s != "127.0.0.53" && s != "127.0.0.1" {
+				real = append(real, s)
+			}
+		}
+		if len(real) > 0 {
+			return real
+		}
+	}
+
+	// Last resort — public DNS
+	return []string{"8.8.8.8", "1.1.1.1"}
+}
+
+func parseNameservers(data []byte) []string {
 	var servers []string
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
