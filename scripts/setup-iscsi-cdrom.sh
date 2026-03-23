@@ -43,9 +43,9 @@ for s in (subs or []):
             -d "{\"name\":\"${SUB}\"}" > /dev/null
     done
 
-    # Delete with ISO cleanup
+    # Delete CDROM and ISO file (default behavior)
     echo "    Deleting CDROM and ISO file..."
-    curl -sf -X DELETE "${MKUBE_API}/api/v1/iscsi-cdroms/${NAME}?deleteISO=true" > /dev/null
+    curl -sf -X DELETE "${MKUBE_API}/api/v1/iscsi-cdroms/${NAME}" > /dev/null
     echo "    Cleanup complete."
     sleep 1
 fi

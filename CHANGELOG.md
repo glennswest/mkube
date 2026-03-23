@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-03-23
+- **fix:** iSCSI CDROM delete now removes the ISO file by default, preventing the ISO scanner from resurrecting deleted CDROMs. Use `?keepISO=true` to preserve the file.
 - **feat:** ISCSIDisk supports creating empty thin volumes — `spec.source` is now optional. When omitted, creates a sparse file of the requested size with no source data. Useful for blank data disks.
 - **feat:** Console UI: iSCSI Disks tab now has Create, Clone, and Delete actions. Create modal supports empty thin volumes or cloning from existing CDROMs/disks with pool and host selection. Clone modal pre-fills source name. Delete with confirmation dialog.
 

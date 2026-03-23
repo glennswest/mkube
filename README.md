@@ -260,7 +260,7 @@ POST   /api/v1/iscsi-cdroms/{name}/unsubscribe         # Unsubscribe host
 1. Create the CDROM object (returns phase=Pending)
 2. Upload the ISO file via multipart POST (streams to `/raid1/iso/`, configures RouterOS iSCSI target)
 3. Subscribe hosts to get iSCSI connection details (targetIQN, portalIP, portalPort)
-4. Unsubscribe when done; delete CDROM with `?deleteISO=true` to remove the ISO file
+4. Unsubscribe when done; delete CDROM (ISO is removed automatically; use `?keepISO=true` to preserve it)
 
 Use the helper script for create+upload+cleanup in one step:
 ```bash

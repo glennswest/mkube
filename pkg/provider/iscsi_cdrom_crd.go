@@ -327,8 +327,8 @@ func (p *MicroKubeProvider) handleDeleteISCSICdrom(w http.ResponseWriter, r *htt
 	// Remove iSCSI target from RouterOS
 	p.removeISCSITarget(r.Context(), cdrom)
 
-	// Optionally delete ISO file
-	if r.URL.Query().Get("deleteISO") == "true" {
+	// Delete ISO file unless ?keepISO=true
+	if r.URL.Query().Get("keepISO") != "true" {
 		if cdrom.Status.ISOPath != "" {
 			if err := os.Remove(cdrom.Status.ISOPath); err != nil && !os.IsNotExist(err) {
 				p.deps.Logger.Warnw("failed to delete ISO file", "path", cdrom.Status.ISOPath, "error", err)
