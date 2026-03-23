@@ -4,3 +4,16 @@ dist/
 /mkube
 /pve-deploy
 /mkube-boot
+/mkube-agent
+/mkube-update
+/mkube-arm64
+/mkube-test
+/mkube-test-mac
+/registry
+/stormd
+/stormd-x86
+/config.toml
+/.tmp-build/
+Dockerfile.agent
+Dockerfile.scratch.nostormd
+deploy/agent-stormd.toml

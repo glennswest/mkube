@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-03-23 (Agent Scratch Image + Fixes)
+- **fix:** Agent scratch image now built correctly via `make deploy-agent` (GOARCH=amd64 + x86_64 stormd). Previous manual build had exec format error.
+- **fix:** NATS pod key separator mismatch — `stampImageDigest` used "/" while all other pod operations used ".". Created undeletable duplicate entries. Fixed separator, added cleanup in delete handler, migration in loadFromStore.
+- **fix:** Agent force-removes stale build containers before creating new ones (prevents "name already in use" after crashes/reboots).
+- **refactor:** Agent container slimmed from 617MB → 20MB — removed podman+git from image (uses socket API), switched to scratch base. Only contains stormd (Rust) + mkube-agent (Go) static binaries.
+- **refactor:** Removed `commitJobLogs` — build logs stream to mkube in real-time, no git commit needed.
+- **fix:** UI job logs "Loading logs..." forever — empty API response matched initial `_lastLogText` value. Fixed with null sentinel.
+- **chore:** Updated .gitignore with build artifacts (agent, stormd, registry binaries, tmp dirs).
+
 ### 2026-03-23 (Agent Socket API Rewrite + Version Display)
 - **feat:** New `pkg/podman` library — pure Go client for Podman REST API via Unix socket (`/run/podman/podman.sock`). Methods: Info, Images, Pull, Run, RemoveContainer, PruneContainers, PruneImages. No external dependencies.
 - **refactor:** Agent rewritten to use podman socket API instead of shelling out to `podman` CLI. Eliminates dependency on podman binary in agent container's PATH.
