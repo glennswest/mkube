@@ -590,8 +590,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	// Stamp the deployed image digest so we can detect stale images on restart.
 	p.stampImageDigest(ctx, pod)
 
-	// Track the pod
+	// Track the pod (brief lock — callers must NOT hold p.mu)
+	p.mu.Lock()
 	p.pods[podKey(pod)] = pod.DeepCopy()
+	p.mu.Unlock()
 
 	// Record events
 	p.recordEvent(pod, "Scheduled", fmt.Sprintf("Successfully assigned %s/%s to %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
@@ -747,7 +749,10 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 	}
 	// Stamp the deployed digest after successful update
 	p.stampImageDigest(ctx, pod)
+	// Brief lock — callers must NOT hold p.mu
+	p.mu.Lock()
 	p.pods[podKey(pod)] = pod.DeepCopy()
+	p.mu.Unlock()
 	return nil
 }
 
@@ -777,8 +782,14 @@ func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod
 	namespaceName := pod.Annotations[annotationNamespace]
 
 	// Prevent reconciler from interfering during the update
+	p.mu.Lock()
 	p.redeploying[key] = true
-	defer delete(p.redeploying, key)
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.redeploying, key)
+		p.mu.Unlock()
+	}()
 
 	// ── Phase A: Pre-staging ────────────────────────────────────────────
 	var stages []stagingInfo
@@ -865,7 +876,9 @@ func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod
 	// ── Phase C: Register + track ───────────────────────────────────────
 	p.registerPodAliases(ctx, pod, networkName, namespaceName, newContainerIPs, log)
 	p.pushLogMappings(ctx, pod, log)
+	p.mu.Lock()
 	p.pods[key] = pod.DeepCopy()
+	p.mu.Unlock()
 
 	p.recordEvent(pod, "Updated",
 		fmt.Sprintf("Blue-green update completed for %s/%s", pod.Namespace, pod.Name), "Normal")
@@ -1370,7 +1383,10 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 	}
 
 	p.recordEvent(pod, "Killing", fmt.Sprintf("Stopping pod %s/%s", pod.Namespace, pod.Name), "Normal")
+	// Brief lock — callers must NOT hold p.mu
+	p.mu.Lock()
 	delete(p.pods, podKey(pod))
+	p.mu.Unlock()
 
 	// Run async consistency check to clean up any orphaned resources
 	p.CheckConsistencyAsync("delete-pod/" + podKey(pod))
@@ -1381,15 +1397,18 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 // GetPod returns the tracked pod object.
 func (p *MicroKubeProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	key := namespace + "/" + name
-	if pod, ok := p.pods[key]; ok {
+	p.mu.RLock()
+	pod, ok := p.pods[key]
+	p.mu.RUnlock()
+	if ok {
 		return pod, nil
 	}
 	// Fall back to NATS store for pods that exist but aren't tracked
 	if p.deps.Store != nil && p.deps.Store.Connected() {
 		storeKey := namespace + "." + name
-		var pod corev1.Pod
-		if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &pod); err == nil {
-			return &pod, nil
+		var storePod corev1.Pod
+		if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err == nil {
+			return &storePod, nil
 		}
 	}
 	return nil, fmt.Errorf("pod %s not found", key)
@@ -1504,10 +1523,12 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 
 // GetPods returns all tracked pods.
 func (p *MicroKubeProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
+	p.mu.RLock()
 	pods := make([]*corev1.Pod, 0, len(p.pods))
 	for _, pod := range p.pods {
 		pods = append(pods, pod)
 	}
+	p.mu.RUnlock()
 	return pods, nil
 }
 
@@ -1977,18 +1998,21 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				}
 			}
 			log.Infow("creating missing pod", "pod", key, "priorFailures", priorFailures)
-			p.mu.Lock()
+			// CreatePod manages its own p.pods lock internally — no external lock
 			if err := p.CreatePod(ctx, pod); err != nil {
+				p.mu.Lock()
 				p.createFailures[key]++
+				failures := p.createFailures[key]
 				p.mu.Unlock()
-				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", p.createFailures[key])
+				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", failures)
 				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
 			} else {
+				p.mu.Lock()
 				delete(p.createFailures, key)
 				p.mu.Unlock()
 			}
 		} else {
-			// Track already-existing pods
+			// Track already-existing pods (brief lock for map write only)
 			p.mu.Lock()
 			p.pods[key] = pod.DeepCopy()
 			p.mu.Unlock()
@@ -2681,10 +2705,8 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 			p.mu.RUnlock()
 			if !tracked {
 				log.Infow("new pod scheduled", "pod", key)
-				p.mu.Lock()
-				err := p.CreatePod(ctx, pod)
-				p.mu.Unlock()
-				if err != nil {
+				// CreatePod manages its own p.pods lock internally
+				if err := p.CreatePod(ctx, pod); err != nil {
 					log.Errorw("failed to create pod", "pod", key, "error", err)
 				}
 			}
@@ -2700,10 +2722,8 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 		for key, pod := range wpSnap {
 			if !desiredKeys[key] {
 				log.Infow("pod removed from node", "pod", key)
-				p.mu.Lock()
-				err := p.DeletePod(ctx, pod)
-				p.mu.Unlock()
-				if err != nil {
+				// DeletePod manages its own p.pods lock internally
+				if err := p.DeletePod(ctx, pod); err != nil {
 					log.Errorw("failed to delete pod", "pod", key, "error", err)
 				}
 			}
@@ -3267,18 +3287,15 @@ func (p *MicroKubeProvider) handleLifecycleFailed(containerName string) {
 
 	if foundPod != nil {
 		log.Infow("found owning pod, recreating", "pod", foundKey)
-		p.mu.Lock()
+		// DeletePod/CreatePod manage their own p.pods lock internally
 		if err := p.DeletePod(ctx, foundPod); err != nil {
-			p.mu.Unlock()
 			log.Errorw("failed to delete pod for lifecycle recovery", "pod", foundKey, "error", err)
 			return
 		}
 		if err := p.CreatePod(ctx, foundPod); err != nil {
-			p.mu.Unlock()
 			log.Errorw("failed to recreate pod for lifecycle recovery", "pod", foundKey, "error", err)
 			return
 		}
-		p.mu.Unlock()
 		log.Infow("pod recreated after lifecycle failure", "pod", foundKey)
 		return
 	}

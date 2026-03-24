@@ -249,6 +249,29 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", p.handleHealthz)
 }
 
+// isPodCRUDPath returns true for pod create/update/delete/patch paths
+// which do heavy container I/O and manage their own internal locks.
+func isPodCRUDPath(path string) bool {
+	// Matches /api/v1/namespaces/{ns}/pods and /api/v1/namespaces/{ns}/pods/{name}
+	// These handlers call CreatePod/UpdatePod/DeletePod which do minutes of I/O.
+	if !strings.HasPrefix(path, "/api/v1/namespaces/") {
+		return false
+	}
+	parts := strings.Split(path, "/")
+	// /api/v1/namespaces/{ns}/pods = 6 parts, /api/v1/namespaces/{ns}/pods/{name} = 7
+	return len(parts) >= 6 && parts[5] == "pods"
+}
+
+// isDeploymentWritePath returns true for deployment write operations
+// which call DeletePod (heavy I/O) and manage their own internal locks.
+func isDeploymentWritePath(method, path string) bool {
+	if method == http.MethodGet || method == http.MethodHead {
+		return false
+	}
+	return strings.HasPrefix(path, "/api/v1/deployments") ||
+		strings.Contains(path, "/deployments")
+}
+
 // WrapHandler returns an http.Handler that wraps the given handler with:
 // 1. Panic recovery — catches panics and returns 500 instead of crashing
 // 2. Mutex serialization — prevents concurrent map access crashes
@@ -291,12 +314,21 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			return
 		}
 
-		// Endpoints that make external HTTP calls (RouterOS, cluster peers)
-		// manage their own brief internal locks. Holding the blanket lock
-		// during these calls causes RWMutex priority inversion: a pending
-		// writer blocks all new readers, stalling the entire API.
+		// Endpoints that do heavy I/O (RouterOS HTTP calls, container creation,
+		// image pulls) manage their own brief internal locks. Holding the
+		// blanket lock during these calls causes RWMutex priority inversion:
+		// a pending writer blocks all new readers, stalling the entire API.
+		//
+		// Only bypass for genuinely slow operations — fast handlers (configmaps,
+		// PVCs, events, BMH, etc.) work fine under the blanket middleware lock.
 		if strings.HasPrefix(r.URL.Path, "/api/v1/nodes") ||
 			(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/storagepools/")) {
+			h.ServeHTTP(w, r)
+			return
+		}
+		// Pod CRUD and deployment delete do minutes of container I/O —
+		// these manage their own brief locks around map writes.
+		if isPodCRUDPath(r.URL.Path) || isDeploymentWritePath(r.Method, r.URL.Path) {
 			h.ServeHTTP(w, r)
 			return
 		}

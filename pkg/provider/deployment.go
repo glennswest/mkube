@@ -107,7 +107,10 @@ func (p *MicroKubeProvider) handleCreateDeployment(w http.ResponseWriter, r *htt
 	}
 
 	key := ns + "/" + deploy.Name
-	if _, exists := p.deployments[key]; exists {
+	p.mu.RLock()
+	_, exists := p.deployments[key]
+	p.mu.RUnlock()
+	if exists {
 		http.Error(w, fmt.Sprintf("Deployment %s already exists", key), http.StatusConflict)
 		return
 	}
@@ -125,7 +128,9 @@ func (p *MicroKubeProvider) handleCreateDeployment(w http.ResponseWriter, r *htt
 		Replicas:  0,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	p.mu.Lock()
 	p.deployments[key] = &deploy
+	p.mu.Unlock()
 	p.deps.Logger.Infow("deployment created", "deployment", key, "replicas", deploy.Spec.Replicas)
 	p.triggerReconcile()
 
@@ -137,23 +142,32 @@ func (p *MicroKubeProvider) handleGetDeployment(w http.ResponseWriter, r *http.R
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
+	p.mu.RLock()
 	deploy, ok := p.deployments[key]
+	var out *Deployment
+	if ok {
+		out = deploy.DeepCopy()
+	}
+	p.mu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("Deployment %s not found", key), http.StatusNotFound)
 		return
 	}
 
-	out := deploy.DeepCopy()
 	p.enrichDeploymentStatus(out)
 	podWriteJSON(w, http.StatusOK, out)
 }
 
 func (p *MicroKubeProvider) handleListAllDeployments(w http.ResponseWriter, r *http.Request) {
+	p.mu.RLock()
 	items := make([]Deployment, 0, len(p.deployments))
 	for _, deploy := range p.deployments {
-		out := deploy.DeepCopy()
-		p.enrichDeploymentStatus(out)
-		items = append(items, *out)
+		items = append(items, *deploy.DeepCopy())
+	}
+	p.mu.RUnlock()
+
+	for i := range items {
+		p.enrichDeploymentStatus(&items[i])
 	}
 
 	podWriteJSON(w, http.StatusOK, DeploymentList{
@@ -164,14 +178,18 @@ func (p *MicroKubeProvider) handleListAllDeployments(w http.ResponseWriter, r *h
 
 func (p *MicroKubeProvider) handleListNamespacedDeployments(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
+	p.mu.RLock()
 	items := make([]Deployment, 0)
 	for _, deploy := range p.deployments {
 		if deploy.Namespace != ns {
 			continue
 		}
-		out := deploy.DeepCopy()
-		p.enrichDeploymentStatus(out)
-		items = append(items, *out)
+		items = append(items, *deploy.DeepCopy())
+	}
+	p.mu.RUnlock()
+
+	for i := range items {
+		p.enrichDeploymentStatus(&items[i])
 	}
 
 	podWriteJSON(w, http.StatusOK, DeploymentList{
@@ -185,7 +203,10 @@ func (p *MicroKubeProvider) handleUpdateDeployment(w http.ResponseWriter, r *htt
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.deployments[key]; !ok {
+	p.mu.RLock()
+	_, ok := p.deployments[key]
+	p.mu.RUnlock()
+	if !ok {
 		http.Error(w, fmt.Sprintf("Deployment %s not found", key), http.StatusNotFound)
 		return
 	}
@@ -212,7 +233,9 @@ func (p *MicroKubeProvider) handleUpdateDeployment(w http.ResponseWriter, r *htt
 	}
 
 	deploy.Status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.mu.Lock()
 	p.deployments[key] = &deploy
+	p.mu.Unlock()
 	p.deps.Logger.Infow("deployment updated", "deployment", key, "replicas", deploy.Spec.Replicas)
 	p.triggerReconcile()
 
@@ -225,14 +248,18 @@ func (p *MicroKubeProvider) handleDeleteDeployment(w http.ResponseWriter, r *htt
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
+	p.mu.RLock()
 	deploy, ok := p.deployments[key]
+	p.mu.RUnlock()
 	if !ok {
 		http.Error(w, fmt.Sprintf("Deployment %s not found", key), http.StatusNotFound)
 		return
 	}
 
-	// Delete all owned pods
+	// Snapshot owned pods under brief lock
 	ownedPods := p.deploymentPods(deploy)
+
+	// Delete all owned pods (DeletePod manages its own locks)
 	for _, pod := range ownedPods {
 		podKey := pod.Namespace + "/" + pod.Name
 		p.deps.Logger.Infow("deleting deployment-owned pod", "deployment", key, "pod", podKey)
@@ -256,7 +283,9 @@ func (p *MicroKubeProvider) handleDeleteDeployment(w http.ResponseWriter, r *htt
 		}
 	}
 
+	p.mu.Lock()
 	delete(p.deployments, key)
+	p.mu.Unlock()
 	p.deps.Logger.Infow("deployment deleted", "deployment", key, "podsRemoved", len(ownedPods))
 	p.triggerReconcile()
 
@@ -287,15 +316,26 @@ func (p *MicroKubeProvider) reconcileDeployments(ctx context.Context) {
 					continue
 				}
 				mapKey := deploy.Namespace + "/" + deploy.Name
+				p.mu.Lock()
 				if _, exists := p.deployments[mapKey]; !exists {
 					p.deployments[mapKey] = &deploy
+					p.mu.Unlock()
 					log.Infow("loaded deployment from store", "deployment", mapKey)
+				} else {
+					p.mu.Unlock()
 				}
 			}
 		}
 	}
 
+	// Snapshot deployments under brief lock, then reconcile lock-free
+	p.mu.RLock()
+	deploySnap := make([]*Deployment, 0, len(p.deployments))
 	for _, deploy := range p.deployments {
+		deploySnap = append(deploySnap, deploy)
+	}
+	p.mu.RUnlock()
+	for _, deploy := range deploySnap {
 		p.reconcileOneDeployment(ctx, deploy)
 	}
 }
@@ -487,6 +527,7 @@ func (p *MicroKubeProvider) podFromDeployment(deploy *Deployment, podName string
 
 // deploymentPods returns all pods owned by the given deployment.
 func (p *MicroKubeProvider) deploymentPods(deploy *Deployment) []*corev1.Pod {
+	p.mu.RLock()
 	var pods []*corev1.Pod
 	for _, pod := range p.pods {
 		if pod.Namespace != deploy.Namespace {
@@ -496,6 +537,7 @@ func (p *MicroKubeProvider) deploymentPods(deploy *Deployment) []*corev1.Pod {
 			pods = append(pods, pod)
 		}
 	}
+	p.mu.RUnlock()
 	// Sort by name for deterministic ordering
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].Name < pods[j].Name
@@ -513,26 +555,19 @@ func isOwnedByDeployment(pod *corev1.Pod) bool {
 
 // enrichDeploymentStatus updates the deployment status with live pod counts.
 func (p *MicroKubeProvider) enrichDeploymentStatus(deploy *Deployment) {
+	// deploymentPods already acquires its own RLock
 	ownedPods := p.deploymentPods(deploy)
 	deploy.Status.Replicas = int32(len(ownedPods))
 
+	p.mu.RLock()
 	var ready int32
 	for _, pod := range ownedPods {
-		// Check if all containers in the pod exist on RouterOS
-		allRunning := true
-		for _, c := range pod.Spec.Containers {
-			name := sanitizeName(pod, c.Name)
-			_ = name
-			// Simple check: if the pod is tracked, count it as ready
-			if _, ok := p.pods[pod.Namespace+"/"+pod.Name]; !ok {
-				allRunning = false
-				break
-			}
-		}
-		if allRunning {
+		// Simple check: if the pod is tracked, count it as ready
+		if _, ok := p.pods[pod.Namespace+"/"+pod.Name]; ok {
 			ready++
 		}
 	}
+	p.mu.RUnlock()
 	deploy.Status.ReadyReplicas = ready
 }
 

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-03-24
+- **fix:** Comprehensive RWMutex refactor — moved from blanket middleware locking to fine-grained internal locks. CreatePod/DeletePod/UpdatePod/blueGreenUpdate now manage their own brief locks around `p.pods` map writes. Removed all external `p.mu.Lock()` from callers (reconcile loop, consistency checker, lifecycle recovery, virtual kubelet reconcile). Pod CRUD and deployment write API handlers bypassed from middleware blanket lock. This eliminates the write-lock contention where reconcile's CreatePod (minutes of I/O: image pulls, container creation, network setup) blocked ALL readers.
+- **fix:** Deployment handlers now use internal locks instead of relying on middleware blanket lock. GetPod/GetPods use internal RLock for thread safety when called from bypassed handlers.
+- **fix:** HTTP upload timeout — replaced `ReadTimeout: 30s` with `ReadHeaderTimeout: 30s`. ReadTimeout was killing 3+ GB image uploads at ~1.2GB (30s × 40MB/s). ReadHeaderTimeout protects against slowloris without affecting body streaming.
+
 ### 2026-03-23
 - **fix:** Console base href detection now recognizes stormd `/ui/ext/` proxy path in addition to `/ui/proxy/`, fixing broken navigation when accessing Management tab through stormd.
 - **fix:** Console apiBase changed from raw container IP (`192.168.200.2`) to DNS name (`mkube.gt.lo`), fixing API calls hanging when browser can't reach the internal container IP directly.

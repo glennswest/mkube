@@ -574,10 +574,12 @@ func runSharedServices(
 
 	go func() {
 		srv := &http.Server{
-			Addr:        listenAddr,
-			Handler:     p.WrapHandler(mux),
-			ReadTimeout: 30 * time.Second,
-			IdleTimeout: 120 * time.Second,
+			Addr:              listenAddr,
+			Handler:           p.WrapHandler(mux),
+			ReadHeaderTimeout: 30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			// No ReadTimeout — uploads (3+ GB images) need minutes to stream.
+			// ReadHeaderTimeout protects against slowloris attacks on the header phase.
 			// No WriteTimeout — watch/streaming endpoints need long-lived connections.
 		}
 		go func() {

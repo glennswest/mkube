@@ -1400,14 +1400,11 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 			"pod", podKey, "server", dead.server,
 			"index", i+1, "total", len(deadList))
 
-		// Restart: delete and recreate (hold lock for map writes in DeletePod/CreatePod)
-		p.mu.Lock()
+		// Restart: delete and recreate (DeletePod/CreatePod manage own locks)
 		if err := p.DeletePod(ctx, dead.pod); err != nil {
-			p.mu.Unlock()
 			log.Errorw("failed to delete dead DNS pod", "pod", podKey, "error", err)
 			continue
 		}
-		p.mu.Unlock()
 
 		// Re-read from NATS store to get clean spec
 		if p.deps.Store == nil {
@@ -1422,13 +1419,10 @@ func (p *MicroKubeProvider) repairDNSLiveness(ctx context.Context) int {
 			continue
 		}
 
-		p.mu.Lock()
 		if err := p.CreatePod(ctx, &storePod); err != nil {
-			p.mu.Unlock()
 			log.Errorw("failed to recreate DNS pod", "pod", podKey, "error", err)
 			continue
 		}
-		p.mu.Unlock()
 
 		// Wait for port 53 to come alive before restarting the next DNS pod
 		alive := false
@@ -1537,19 +1531,18 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 				p.deps.Logger.Infow("container network broken beyond threshold, triggering recreate",
 					"pod", key, "failures", failCount)
 
-				p.mu.Lock()
+				// DeletePod/CreatePod manage their own p.pods lock internally
 				if err := p.DeletePod(ctx, pod); err != nil {
-					p.mu.Unlock()
 					p.deps.Logger.Errorw("failed to delete pod for network repair",
 						"pod", key, "error", err)
 					continue
 				}
 				if err := p.CreatePod(ctx, pod); err != nil {
-					p.mu.Unlock()
 					p.deps.Logger.Errorw("failed to recreate pod for network repair",
 						"pod", key, "error", err)
 					continue
 				}
+				p.mu.Lock()
 				delete(p.networkFailures, key)
 				p.mu.Unlock()
 				repaired++
