@@ -26,3 +26,12 @@ on_failure = "restart"
 on_exit = "restart"
 restart_delay_secs = 2
 max_restarts = 0
+
+[[process]]
+name = "imagesync"
+command = "/app/imagesync"
+args = ["--images", "/etc/imagesync.txt"]
+on_failure = "restart"
+on_exit = "restart"
+restart_delay_secs = 30
+max_restarts = 0

@@ -142,12 +142,17 @@ build-test:
 test-integration: build-test
 	./dist/mkube-test --api $(MKUBE_API)
 
+IMAGESYNC := ../imagesync/target/x86_64-unknown-linux-musl/release/imagesync
+IMAGESYNC_TXT := ../imagesync/images.txt
+
 ## Build mkube-agent container image (x86_64, stormd from local build)
 build-agent-image: build-agent
 	cp dist/mkube-agent cmd/mkube-agent/mkube-agent
 	cp $(STORMD_AMD64) cmd/mkube-agent/stormd
+	cp $(IMAGESYNC) cmd/mkube-agent/imagesync
+	cp $(IMAGESYNC_TXT) cmd/mkube-agent/imagesync.txt
 	podman build --format docker --platform linux/amd64 --tls-verify=false -f cmd/mkube-agent/Containerfile -t $(REGISTRY)/mkube-agent:edge cmd/mkube-agent/
-	rm -f cmd/mkube-agent/mkube-agent cmd/mkube-agent/stormd
+	rm -f cmd/mkube-agent/mkube-agent cmd/mkube-agent/stormd cmd/mkube-agent/imagesync cmd/mkube-agent/imagesync.txt
 
 ## Push mkube-agent container image to local registry
 push-agent:

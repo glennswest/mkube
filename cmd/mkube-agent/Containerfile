@@ -2,6 +2,8 @@
 FROM scratch
 COPY stormd /stormd
 COPY mkube-agent /app/mkube-agent
+COPY imagesync /app/imagesync
+COPY imagesync.txt /etc/imagesync.txt
 COPY config.toml /etc/stormd/config.toml
 VOLUME ["/data"]
 EXPOSE 9080 8080 22
