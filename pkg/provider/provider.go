@@ -32,6 +32,7 @@ import (
 	"github.com/glennswest/mkube/pkg/network"
 	"github.com/glennswest/mkube/pkg/registry"
 	"github.com/glennswest/mkube/pkg/runtime"
+	"github.com/glennswest/mkube/pkg/safemap"
 	"github.com/glennswest/mkube/pkg/storage"
 	"github.com/glennswest/mkube/pkg/store"
 	"github.com/glennswest/mkube/pkg/stormbase"
@@ -89,43 +90,44 @@ type Deps struct {
 // container operations, managing the full lifecycle including networking,
 // storage, and boot ordering.
 type MicroKubeProvider struct {
-	mu              sync.RWMutex // protects all in-memory maps below
 	deps            Deps
 	nodeName        string
 	startTime       time.Time
-	pods            map[string]*corev1.Pod       // namespace/name -> pod
-	configMaps      map[string]*corev1.ConfigMap // namespace/name -> configmap
-	bareMetalHosts  map[string]*BareMetalHost               // namespace/name -> BMH
-	deployments     map[string]*Deployment                  // namespace/name -> deployment
-	pvcs            map[string]*corev1.PersistentVolumeClaim // namespace/name -> PVC
-	networks        map[string]*Network                     // name -> Network (cluster-scoped)
-	registries      map[string]*Registry                    // name -> Registry (cluster-scoped)
-	iscsiCdroms     map[string]*ISCSICdrom                  // name -> ISCSICdrom (cluster-scoped)
-	iscsiDisks      map[string]*ISCSIDisk                   // name -> ISCSIDisk (cluster-scoped)
-	bootConfigs      map[string]*BootConfig                  // name -> BootConfig (cluster-scoped)
-	hostReservations map[string]*HostReservation             // namespace/name -> HostReservation
-	jobRunners       map[string]*JobRunner                   // name -> JobRunner (cluster-scoped)
-	jobs             map[string]*Job                         // namespace/name -> Job
-	storagePools        map[string]*StoragePool              // name -> StoragePool (cluster-scoped)
+	pods            *safemap.Map[string, *corev1.Pod]                    // namespace/name -> pod
+	configMaps      *safemap.Map[string, *corev1.ConfigMap]              // namespace/name -> configmap
+	bareMetalHosts  *safemap.Map[string, *BareMetalHost]                 // namespace/name -> BMH
+	deployments     *safemap.Map[string, *Deployment]                    // namespace/name -> deployment
+	pvcs            *safemap.Map[string, *corev1.PersistentVolumeClaim]  // namespace/name -> PVC
+	networks        *safemap.Map[string, *Network]                       // name -> Network (cluster-scoped)
+	registries      *safemap.Map[string, *Registry]                      // name -> Registry (cluster-scoped)
+	iscsiCdroms     *safemap.Map[string, *ISCSICdrom]                    // name -> ISCSICdrom (cluster-scoped)
+	iscsiDisks      *safemap.Map[string, *ISCSIDisk]                     // name -> ISCSIDisk (cluster-scoped)
+	bootConfigs     *safemap.Map[string, *BootConfig]                    // name -> BootConfig (cluster-scoped)
+	hostReservations *safemap.Map[string, *HostReservation]              // namespace/name -> HostReservation
+	jobRunners      *safemap.Map[string, *JobRunner]                     // name -> JobRunner (cluster-scoped)
+	jobs            *safemap.Map[string, *Job]                           // namespace/name -> Job
+	storagePools    *safemap.Map[string, *StoragePool]                   // name -> StoragePool (cluster-scoped)
+	redeploying     *safemap.Map[string, bool]                           // pod keys currently being redeployed
+	createFailures  *safemap.Map[string, int]                            // pod key -> consecutive CreatePod failures
+	networkFailures *safemap.Map[string, int]                            // pod key -> consecutive network health failures
+	restartBackoff  *safemap.Map[string, *containerRestartState]         // container name -> restart backoff tracking
 	cleanupTickCounter  int                                  // scheduler tick counter for auto-cleanup
 	jobLogBuf           *jobLogStore                         // in-memory job log buffers
 	runnerLogBuf     *jobLogStore                            // in-memory runner activity log buffers
-	dhcpIndex       *dhcpNetworkIndex            // precomputed DHCP reservation/subnet lookup
-	events          []corev1.Event               // recent events (ring buffer, max 256)
-	notifyPodStatus func(*corev1.Pod)            // callback for pod status updates
-	pushNotify      chan registry.PushEvent       // internal channel for API push notifications
-	redeploying        map[string]bool              // pod keys currently being redeployed (skip in reconciler)
-	createFailures     map[string]int               // pod key -> consecutive CreatePod failures
-	networkFailures    map[string]int               // pod key -> consecutive network health failures
-	consistencyRunning atomic.Bool                  // guards CheckConsistencyAsync against goroutine leaks
-	consistencyCache   *ConsistencyReport           // cached consistency report (lock-free HTTP reads)
-	consistencyCacheMu sync.Mutex                   // guards consistencyCache writes
-	consistencyCacheAt time.Time                    // when the cache was last refreshed
-	reseedRunning      atomic.Bool                  // guards triggerNetworkReseed against goroutine leaks
-	clusterMgr         *cluster.Manager             // nil if clustering is disabled
-	kickReconcile      chan struct{}                 // event-driven reconcile trigger (buffered 1)
-	kickScheduler      chan struct{}                 // event-driven scheduler trigger (buffered 1)
-	restartBackoff     map[string]*containerRestartState // container name -> restart backoff tracking
+	dhcpMu          sync.RWMutex                             // protects dhcpIndex
+	dhcpIndex       *dhcpNetworkIndex                        // precomputed DHCP reservation/subnet lookup
+	eventsMu        sync.Mutex                               // protects events slice
+	events          []corev1.Event                           // recent events (ring buffer, max 256)
+	notifyPodStatus func(*corev1.Pod)                        // callback for pod status updates
+	pushNotify      chan registry.PushEvent                   // internal channel for API push notifications
+	consistencyRunning atomic.Bool                           // guards CheckConsistencyAsync against goroutine leaks
+	consistencyCache   *ConsistencyReport                    // cached consistency report (lock-free HTTP reads)
+	consistencyCacheMu sync.Mutex                            // guards consistencyCache writes
+	consistencyCacheAt time.Time                             // when the cache was last refreshed
+	reseedRunning      atomic.Bool                           // guards triggerNetworkReseed against goroutine leaks
+	clusterMgr         *cluster.Manager                      // nil if clustering is disabled
+	kickReconcile      chan struct{}                          // event-driven reconcile trigger (buffered 1)
+	kickScheduler      chan struct{}                          // event-driven scheduler trigger (buffered 1)
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.
@@ -145,9 +147,9 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadPVCsFromStore(context.Background())
 	p.LoadNetworksFromStore(context.Background())
 	p.MigrateNetworkConfig(context.Background())
-	p.mu.Lock()
+	p.dhcpMu.Lock()
 	p.rebuildDHCPIndex()
-	p.mu.Unlock()
+	p.dhcpMu.Unlock()
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
 	p.LoadConfigMapsFromStore(context.Background())
@@ -193,38 +195,38 @@ func (p *MicroKubeProvider) isLocalPod(pod *corev1.Pod) bool {
 // NewMicroKubeProvider creates a new provider instance.
 func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 	p := &MicroKubeProvider{
-		deps:       deps,
-		nodeName:   deps.Config.NodeName,
-		startTime:  time.Now(),
-		pods:            make(map[string]*corev1.Pod),
-		configMaps:      make(map[string]*corev1.ConfigMap),
-		bareMetalHosts:  make(map[string]*BareMetalHost),
-		deployments:     make(map[string]*Deployment),
-		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
-		networks:        make(map[string]*Network),
-		registries:      make(map[string]*Registry),
-		iscsiCdroms:     make(map[string]*ISCSICdrom),
-		iscsiDisks:      make(map[string]*ISCSIDisk),
-		bootConfigs:      make(map[string]*BootConfig),
-		hostReservations: make(map[string]*HostReservation),
-		jobRunners:       make(map[string]*JobRunner),
-		jobs:             make(map[string]*Job),
-		storagePools:     make(map[string]*StoragePool),
+		deps:             deps,
+		nodeName:         deps.Config.NodeName,
+		startTime:        time.Now(),
+		pods:             safemap.New[string, *corev1.Pod](),
+		configMaps:       safemap.New[string, *corev1.ConfigMap](),
+		bareMetalHosts:   safemap.New[string, *BareMetalHost](),
+		deployments:      safemap.New[string, *Deployment](),
+		pvcs:             safemap.New[string, *corev1.PersistentVolumeClaim](),
+		networks:         safemap.New[string, *Network](),
+		registries:       safemap.New[string, *Registry](),
+		iscsiCdroms:      safemap.New[string, *ISCSICdrom](),
+		iscsiDisks:       safemap.New[string, *ISCSIDisk](),
+		bootConfigs:      safemap.New[string, *BootConfig](),
+		hostReservations: safemap.New[string, *HostReservation](),
+		jobRunners:       safemap.New[string, *JobRunner](),
+		jobs:             safemap.New[string, *Job](),
+		storagePools:     safemap.New[string, *StoragePool](),
+		redeploying:      safemap.New[string, bool](),
+		createFailures:   safemap.New[string, int](),
+		networkFailures:  safemap.New[string, int](),
+		restartBackoff:   safemap.New[string, *containerRestartState](),
 		jobLogBuf:        newJobLogStore(),
 		runnerLogBuf:     newJobLogStore(),
-		dhcpIndex:       buildDHCPIndex(deps.Config.Networks),
-		pushNotify:      make(chan registry.PushEvent, 16),
-		redeploying:     make(map[string]bool),
-		createFailures:  make(map[string]int),
-		networkFailures: make(map[string]int),
-		kickReconcile:   make(chan struct{}, 1),
-		kickScheduler:   make(chan struct{}, 1),
-		restartBackoff:  make(map[string]*containerRestartState),
+		dhcpIndex:        buildDHCPIndex(deps.Config.Networks),
+		pushNotify:       make(chan registry.PushEvent, 16),
+		kickReconcile:    make(chan struct{}, 1),
+		kickScheduler:    make(chan struct{}, 1),
 	}
 
 	// Load built-in default ConfigMaps derived from mkube config
 	for _, cm := range generateDefaultConfigMaps(deps.Config) {
-		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
+		p.configMaps.Set(cm.Namespace+"/"+cm.Name, cm)
 	}
 
 	// Register lifecycle failed callback so containers that exceed max
@@ -241,20 +243,16 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 				"container", containerName, "from", oldStatus, "to", newStatus)
 
 			// Find owning pod and push immediate status update
-			p.mu.RLock()
 			var ownerPod *corev1.Pod
-			for _, pod := range p.pods {
+			p.pods.Range(func(_ string, pod *corev1.Pod) bool {
 				for _, c := range pod.Spec.Containers {
 					if sanitizeName(pod, c.Name) == containerName {
 						ownerPod = pod
-						break
+						return false
 					}
 				}
-				if ownerPod != nil {
-					break
-				}
-			}
-			p.mu.RUnlock()
+				return true
+			})
 
 			if ownerPod != nil {
 				p.notifyPodChange(context.Background(), ownerPod)
@@ -590,10 +588,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	// Stamp the deployed image digest so we can detect stale images on restart.
 	p.stampImageDigest(ctx, pod)
 
-	// Track the pod (brief lock — callers must NOT hold p.mu)
-	p.mu.Lock()
-	p.pods[podKey(pod)] = pod.DeepCopy()
-	p.mu.Unlock()
+	// Track the pod
+	p.pods.Set(podKey(pod), pod.DeepCopy())
 
 	// Record events
 	p.recordEvent(pod, "Scheduled", fmt.Sprintf("Successfully assigned %s/%s to %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
@@ -749,10 +745,7 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 	}
 	// Stamp the deployed digest after successful update
 	p.stampImageDigest(ctx, pod)
-	// Brief lock — callers must NOT hold p.mu
-	p.mu.Lock()
-	p.pods[podKey(pod)] = pod.DeepCopy()
-	p.mu.Unlock()
+	p.pods.Set(podKey(pod), pod.DeepCopy())
 	return nil
 }
 
@@ -782,13 +775,9 @@ func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod
 	namespaceName := pod.Annotations[annotationNamespace]
 
 	// Prevent reconciler from interfering during the update
-	p.mu.Lock()
-	p.redeploying[key] = true
-	p.mu.Unlock()
+	p.redeploying.Set(key, true)
 	defer func() {
-		p.mu.Lock()
-		delete(p.redeploying, key)
-		p.mu.Unlock()
+		p.redeploying.Delete(key)
 	}()
 
 	// ── Phase A: Pre-staging ────────────────────────────────────────────
@@ -876,9 +865,7 @@ func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod
 	// ── Phase C: Register + track ───────────────────────────────────────
 	p.registerPodAliases(ctx, pod, networkName, namespaceName, newContainerIPs, log)
 	p.pushLogMappings(ctx, pod, log)
-	p.mu.Lock()
-	p.pods[key] = pod.DeepCopy()
-	p.mu.Unlock()
+	p.pods.Set(key, pod.DeepCopy())
 
 	p.recordEvent(pod, "Updated",
 		fmt.Sprintf("Blue-green update completed for %s/%s", pod.Namespace, pod.Name), "Normal")
@@ -1383,10 +1370,7 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 	}
 
 	p.recordEvent(pod, "Killing", fmt.Sprintf("Stopping pod %s/%s", pod.Namespace, pod.Name), "Normal")
-	// Brief lock — callers must NOT hold p.mu
-	p.mu.Lock()
-	delete(p.pods, podKey(pod))
-	p.mu.Unlock()
+	p.pods.Delete(podKey(pod))
 
 	// Run async consistency check to clean up any orphaned resources
 	p.CheckConsistencyAsync("delete-pod/" + podKey(pod))
@@ -1397,9 +1381,7 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 // GetPod returns the tracked pod object.
 func (p *MicroKubeProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	key := namespace + "/" + name
-	p.mu.RLock()
-	pod, ok := p.pods[key]
-	p.mu.RUnlock()
+	pod, ok := p.pods.Get(key)
 	if ok {
 		return pod, nil
 	}
@@ -1523,13 +1505,7 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 
 // GetPods returns all tracked pods.
 func (p *MicroKubeProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
-	p.mu.RLock()
-	pods := make([]*corev1.Pod, 0, len(p.pods))
-	for _, pod := range p.pods {
-		pods = append(pods, pod)
-	}
-	p.mu.RUnlock()
-	return pods, nil
+	return p.pods.Values(), nil
 }
 
 // ─── NodeProvider Interface ─────────────────────────────────────────────────
@@ -1694,34 +1670,25 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// Store ConfigMaps from manifest, then re-apply generated defaults
 	// so that config-derived ConfigMaps (DNS, DHCP) always reflect the
 	// live mkube config rather than stale copies persisted in NATS.
-	// Lock protects configMaps writes and networks iteration (background goroutine).
-	lockStart := time.Now()
-	p.mu.Lock()
-	lockWait := time.Since(lockStart)
 	for _, cm := range manifestCMs {
-		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
+		p.configMaps.Set(cm.Namespace+"/"+cm.Name, cm)
 	}
 	for _, cm := range generateDefaultConfigMaps(p.deps.Config) {
-		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
+		p.configMaps.Set(cm.Namespace+"/"+cm.Name, cm)
 	}
 	// Override static-config-derived DNS ConfigMaps with Network CRD
 	// versions for migrated networks. Network CRDs are the source of
 	// truth for DHCP reservations and DNS config once migrated.
-	for _, net := range p.networks {
+	for _, net := range p.networks.Values() {
 		hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
 		if !hasDNS {
 			continue
 		}
 		cmKey := net.Name + "/dns-config"
-		if cm, ok := p.configMaps[cmKey]; ok {
+		if cm, ok := p.configMaps.Get(cmKey); ok {
 			cm.Data["microdns.toml"] = p.generateMinimalTOML(net)
+			p.configMaps.Set(cmKey, cm)
 		}
-	}
-	lockHeld := time.Since(lockStart) - lockWait
-	p.mu.Unlock()
-	if lockWait > 50*time.Millisecond || lockHeld > 10*time.Millisecond {
-		log.Warnw("RECONCILE: slow configMap lock",
-			"wait", lockWait, "held", lockHeld)
 	}
 
 	// 1c. Stamp vkube.io/node on pods that lack it (one-time migration for clustering)
@@ -1782,16 +1749,15 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	for name, ct := range actualByName {
 		if ct.IsRunning() {
 			// Track running state for backoff reset
-			p.mu.Lock()
-			if rs, ok := p.restartBackoff[name]; ok && rs.attempts > 0 {
+			if rs, ok := p.restartBackoff.Get(name); ok && rs.attempts > 0 {
 				rs.lastRunning = time.Now()
 				if time.Since(rs.lastAttempt) > recoveryStableWindow {
 					log.Infow("RECOVERY: container stable, resetting backoff", "container", name)
 					rs.attempts = 0
 					rs.backoff = 0
 				}
+				p.restartBackoff.Set(name, rs)
 			}
-			p.mu.Unlock()
 			continue
 		}
 		if ct.StartOnBoot != "true" {
@@ -1816,13 +1782,11 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 
 		// Check restart backoff
-		p.mu.Lock()
-		rs := p.restartBackoff[name]
+		rs, _ := p.restartBackoff.Get(name)
 		if rs == nil {
 			rs = &containerRestartState{}
-			p.restartBackoff[name] = rs
+			p.restartBackoff.Set(name, rs)
 		}
-		p.mu.Unlock()
 		if rs.backoff > 0 && time.Since(rs.lastAttempt) < rs.backoff {
 			log.Debugw("RECOVERY: container stopped but in backoff, skipping",
 				"container", name, "backoff", rs.backoff,
@@ -1913,9 +1877,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 		delete(actualByName, name)
 		// Untrack the pod so step 3 sees it as missing
-		p.mu.Lock()
-		delete(p.pods, podKey(ownerPod))
-		p.mu.Unlock()
+		p.pods.Delete(podKey(ownerPod))
 		globalStats.RecordRecreate(name)
 		p.recordEvent(ownerPod, "RecoveryRecreate",
 			fmt.Sprintf("Container %s destroyed for recreation after persistent fault: %s", name, comment), "Warning")
@@ -1945,9 +1907,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				_ = p.deps.NetworkMgr.ReleaseInterface(ctx, veth)
 			}
 			// Untrack if still in memory
-			p.mu.Lock()
-			delete(p.pods, podKey(pod))
-			p.mu.Unlock()
+			p.pods.Delete(podKey(pod))
 		}
 	}
 
@@ -1962,11 +1922,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	stepStart = time.Now()
 	for _, pod := range desiredPods {
 		key := podKey(pod)
-		p.mu.RLock()
-		tracked := p.pods[key] != nil
-		isRedeploying := p.redeploying[key]
-		priorFailures := p.createFailures[key]
-		p.mu.RUnlock()
+		tracked := p.pods.Has(key)
+		isRedeploying, _ := p.redeploying.Get(key)
+		priorFailures, _ := p.createFailures.Get(key)
 		if tracked {
 			continue
 		}
@@ -2000,22 +1958,15 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			log.Infow("creating missing pod", "pod", key, "priorFailures", priorFailures)
 			// CreatePod manages its own p.pods lock internally — no external lock
 			if err := p.CreatePod(ctx, pod); err != nil {
-				p.mu.Lock()
-				p.createFailures[key]++
-				failures := p.createFailures[key]
-				p.mu.Unlock()
+				failures := safemap.Increment(p.createFailures, key, 1)
 				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", failures)
 				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
 			} else {
-				p.mu.Lock()
-				delete(p.createFailures, key)
-				p.mu.Unlock()
+				p.createFailures.Delete(key)
 			}
 		} else {
-			// Track already-existing pods (brief lock for map write only)
-			p.mu.Lock()
-			p.pods[key] = pod.DeepCopy()
-			p.mu.Unlock()
+			// Track already-existing pods
+			p.pods.Set(key, pod.DeepCopy())
 			p.recordEvent(pod, "Reconciled", fmt.Sprintf("Existing pod %s/%s tracked on node %s", pod.Namespace, pod.Name, p.nodeName), "Normal")
 
 			// For pods with image-policy=auto, check if the registry has a
@@ -2070,16 +2021,8 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 3b. Check tracked pods for missing containers (orphan detection).
 	// If a container was manually removed or orphaned, untrack and recreate.
 	// Skip pods currently being redeployed to avoid racing with the redeploy goroutine.
-	p.mu.RLock()
-	podsSnap3b := make(map[string]*corev1.Pod, len(p.pods))
-	for k, v := range p.pods {
-		podsSnap3b[k] = v
-	}
-	redeploySnap3b := make(map[string]bool, len(p.redeploying))
-	for k, v := range p.redeploying {
-		redeploySnap3b[k] = v
-	}
-	p.mu.RUnlock()
+	podsSnap3b := p.pods.Snapshot()
+	redeploySnap3b := p.redeploying.Snapshot()
 	for key, pod := range podsSnap3b {
 		if redeploySnap3b[key] {
 			continue
@@ -2089,9 +2032,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			if _, exists := actualByName[name]; !exists {
 				log.Warnw("tracked pod has missing container, recreating",
 					"pod", key, "container", name)
-				p.mu.Lock()
-				delete(p.pods, key)
-				p.mu.Unlock()
+				p.pods.Delete(key)
 				if err := p.CreatePod(ctx, pod); err != nil {
 					log.Errorw("failed to recreate pod with missing container",
 						"pod", key, "error", err)
@@ -2115,16 +2056,8 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// image to see the new digest and miss the change.
 	imageToStale := make(map[string][]staleEntry)
 	checkedImages := make(map[string]bool) // image ref → changed?
-	p.mu.RLock()
-	podsSnap3c := make(map[string]*corev1.Pod, len(p.pods))
-	for k, v := range p.pods {
-		podsSnap3c[k] = v
-	}
-	redeploySnap3c := make(map[string]bool, len(p.redeploying))
-	for k, v := range p.redeploying {
-		redeploySnap3c[k] = v
-	}
-	p.mu.RUnlock()
+	podsSnap3c := p.pods.Snapshot()
+	redeploySnap3c := p.redeploying.Snapshot()
 	for key, pod := range podsSnap3c {
 		if redeploySnap3c[key] {
 			continue
@@ -2186,16 +2119,8 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// AllocateInterface, so a stale veth with a wrong IP is silently
 	// accepted. Fix that now by checking static-IP annotations against
 	// actual veth state.
-	p.mu.RLock()
-	podsSnap4b := make(map[string]*corev1.Pod, len(p.pods))
-	for k, v := range p.pods {
-		podsSnap4b[k] = v
-	}
-	redeploySnap4b := make(map[string]bool, len(p.redeploying))
-	for k, v := range p.redeploying {
-		redeploySnap4b[k] = v
-	}
-	p.mu.RUnlock()
+	podsSnap4b := p.pods.Snapshot()
+	redeploySnap4b := p.redeploying.Snapshot()
 	for key, pod := range podsSnap4b {
 		staticIP := pod.Annotations[annotationStaticIP]
 		if staticIP == "" {
@@ -2213,9 +2138,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			if ip != staticIP {
 				log.Warnw("static IP mismatch on tracked pod, recreating",
 					"pod", key, "expected", staticIP, "actual", ip, "veth", veth)
-				p.mu.Lock()
-				delete(p.pods, key)
-				p.mu.Unlock()
+				p.pods.Delete(key)
 				if err := p.DeletePod(ctx, pod); err != nil {
 					log.Errorw("failed to delete pod for static IP repair", "pod", key, "error", err)
 				}
@@ -2256,7 +2179,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 9. Infrastructure health checks (registry, mkube-update)
 	p.checkInfraHealth(ctx)
 
-	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", len(p.pods))
+	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", p.pods.Len())
 	return nil
 }
 
@@ -2270,13 +2193,8 @@ func (p *MicroKubeProvider) syncConfigMapsToDisk(ctx context.Context) {
 	// Track which pods need recreation due to ConfigMap changes
 	podsToRecreate := make(map[string]*corev1.Pod)
 
-	// Snapshot pods under lock (called from reconciler goroutine)
-	p.mu.RLock()
-	podsSnapCM := make([]*corev1.Pod, 0, len(p.pods))
-	for _, pod := range p.pods {
-		podsSnapCM = append(podsSnapCM, pod)
-	}
-	p.mu.RUnlock()
+	// Snapshot pods (called from reconciler goroutine)
+	podsSnapCM := p.pods.Values()
 
 	for _, pod := range podsSnapCM {
 		for _, container := range pod.Spec.Containers {
@@ -2486,13 +2404,8 @@ func (p *MicroKubeProvider) NotifyPods(ctx context.Context, cb func(*corev1.Pod)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Snapshot pods under lock (background goroutine)
-				p.mu.RLock()
-				notifySnap := make([]*corev1.Pod, 0, len(p.pods))
-				for _, pod := range p.pods {
-					notifySnap = append(notifySnap, pod)
-				}
-				p.mu.RUnlock()
+				// Snapshot pods (background goroutine)
+				notifySnap := p.pods.Values()
 				for _, pod := range notifySnap {
 					if cb != nil {
 						status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name)
@@ -2700,9 +2613,7 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 			key := podKey(pod)
 			desiredKeys[key] = true
 
-			p.mu.RLock()
-			_, tracked := p.pods[key]
-			p.mu.RUnlock()
+			tracked := p.pods.Has(key)
 			if !tracked {
 				log.Infow("new pod scheduled", "pod", key)
 				// CreatePod manages its own p.pods lock internally
@@ -2713,12 +2624,7 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 		}
 
 		// Remove pods no longer scheduled here — snapshot first
-		p.mu.RLock()
-		wpSnap := make(map[string]*corev1.Pod, len(p.pods))
-		for k, v := range p.pods {
-			wpSnap[k] = v
-		}
-		p.mu.RUnlock()
+		wpSnap := p.pods.Snapshot()
 		for key, pod := range wpSnap {
 			if !desiredKeys[key] {
 				log.Infow("pod removed from node", "pod", key)
@@ -2730,12 +2636,7 @@ func (p *MicroKubeProvider) watchPods(ctx context.Context, clientset kubernetes.
 		}
 
 		// Push status updates for tracked pods
-		p.mu.RLock()
-		wpStatusSnap := make([]*corev1.Pod, 0, len(p.pods))
-		for _, pod := range p.pods {
-			wpStatusSnap = append(wpStatusSnap, pod)
-		}
-		p.mu.RUnlock()
+		wpStatusSnap := p.pods.Values()
 		for _, pod := range wpStatusSnap {
 			if p.notifyPodStatus != nil {
 				status, err := p.GetPodStatus(ctx, pod.Namespace, pod.Name)
@@ -3125,13 +3026,8 @@ func (p *MicroKubeProvider) reregisterPodDNS(ctx context.Context) {
 		defer dc.EndBatch()
 	}
 
-	// Snapshot pods under lock (called from reconciler goroutine)
-	p.mu.RLock()
-	dnsPodsSnap := make([]*corev1.Pod, 0, len(p.pods))
-	for _, pod := range p.pods {
-		dnsPodsSnap = append(dnsPodsSnap, pod)
-	}
-	p.mu.RUnlock()
+	// Snapshot pods (called from reconciler goroutine)
+	dnsPodsSnap := p.pods.Values()
 
 	for _, pod := range dnsPodsSnap {
 		networkName := pod.Annotations[annotationNetwork]
@@ -3264,12 +3160,12 @@ func (p *MicroKubeProvider) handleLifecycleFailed(containerName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Find the pod that owns this container — snapshot under lock (lifecycle callback goroutine)
-	p.mu.RLock()
+	// Find the pod that owns this container (lifecycle callback goroutine)
 	var foundKey string
 	var foundPod *corev1.Pod
-	for key, pod := range p.pods {
-		if p.redeploying[key] {
+	redeploySnap := p.redeploying.Snapshot()
+	for key, pod := range p.pods.Snapshot() {
+		if redeploySnap[key] {
 			continue
 		}
 		for _, c := range pod.Spec.Containers {
@@ -3283,7 +3179,6 @@ func (p *MicroKubeProvider) handleLifecycleFailed(containerName string) {
 			break
 		}
 	}
-	p.mu.RUnlock()
 
 	if foundPod != nil {
 		log.Infow("found owning pod, recreating", "pod", foundKey)
