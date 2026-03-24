@@ -103,7 +103,7 @@ func (p *MicroKubeProvider) LoadISCSIDisksFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read iSCSI disk from store", "key", key, "error", err)
 			continue
 		}
-		p.iscsiDisks[disk.Name] = &disk
+		p.iscsiDisks.Set(disk.Name, &disk)
 	}
 
 	if len(keys) > 0 {
@@ -127,8 +127,9 @@ func (p *MicroKubeProvider) handleListISCSIDisks(w http.ResponseWriter, r *http.
 		return
 	}
 
-	items := make([]ISCSIDisk, 0, len(p.iscsiDisks))
-	for _, disk := range p.iscsiDisks {
+	diskSnap := p.iscsiDisks.Snapshot()
+	items := make([]ISCSIDisk, 0, len(diskSnap))
+	for _, disk := range diskSnap {
 		d := disk.DeepCopy()
 		d.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSIDisk"}
 		items = append(items, *d)
@@ -148,7 +149,7 @@ func (p *MicroKubeProvider) handleListISCSIDisks(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleGetISCSIDisk(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	disk, ok := p.iscsiDisks[name]
+	disk, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q not found", name), http.StatusNotFound)
 		return
@@ -177,7 +178,7 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 		return
 	}
 
-	if _, exists := p.iscsiDisks[disk.Name]; exists {
+	if p.iscsiDisks.Has(disk.Name) {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q already exists", disk.Name), http.StatusConflict)
 		return
 	}
@@ -224,7 +225,7 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 	}
 
 	// Store in memory + NATS first (phase=Pending)
-	p.iscsiDisks[disk.Name] = &disk
+	p.iscsiDisks.Set(disk.Name, &disk)
 	p.persistISCSIDisk(r.Context(), &disk)
 
 	// Provision in background (clone from source, or create empty thin volume)
@@ -236,7 +237,7 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleDeleteISCSIDisk(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	disk, ok := p.iscsiDisks[name]
+	disk, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q not found", name), http.StatusNotFound)
 		return
@@ -261,7 +262,7 @@ func (p *MicroKubeProvider) handleDeleteISCSIDisk(w http.ResponseWriter, r *http
 		}
 	}
 
-	delete(p.iscsiDisks, name)
+	p.iscsiDisks.Delete(name)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -273,7 +274,7 @@ func (p *MicroKubeProvider) handleDeleteISCSIDisk(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handlePatchISCSIDisk(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.iscsiDisks[name]
+	existing, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q not found", name), http.StatusNotFound)
 		return
@@ -327,7 +328,7 @@ func (p *MicroKubeProvider) handlePatchISCSIDisk(w http.ResponseWriter, r *http.
 	merged.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSIDisk"}
 	merged.CreationTimestamp = existing.CreationTimestamp
 
-	p.iscsiDisks[name] = merged
+	p.iscsiDisks.Set(name, merged)
 	p.persistISCSIDisk(r.Context(), merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
@@ -343,7 +344,7 @@ type cloneRequest struct {
 func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	src, ok := p.iscsiDisks[name]
+	src, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q not found", name), http.StatusNotFound)
 		return
@@ -363,7 +364,7 @@ func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.
 		http.Error(w, "newName is required", http.StatusBadRequest)
 		return
 	}
-	if _, exists := p.iscsiDisks[req.NewName]; exists {
+	if p.iscsiDisks.Has(req.NewName) {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q already exists", req.NewName), http.StatusConflict)
 		return
 	}
@@ -399,7 +400,7 @@ func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.
 		},
 	}
 
-	p.iscsiDisks[req.NewName] = newDisk
+	p.iscsiDisks.Set(req.NewName, newDisk)
 	p.persistISCSIDisk(r.Context(), newDisk)
 
 	// Clone in background (disk-to-disk copy)
@@ -417,7 +418,7 @@ type resizeRequest struct {
 func (p *MicroKubeProvider) handleResizeISCSIDisk(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	disk, ok := p.iscsiDisks[name]
+	disk, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI disk %q not found", name), http.StatusNotFound)
 		return
@@ -464,14 +465,15 @@ type diskCapacity struct {
 }
 
 func (p *MicroKubeProvider) handleISCSIDiskCapacity(w http.ResponseWriter, r *http.Request) {
+	diskSnap := p.iscsiDisks.Snapshot()
 	cap := diskCapacity{
-		DiskCount: len(p.iscsiDisks),
+		DiskCount: len(diskSnap),
 	}
 
 	// Sum allocated (apparent) sizes
 	var allocatedBytes int64
 	var sparseBytes int64
-	for _, disk := range p.iscsiDisks {
+	for _, disk := range diskSnap {
 		allocatedBytes += disk.Status.DiskSize
 
 		// Get actual on-disk usage (sparse size)
@@ -498,7 +500,7 @@ func (p *MicroKubeProvider) handleISCSIDiskCapacity(w http.ResponseWriter, r *ht
 // Returns (path, type, error) where type is "cdrom", "disk", or "path".
 func (p *MicroKubeProvider) resolveISCSIDiskSource(source string) (string, string, error) {
 	// Check ISCSICdrom
-	if cdrom, ok := p.iscsiCdroms[source]; ok {
+	if cdrom, ok := p.iscsiCdroms.Get(source); ok {
 		if cdrom.Status.Phase != "Ready" {
 			return "", "", fmt.Errorf("source ISCSICdrom %q is not ready (phase: %s)", source, cdrom.Status.Phase)
 		}
@@ -506,7 +508,7 @@ func (p *MicroKubeProvider) resolveISCSIDiskSource(source string) (string, strin
 	}
 
 	// Check ISCSIDisk
-	if disk, ok := p.iscsiDisks[source]; ok {
+	if disk, ok := p.iscsiDisks.Get(source); ok {
 		if disk.Status.Phase != "Ready" {
 			return "", "", fmt.Errorf("source ISCSIDisk %q is not ready (phase: %s)", source, disk.Status.Phase)
 		}
@@ -570,14 +572,11 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	diskCloneMu.Lock()
 	defer diskCloneMu.Unlock()
 
-	p.mu.Lock()
-	disk, ok := p.iscsiDisks[name]
+	disk, ok := p.iscsiDisks.Get(name)
 	if !ok {
-		p.mu.Unlock()
 		return
 	}
 	disk.Status.Phase = "Cloning"
-	p.mu.Unlock()
 	p.persistISCSIDisk(ctx, disk)
 
 	log := p.deps.Logger.With("disk", name)
@@ -654,13 +653,10 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	}
 
 	// Configure iSCSI target on RouterOS
-	p.mu.Lock()
-	disk, ok = p.iscsiDisks[name]
+	disk, ok = p.iscsiDisks.Get(name)
 	if !ok {
-		p.mu.Unlock()
 		return
 	}
-	p.mu.Unlock()
 
 	if err := p.configureISCSIDiskTarget(ctx, disk); err != nil {
 		p.setDiskError(ctx, name, fmt.Sprintf("configuring iSCSI target: %v", err))
@@ -668,8 +664,7 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	}
 
 	// Update status to Ready
-	p.mu.Lock()
-	disk, ok = p.iscsiDisks[name]
+	disk, ok = p.iscsiDisks.Get(name)
 	if ok {
 		disk.Status.Phase = "Ready"
 		disk.Status.Message = ""
@@ -677,7 +672,6 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 			disk.Status.DiskSize = fi.Size()
 		}
 	}
-	p.mu.Unlock()
 
 	if ok {
 		p.persistISCSIDisk(ctx, disk)
@@ -805,13 +799,9 @@ func convertDiskToRaw(inputPath, format string) (string, error) {
 
 func (p *MicroKubeProvider) setDiskError(ctx context.Context, name, msg string) {
 	p.deps.Logger.Errorw("iSCSI disk error", "name", name, "error", msg)
-	p.mu.Lock()
-	if disk, ok := p.iscsiDisks[name]; ok {
+	if disk, ok := p.iscsiDisks.Get(name); ok {
 		disk.Status.Phase = "Error"
 		disk.Status.Message = msg
-	}
-	p.mu.Unlock()
-	if disk, ok := p.iscsiDisks[name]; ok {
 		p.persistISCSIDisk(ctx, disk)
 	}
 }
@@ -1030,7 +1020,7 @@ func (p *MicroKubeProvider) removeISCSIDiskTarget(ctx context.Context, disk *ISC
 // ReconcileISCSIDiskTargets checks that iSCSI targets exist for all Ready disks
 // and recreates any that are missing (e.g. after RouterOS reboot).
 func (p *MicroKubeProvider) ReconcileISCSIDiskTargets(ctx context.Context) {
-	for _, disk := range p.iscsiDisks {
+	for _, disk := range p.iscsiDisks.Snapshot() {
 		if disk.Status.Phase != "Ready" {
 			continue
 		}
@@ -1073,14 +1063,12 @@ func (p *MicroKubeProvider) handleWatchISCSIDisks(w http.ResponseWriter, r *http
 
 	ctx := r.Context()
 
-	// Send existing objects as ADDED events (snapshot under read lock)
+	// Send existing objects as ADDED events
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	diskSnapshot := make([]*ISCSIDisk, 0, len(p.iscsiDisks))
-	for _, disk := range p.iscsiDisks {
+	diskSnapshot := make([]*ISCSIDisk, 0, p.iscsiDisks.Len())
+	for _, disk := range p.iscsiDisks.Snapshot() {
 		diskSnapshot = append(diskSnapshot, disk.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, d := range diskSnapshot {
 		d.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSIDisk"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: d}
@@ -1210,7 +1198,8 @@ func (p *MicroKubeProvider) checkISCSIDiskCRDs(ctx context.Context) []CheckItem 
 				storeSet[k] = true
 			}
 
-			for name := range p.iscsiDisks {
+			diskSnap := p.iscsiDisks.Snapshot()
+			for name := range diskSnap {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("iscsi-disk/%s", name),
@@ -1238,7 +1227,7 @@ func (p *MicroKubeProvider) checkISCSIDiskCRDs(ctx context.Context) []CheckItem 
 	}
 
 	// Verify disk files exist for Ready disks
-	for _, disk := range p.iscsiDisks {
+	for _, disk := range p.iscsiDisks.Snapshot() {
 		if disk.Status.Phase != "Ready" {
 			continue
 		}

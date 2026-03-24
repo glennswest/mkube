@@ -99,7 +99,7 @@ func (p *MicroKubeProvider) LoadISCSICdromsFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read iSCSI CDROM from store", "key", key, "error", err)
 			continue
 		}
-		p.iscsiCdroms[cdrom.Name] = &cdrom
+		p.iscsiCdroms.Set(cdrom.Name, &cdrom)
 	}
 
 	if len(keys) > 0 {
@@ -115,8 +115,9 @@ func (p *MicroKubeProvider) handleListISCSICdroms(w http.ResponseWriter, r *http
 		return
 	}
 
-	items := make([]ISCSICdrom, 0, len(p.iscsiCdroms))
-	for _, cdrom := range p.iscsiCdroms {
+	cdromSnap := p.iscsiCdroms.Snapshot()
+	items := make([]ISCSICdrom, 0, len(cdromSnap))
+	for _, cdrom := range cdromSnap {
 		c := cdrom.DeepCopy()
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSICdrom"}
 		items = append(items, *c)
@@ -136,7 +137,7 @@ func (p *MicroKubeProvider) handleListISCSICdroms(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleGetISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -165,7 +166,7 @@ func (p *MicroKubeProvider) handleCreateISCSICdrom(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if _, exists := p.iscsiCdroms[cdrom.Name]; exists {
+	if p.iscsiCdroms.Has(cdrom.Name) {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q already exists", cdrom.Name), http.StatusConflict)
 		return
 	}
@@ -210,7 +211,7 @@ func (p *MicroKubeProvider) handleCreateISCSICdrom(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.iscsiCdroms[cdrom.Name] = &cdrom
+	p.iscsiCdroms.Set(cdrom.Name, &cdrom)
 
 	podWriteJSON(w, http.StatusCreated, &cdrom)
 }
@@ -218,7 +219,7 @@ func (p *MicroKubeProvider) handleCreateISCSICdrom(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handleUpdateISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	old, ok := p.iscsiCdroms[name]
+	old, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -267,7 +268,7 @@ func (p *MicroKubeProvider) handleUpdateISCSICdrom(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.iscsiCdroms[name] = &cdrom
+	p.iscsiCdroms.Set(name, &cdrom)
 
 	podWriteJSON(w, http.StatusOK, &cdrom)
 }
@@ -275,7 +276,7 @@ func (p *MicroKubeProvider) handleUpdateISCSICdrom(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handlePatchISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.iscsiCdroms[name]
+	existing, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -303,7 +304,7 @@ func (p *MicroKubeProvider) handlePatchISCSICdrom(w http.ResponseWriter, r *http
 		}
 	}
 
-	p.iscsiCdroms[name] = merged
+	p.iscsiCdroms.Set(name, merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
@@ -311,7 +312,7 @@ func (p *MicroKubeProvider) handlePatchISCSICdrom(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleDeleteISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -345,7 +346,7 @@ func (p *MicroKubeProvider) handleDeleteISCSICdrom(w http.ResponseWriter, r *htt
 		}
 	}
 
-	delete(p.iscsiCdroms, name)
+	p.iscsiCdroms.Delete(name)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -359,7 +360,7 @@ func (p *MicroKubeProvider) handleDeleteISCSICdrom(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handleUploadISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -489,7 +490,7 @@ type subscribeRequest struct {
 func (p *MicroKubeProvider) handleSubscribeISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -540,7 +541,7 @@ type unsubscribeRequest struct {
 func (p *MicroKubeProvider) handleUnsubscribeISCSICdrom(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -694,7 +695,8 @@ func (p *MicroKubeProvider) scanISODirectory(ctx context.Context) {
 	}
 
 	// Check existing CDROMs — update if file changed
-	for _, cdrom := range p.iscsiCdroms {
+	cdromSnap := p.iscsiCdroms.Snapshot()
+	for _, cdrom := range cdromSnap {
 		fi, onDisk := isoFiles[cdrom.Spec.ISOFile]
 		if !onDisk {
 			// ISO file missing from disk
@@ -726,7 +728,7 @@ func (p *MicroKubeProvider) scanISODirectory(ctx context.Context) {
 	// Check for new ISO files not tracked by any CDROM
 	for filename, fi := range isoFiles {
 		tracked := false
-		for _, cdrom := range p.iscsiCdroms {
+		for _, cdrom := range cdromSnap {
 			if cdrom.Spec.ISOFile == filename {
 				tracked = true
 				break
@@ -744,7 +746,7 @@ func (p *MicroKubeProvider) scanISODirectory(ctx context.Context) {
 		}
 
 		// Skip if name already exists (different file)
-		if _, exists := p.iscsiCdroms[cdromName]; exists {
+		if p.iscsiCdroms.Has(cdromName) {
 			continue
 		}
 
@@ -783,7 +785,7 @@ func (p *MicroKubeProvider) scanISODirectory(ctx context.Context) {
 			cdrom.Status.Phase = "Ready"
 		}
 
-		p.iscsiCdroms[cdromName] = cdrom
+		p.iscsiCdroms.Set(cdromName, cdrom)
 		p.persistISCSICdrom(ctx, cdrom)
 	}
 }
@@ -883,14 +885,12 @@ func (p *MicroKubeProvider) handleWatchISCSICdroms(w http.ResponseWriter, r *htt
 
 	ctx := r.Context()
 
-	// Send existing objects as ADDED events (snapshot under read lock)
+	// Send existing objects as ADDED events
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	cdromSnapshot := make([]*ISCSICdrom, 0, len(p.iscsiCdroms))
-	for _, cdrom := range p.iscsiCdroms {
+	cdromSnapshot := make([]*ISCSICdrom, 0, p.iscsiCdroms.Len())
+	for _, cdrom := range p.iscsiCdroms.Snapshot() {
 		cdromSnapshot = append(cdromSnapshot, cdrom.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, c := range cdromSnapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ISCSICdrom"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: c}
@@ -1025,7 +1025,7 @@ func formatISOSize(bytes int64) string {
 func (p *MicroKubeProvider) handleISCSICdromReadFile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	cdrom, ok := p.iscsiCdroms[name]
+	cdrom, ok := p.iscsiCdroms.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q not found", name), http.StatusNotFound)
 		return
@@ -1081,7 +1081,7 @@ func (p *MicroKubeProvider) handleISCSICdromReadFile(w http.ResponseWriter, r *h
 func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *http.Request) {
 	baseName := r.PathValue("name")
 
-	baseCdrom, ok := p.iscsiCdroms[baseName]
+	baseCdrom, ok := p.iscsiCdroms.Get(baseName)
 	if !ok {
 		http.Error(w, fmt.Sprintf("base iSCSI CDROM %q not found", baseName), http.StatusNotFound)
 		return
@@ -1103,7 +1103,7 @@ func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if _, exists := p.iscsiCdroms[req.Name]; exists {
+	if p.iscsiCdroms.Has(req.Name) {
 		http.Error(w, fmt.Sprintf("iSCSI CDROM %q already exists", req.Name), http.StatusConflict)
 		return
 	}
@@ -1213,7 +1213,7 @@ func (p *MicroKubeProvider) handleISCSICdromDerive(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.iscsiCdroms[req.Name] = newCdrom
+	p.iscsiCdroms.Set(req.Name, newCdrom)
 
 	p.deps.Logger.Infow("derived ISO created",
 		"base", baseName,
@@ -1239,7 +1239,8 @@ func (p *MicroKubeProvider) checkISCSICdromCRDs(ctx context.Context) []CheckItem
 				storeSet[k] = true
 			}
 
-			for name := range p.iscsiCdroms {
+			cdromSnap := p.iscsiCdroms.Snapshot()
+			for name := range cdromSnap {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("iscsi-cdrom/%s", name),
@@ -1267,7 +1268,7 @@ func (p *MicroKubeProvider) checkISCSICdromCRDs(ctx context.Context) []CheckItem
 	}
 
 	// Verify ISO files exist for Ready CDROMs
-	for _, cdrom := range p.iscsiCdroms {
+	for _, cdrom := range p.iscsiCdroms.Snapshot() {
 		if cdrom.Status.Phase != "Ready" {
 			continue
 		}

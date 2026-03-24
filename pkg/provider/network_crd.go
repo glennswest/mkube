@@ -156,9 +156,7 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read network from store", "key", key, "error", err)
 			continue
 		}
-		p.mu.Lock()
-		p.networks[net.Name] = &net
-		p.mu.Unlock()
+		p.networks.Set(net.Name, &net)
 
 		// Register with IPAM if not already known (CRD-only networks like
 		// g8/g9 are not in config.yaml and need dynamic registration)
@@ -176,12 +174,12 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 	// Ensure managed networks have their DNS pods deployed.
 	// On restart, the pod store entry may have been lost (e.g. if the pod
 	// was not tracked in p.pods when teardown ran, or if NATS lost the key).
-	for _, net := range p.networks {
+	for _, net := range p.networks.Snapshot() {
 		if !net.Spec.Managed || net.Spec.DNS.Zone == "" || net.Spec.DNS.Server == "" {
 			continue
 		}
 		podKey := net.Name + "/dns"
-		if _, ok := p.pods[podKey]; ok {
+		if p.pods.Has(podKey) {
 			continue // already tracked
 		}
 		// Check NATS pod store
@@ -202,17 +200,13 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 // reconcileManagedDNSPods checks all managed networks and recreates DNS pods
 // that are missing (e.g. deleted manually or lost during restart).
 func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
-	// Snapshot networks and pods under lock (called from reconciler goroutine)
-	p.mu.RLock()
-	mdnNets := make([]*Network, 0, len(p.networks))
-	for _, net := range p.networks {
-		mdnNets = append(mdnNets, net)
-	}
-	podKeys := make(map[string]bool, len(p.pods))
-	for k := range p.pods {
+	// Snapshot networks and pods (SafeMap handles locking internally)
+	mdnNets := p.networks.Values()
+	podKeysSlice := p.pods.Keys()
+	podKeys := make(map[string]bool, len(podKeysSlice))
+	for _, k := range podKeysSlice {
 		podKeys[k] = true
 	}
-	p.mu.RUnlock()
 
 	for _, net := range mdnNets {
 		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
@@ -235,18 +229,16 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 // while mkube was down or before ConfigMap sync code existed).
 func (p *MicroKubeProvider) ReconcileNetworkConfigMaps(ctx context.Context) {
 	updated := 0
-	// Lock protects p.networks, p.configMaps, and p.pods (via generateMinimalTOML).
+	// SafeMap handles locking internally for each map access.
 	// Only called from SetStore (background goroutine), never from HTTP handlers.
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, net := range p.networks {
+	for _, net := range p.networks.Snapshot() {
 		hasDNS := net.Spec.DNS.Zone != "" && net.Spec.DNS.Server != ""
 		if !hasDNS {
 			continue
 		}
 		toml := p.generateMinimalTOML(net)
 		cmKey := net.Name + "/dns-config"
-		cm, ok := p.configMaps[cmKey]
+		cm, ok := p.configMaps.Get(cmKey)
 		if !ok {
 			continue
 		}
@@ -297,9 +289,7 @@ func (p *MicroKubeProvider) MigrateNetworkConfig(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to migrate network", "name", nd.Name, "error", err)
 			continue
 		}
-		p.mu.Lock()
-		p.networks[net.Name] = &net
-		p.mu.Unlock()
+		p.networks.Set(net.Name, &net)
 		p.deps.Logger.Infow("migrated network", "name", net.Name, "type", net.Spec.Type)
 	}
 }
@@ -401,8 +391,9 @@ func (p *MicroKubeProvider) handleListNetworks(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	items := make([]Network, 0, len(p.networks))
-	for _, net := range p.networks {
+	netSnap := p.networks.Snapshot()
+	items := make([]Network, 0, len(netSnap))
+	for _, net := range netSnap {
 		enriched := net.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 		p.enrichNetworkStatus(r.Context(), enriched)
@@ -423,7 +414,7 @@ func (p *MicroKubeProvider) handleListNetworks(w http.ResponseWriter, r *http.Re
 func (p *MicroKubeProvider) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	net, ok := p.networks[name]
+	net, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -457,7 +448,7 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if _, exists := p.networks[net.Name]; exists {
+	if p.networks.Has(net.Name) {
 		http.Error(w, fmt.Sprintf("network %q already exists", net.Name), http.StatusConflict)
 		return
 	}
@@ -483,7 +474,7 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 		net.Spec.Bridge = "bridge-" + net.Name
 	}
 
-	p.networks[net.Name] = &net
+	p.networks.Set(net.Name, &net)
 
 	// Register with IPAM so pods on this network can allocate IPs
 	if err := p.deps.NetworkMgr.RegisterNetwork(networkToNetworkDef(&net)); err != nil {
@@ -512,7 +503,7 @@ func (p *MicroKubeProvider) handleCreateNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	old, ok := p.networks[name]
+	old, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -539,7 +530,7 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	p.networks[name] = &net
+	p.networks.Set(name, &net)
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, &net)
@@ -555,7 +546,7 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.networks[name]
+	existing, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -585,7 +576,7 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	p.networks[name] = merged
+	p.networks.Set(name, merged)
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, merged)
@@ -601,7 +592,7 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	net, ok := p.networks[name]
+	net, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -620,7 +611,7 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 	}
 
 	// Check if any (non-managed) pod still references this network
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Annotations[annotationNetwork] == name {
 			http.Error(w, fmt.Sprintf("cannot delete network %q: pod %s/%s references it",
 				name, pod.Namespace, pod.Name), http.StatusConflict)
@@ -635,7 +626,7 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	delete(p.networks, name)
+	p.networks.Delete(name)
 
 	// Unregister from IPAM and network manager
 	if p.deps.NetworkMgr != nil {
@@ -655,7 +646,7 @@ func (p *MicroKubeProvider) handleDeleteNetwork(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handleGetNetworkConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	net, ok := p.networks[name]
+	net, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -686,9 +677,10 @@ func (p *MicroKubeProvider) generateMinimalTOML(net *Network) string {
 	// come via REST API.
 	var dhcpSection string
 	hasDHCP := net.Spec.DHCP.Enabled && net.Spec.DHCP.ServerNetwork == ""
+	netSnap := p.networks.Snapshot()
 	if !hasDHCP {
 		// Check if any peer relays to this network
-		for _, peer := range p.networks {
+		for _, peer := range netSnap {
 			if peer.Name != net.Name && peer.Spec.DHCP.Enabled && peer.Spec.DHCP.ServerNetwork == net.Name {
 				hasDHCP = true
 				break
@@ -742,7 +734,7 @@ url = %q
 	// cycle and endlessly restart DNS pods.
 	type fwdEntry struct{ zone, server string }
 	var fwdEntries []fwdEntry
-	for _, peer := range p.networks {
+	for _, peer := range netSnap {
 		if peer.Name == net.Name || peer.Spec.DNS.Zone == "" || peer.Spec.DNS.Server == "" {
 			continue
 		}
@@ -788,7 +780,7 @@ format = "text"
 func (p *MicroKubeProvider) enrichNetworkStatus(ctx context.Context, net *Network) {
 	// Count pods on this network
 	count := 0
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Annotations[annotationNetwork] == net.Name {
 			count++
 		}
@@ -824,14 +816,12 @@ func (p *MicroKubeProvider) handleWatchNetworks(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
-	// Send existing Network objects as ADDED events (snapshot under read lock)
+	// Send existing Network objects as ADDED events
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	netSnapshot := make([]*Network, 0, len(p.networks))
-	for _, net := range p.networks {
+	netSnapshot := make([]*Network, 0, p.networks.Len())
+	for _, net := range p.networks.Snapshot() {
 		netSnapshot = append(netSnapshot, net.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, enriched := range netSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Network"}
 		p.enrichNetworkStatus(ctx, enriched)
@@ -974,7 +964,7 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 	}
 
 	cmKey := net.Name + "/dns-config"
-	p.configMaps[cmKey] = &cm
+	p.configMaps.Set(cmKey, &cm)
 
 	if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
 		storeKey := net.Name + ".dns-config"
@@ -1064,7 +1054,7 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 	// 3. Ensure PVC exists for DNS data persistence
 	pvcName := net.Name + "-dns-data"
 	pvcMapKey := net.Name + "/" + pvcName
-	if _, exists := p.pvcs[pvcMapKey]; !exists {
+	if !p.pvcs.Has(pvcMapKey) {
 		storageClass := "local"
 		pvc := &corev1.PersistentVolumeClaim{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
@@ -1076,7 +1066,7 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 				Phase: corev1.ClaimBound,
 			},
 		}
-		p.pvcs[pvcMapKey] = pvc
+		p.pvcs.Set(pvcMapKey, pvc)
 		storeKey := net.Name + "." + pvcName
 		if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
 			if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, storeKey, pvc); err != nil {
@@ -1124,7 +1114,7 @@ func (p *MicroKubeProvider) teardownManagedDNS(ctx context.Context, netName stri
 
 	// Remove DNS pod
 	podMapKey := netName + "/dns"
-	if pod, ok := p.pods[podMapKey]; ok {
+	if pod, ok := p.pods.Get(podMapKey); ok {
 		if err := p.DeletePod(ctx, pod); err != nil {
 			log.Warnw("failed to delete managed DNS pod", "error", err)
 		} else {
@@ -1155,8 +1145,8 @@ func (p *MicroKubeProvider) teardownManagedDNS(ctx context.Context, netName stri
 
 	// Remove DNS ConfigMap
 	cmKey := netName + "/dns-config"
-	if _, ok := p.configMaps[cmKey]; ok {
-		delete(p.configMaps, cmKey)
+	if p.configMaps.Has(cmKey) {
+		p.configMaps.Delete(cmKey)
 		if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
 			storeKey := netName + ".dns-config"
 			if err := p.deps.Store.ConfigMaps.Delete(ctx, storeKey); err != nil {
@@ -1210,7 +1200,7 @@ func (p *MicroKubeProvider) handleManagedDNSTransition(ctx context.Context, wasM
 		// Update ConfigMap only if structural TOML changed
 		toml := p.generateMinimalTOML(net)
 		cmKey := net.Name + "/dns-config"
-		if cm, ok := p.configMaps[cmKey]; ok {
+		if cm, ok := p.configMaps.Get(cmKey); ok {
 			if cm.Data["microdns.toml"] != toml {
 				cm.Data["microdns.toml"] = toml
 				if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
@@ -1240,7 +1230,7 @@ func (p *MicroKubeProvider) checkNetworkCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for name := range p.networks {
+			for name := range p.networks.Snapshot() {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("network-crd/%s", name),
@@ -1269,7 +1259,7 @@ func (p *MicroKubeProvider) checkNetworkCRDs(ctx context.Context) []CheckItem {
 	}
 
 	// DNS liveness per managed network
-	for _, net := range p.networks {
+	for _, net := range p.networks.Snapshot() {
 		if net.Spec.ExternalDNS || net.Spec.DNS.Server == "" || net.Spec.DNS.Zone == "" {
 			continue
 		}
