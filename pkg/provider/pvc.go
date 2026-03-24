@@ -30,7 +30,7 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 		}
 		claimName := v.PersistentVolumeClaim.ClaimName
 		key := pod.Namespace + "/" + claimName
-		pvc, ok := p.pvcs[key]
+		pvc, ok := p.pvcs.Get(key)
 		if !ok {
 			// Auto-create missing PVC to prevent data loss.
 			// This handles boot-order pods that reference PVCs before they're
@@ -50,7 +50,7 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 					Phase: corev1.ClaimBound,
 				},
 			}
-			p.pvcs[key] = newPVC
+			p.pvcs.Set(key, newPVC)
 			// Persist to NATS if store is available
 			if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
 				storeKey := pod.Namespace + "." + claimName
@@ -110,7 +110,7 @@ func (p *MicroKubeProvider) LoadPVCsFromStore(ctx context.Context) {
 			continue
 		}
 		mapKey := pvc.Namespace + "/" + pvc.Name
-		p.pvcs[mapKey] = &pvc
+		p.pvcs.Set(mapKey, &pvc)
 	}
 
 	if len(keys) > 0 {
@@ -134,7 +134,7 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 	}
 
 	key := ns + "/" + pvc.Name
-	if _, exists := p.pvcs[key]; exists {
+	if p.pvcs.Has(key) {
 		http.Error(w, fmt.Sprintf("PVC %s already exists", key), http.StatusConflict)
 		return
 	}
@@ -160,7 +160,7 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	p.pvcs[key] = &pvc
+	p.pvcs.Set(key, &pvc)
 
 	// Ensure the PVC directory exists on disk
 	hostPath := p.pvcHostPath(&pvc)
@@ -178,7 +178,7 @@ func (p *MicroKubeProvider) handleGetPVC(w http.ResponseWriter, r *http.Request)
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	pvc, ok := p.pvcs[key]
+	pvc, ok := p.pvcs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("PVC %s not found", key), http.StatusNotFound)
 		return
@@ -205,7 +205,7 @@ func (p *MicroKubeProvider) handleListPVCs(w http.ResponseWriter, r *http.Reques
 	}
 
 	items := make([]corev1.PersistentVolumeClaim, 0)
-	for _, pvc := range p.pvcs {
+	for _, pvc := range p.pvcs.Snapshot() {
 		if pvc.Namespace != ns {
 			continue
 		}
@@ -233,8 +233,9 @@ func (p *MicroKubeProvider) handleListAllPVCs(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	items := make([]corev1.PersistentVolumeClaim, 0, len(p.pvcs))
-	for _, pvc := range p.pvcs {
+	snap := p.pvcs.Snapshot()
+	items := make([]corev1.PersistentVolumeClaim, 0, len(snap))
+	for _, pvc := range snap {
 		enriched := pvc.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
 		p.enrichPVCUsage(r.Context(), enriched)
@@ -258,7 +259,7 @@ func (p *MicroKubeProvider) handleUpdatePVC(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.pvcs[key]; !ok {
+	if !p.pvcs.Has(key) {
 		http.Error(w, fmt.Sprintf("PVC %s not found", key), http.StatusNotFound)
 		return
 	}
@@ -287,7 +288,7 @@ func (p *MicroKubeProvider) handleUpdatePVC(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	p.pvcs[key] = &pvc
+	p.pvcs.Set(key, &pvc)
 	podWriteJSON(w, http.StatusOK, &pvc)
 }
 
@@ -299,14 +300,14 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	pvc, ok := p.pvcs[key]
+	pvc, ok := p.pvcs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("PVC %s not found", key), http.StatusNotFound)
 		return
 	}
 
 	// Check if any pod references this PVC
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Namespace != ns {
 			continue
 		}
@@ -318,7 +319,7 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	delete(p.pvcs, key)
+	p.pvcs.Delete(key)
 
 	// Remove from NATS store
 	if p.deps.Store != nil {
@@ -365,17 +366,15 @@ func (p *MicroKubeProvider) handleWatchPVCs(w http.ResponseWriter, r *http.Reque
 
 	ctx := r.Context()
 
-	// Send existing PVCs as ADDED events (snapshot under read lock)
+	// Send existing PVCs as ADDED events (snapshot)
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	pvcSnapshot := make([]*corev1.PersistentVolumeClaim, 0, len(p.pvcs))
-	for _, pvc := range p.pvcs {
+	pvcSnapshot := make([]*corev1.PersistentVolumeClaim, 0)
+	for _, pvc := range p.pvcs.Snapshot() {
 		if nsFilter != "" && pvc.Namespace != nsFilter {
 			continue
 		}
 		pvcSnapshot = append(pvcSnapshot, pvc.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, enriched := range pvcSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/glennswest/mkube/pkg/runtime"
 )
@@ -179,15 +181,20 @@ func (p *MicroKubeProvider) natsURL() string {
 		return url
 	}
 
-	// Look up NATS container IP from tracked pods
-	// NOTE: caller must hold p.mu (Lock or RLock) — called from reconciler
-	// (under p.mu.Lock) and HTTP handlers (under WrapHandler).
-	for _, pod := range p.pods {
+	// Look up NATS container IP from tracked pods.
+	// SafeMap handles its own locking — no external mutex needed.
+	var natsIP string
+	p.pods.Range(func(_ string, pod *corev1.Pod) bool {
 		if pod.Namespace == "gt" && pod.Name == "nats" {
 			if ip := pod.Status.PodIP; ip != "" {
-				return fmt.Sprintf("nats://%s:%d", ip, port)
+				natsIP = ip
+				return false // stop iteration
 			}
 		}
+		return true
+	})
+	if natsIP != "" {
+		return fmt.Sprintf("nats://%s:%d", natsIP, port)
 	}
 
 	// Fallback: well-known NATS container IP

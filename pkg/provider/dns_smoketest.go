@@ -57,13 +57,7 @@ func (p *MicroKubeProvider) runDNSSmokeTest(ctx context.Context, net *Network) {
 	}
 
 	// 2. DHCP pool check (if DHCP is enabled for this network or relayed to it)
-	// Snapshot networks for lock-free check (called from background goroutine)
-	p.mu.RLock()
-	stNetsSnap := make([]*Network, 0, len(p.networks))
-	for _, n := range p.networks {
-		stNetsSnap = append(stNetsSnap, n)
-	}
-	p.mu.RUnlock()
+	stNetsSnap := p.networks.Values()
 	if net.Spec.DHCP.Enabled || p.networkHasDHCPFromSnapshot(net.Name, stNetsSnap) {
 		pools, err := dnsClient.ListDHCPPools(ctx, endpoint)
 		if err != nil {

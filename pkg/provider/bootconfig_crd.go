@@ -84,7 +84,7 @@ func (p *MicroKubeProvider) LoadBootConfigsFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read boot config from store", "key", key, "error", err)
 			continue
 		}
-		p.bootConfigs[bc.Name] = &bc
+		p.bootConfigs.Set(bc.Name, &bc)
 	}
 
 	if len(keys) > 0 {
@@ -100,8 +100,9 @@ func (p *MicroKubeProvider) handleListBootConfigs(w http.ResponseWriter, r *http
 		return
 	}
 
-	items := make([]BootConfig, 0, len(p.bootConfigs))
-	for _, bc := range p.bootConfigs {
+	snap := p.bootConfigs.Snapshot()
+	items := make([]BootConfig, 0, len(snap))
+	for _, bc := range snap {
 		c := bc.DeepCopy()
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BootConfig"}
 		items = append(items, *c)
@@ -121,7 +122,7 @@ func (p *MicroKubeProvider) handleListBootConfigs(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleGetBootConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	bc, ok := p.bootConfigs[name]
+	bc, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -150,7 +151,7 @@ func (p *MicroKubeProvider) handleCreateBootConfig(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if _, exists := p.bootConfigs[bc.Name]; exists {
+	if p.bootConfigs.Has(bc.Name) {
 		http.Error(w, fmt.Sprintf("BootConfig %q already exists", bc.Name), http.StatusConflict)
 		return
 	}
@@ -176,7 +177,7 @@ func (p *MicroKubeProvider) handleCreateBootConfig(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.bootConfigs[bc.Name] = &bc
+	p.bootConfigs.Set(bc.Name, &bc)
 
 	podWriteJSON(w, http.StatusCreated, &bc)
 }
@@ -184,7 +185,7 @@ func (p *MicroKubeProvider) handleCreateBootConfig(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handleUpdateBootConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	old, ok := p.bootConfigs[name]
+	old, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -213,7 +214,7 @@ func (p *MicroKubeProvider) handleUpdateBootConfig(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.bootConfigs[name] = &bc
+	p.bootConfigs.Set(name, &bc)
 
 	podWriteJSON(w, http.StatusOK, &bc)
 }
@@ -221,7 +222,7 @@ func (p *MicroKubeProvider) handleUpdateBootConfig(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handlePatchBootConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.bootConfigs[name]
+	existing, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -249,7 +250,7 @@ func (p *MicroKubeProvider) handlePatchBootConfig(w http.ResponseWriter, r *http
 		}
 	}
 
-	p.bootConfigs[name] = merged
+	p.bootConfigs.Set(name, merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
@@ -257,7 +258,7 @@ func (p *MicroKubeProvider) handlePatchBootConfig(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleDeleteBootConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	bc, ok := p.bootConfigs[name]
+	bc, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -277,7 +278,7 @@ func (p *MicroKubeProvider) handleDeleteBootConfig(w http.ResponseWriter, r *htt
 		}
 	}
 
-	delete(p.bootConfigs, name)
+	p.bootConfigs.Delete(name)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -293,7 +294,7 @@ func (p *MicroKubeProvider) handleDeleteBootConfig(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handleServeBootConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	bc, ok := p.bootConfigs[name]
+	bc, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -336,7 +337,7 @@ func (p *MicroKubeProvider) handleServeBootConfigFile(w http.ResponseWriter, r *
 	name := r.PathValue("name")
 	filename := r.PathValue("filename")
 
-	bc, ok := p.bootConfigs[name]
+	bc, ok := p.bootConfigs.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
@@ -367,7 +368,7 @@ func (p *MicroKubeProvider) handleUploadBootConfigFile(w http.ResponseWriter, r 
 	name := r.PathValue("name")
 	filename := r.PathValue("filename")
 
-	if _, ok := p.bootConfigs[name]; !ok {
+	if !p.bootConfigs.Has(name) {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found", name), http.StatusNotFound)
 		return
 	}
@@ -412,7 +413,7 @@ func (p *MicroKubeProvider) handleBootConfigLookup(w http.ResponseWriter, r *htt
 
 	// Search all BMH objects for spec.ip == sourceIP
 	var matchedBMH *BareMetalHost
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			break
@@ -429,7 +430,7 @@ func (p *MicroKubeProvider) handleBootConfigLookup(w http.ResponseWriter, r *htt
 		return
 	}
 
-	bc, ok := p.bootConfigs[matchedBMH.Spec.BootConfigRef]
+	bc, ok := p.bootConfigs.Get(matchedBMH.Spec.BootConfigRef)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BootConfig %q not found (referenced by BMH %q)",
 			matchedBMH.Spec.BootConfigRef, matchedBMH.Name), http.StatusNotFound)
@@ -476,7 +477,7 @@ func (p *MicroKubeProvider) handleBootComplete(w http.ResponseWriter, r *http.Re
 	// Find BMH by source IP
 	var matchedBMH *BareMetalHost
 	var matchedKey string
-	for key, bmh := range p.bareMetalHosts {
+	for key, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			matchedKey = key
@@ -525,14 +526,12 @@ func (p *MicroKubeProvider) handleWatchBootConfigs(w http.ResponseWriter, r *htt
 
 	ctx := r.Context()
 
-	// Send existing objects as ADDED events (snapshot under read lock)
+	// Send existing objects as ADDED events (snapshot)
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	bcSnapshot := make([]*BootConfig, 0, len(p.bootConfigs))
-	for _, bc := range p.bootConfigs {
+	bcSnapshot := make([]*BootConfig, 0)
+	for _, bc := range p.bootConfigs.Snapshot() {
 		bcSnapshot = append(bcSnapshot, bc.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, c := range bcSnapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BootConfig"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: c}
@@ -651,7 +650,7 @@ func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem
 				storeSet[k] = true
 			}
 
-			for name := range p.bootConfigs {
+			for name := range p.bootConfigs.Snapshot() {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("bootconfig/%s", name),
@@ -679,10 +678,10 @@ func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem
 	}
 
 	// Verify assignedTo references are valid BMHs
-	for _, bc := range p.bootConfigs {
+	for _, bc := range p.bootConfigs.Snapshot() {
 		for _, bmhName := range bc.Status.AssignedTo {
 			found := false
-			for _, bmh := range p.bareMetalHosts {
+			for _, bmh := range p.bareMetalHosts.Snapshot() {
 				if bmh.Name == bmhName && bmh.Spec.BootConfigRef == bc.Name {
 					found = true
 					break
@@ -707,7 +706,7 @@ func (p *MicroKubeProvider) checkBootConfigCRDs(ctx context.Context) []CheckItem
 func (p *MicroKubeProvider) syncBootConfigRef(ctx context.Context, bmhName, oldRef, newRef string) {
 	// Remove from old
 	if oldRef != "" && oldRef != newRef {
-		if bc, ok := p.bootConfigs[oldRef]; ok {
+		if bc, ok := p.bootConfigs.Get(oldRef); ok {
 			filtered := make([]string, 0, len(bc.Status.AssignedTo))
 			for _, n := range bc.Status.AssignedTo {
 				if n != bmhName {
@@ -721,7 +720,7 @@ func (p *MicroKubeProvider) syncBootConfigRef(ctx context.Context, bmhName, oldR
 
 	// Add to new
 	if newRef != "" {
-		if bc, ok := p.bootConfigs[newRef]; ok {
+		if bc, ok := p.bootConfigs.Get(newRef); ok {
 			// Check if already present
 			found := false
 			for _, n := range bc.Status.AssignedTo {
@@ -743,7 +742,7 @@ func (p *MicroKubeProvider) removeBootConfigRef(ctx context.Context, bmhName, re
 	if ref == "" {
 		return
 	}
-	bc, ok := p.bootConfigs[ref]
+	bc, ok := p.bootConfigs.Get(ref)
 	if !ok {
 		return
 	}

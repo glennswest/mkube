@@ -37,7 +37,7 @@ func (p *MicroKubeProvider) handleCreateConfigMap(w http.ResponseWriter, r *http
 		}
 	}
 
-	p.configMaps[key] = &cm
+	p.configMaps.Set(key, &cm)
 
 	// Sync to disk and trigger pod updates if content changed
 	p.syncConfigMapsToDisk(r.Context())
@@ -51,7 +51,7 @@ func (p *MicroKubeProvider) handleGetConfigMap(w http.ResponseWriter, r *http.Re
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	cm, ok := p.configMaps[key]
+	cm, ok := p.configMaps.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
 		return
@@ -72,7 +72,7 @@ func (p *MicroKubeProvider) handleListConfigMaps(w http.ResponseWriter, r *http.
 	}
 
 	items := make([]corev1.ConfigMap, 0)
-	for _, cm := range p.configMaps {
+	for _, cm := range p.configMaps.Snapshot() {
 		if cm.Namespace != ns {
 			continue
 		}
@@ -93,12 +93,12 @@ func (p *MicroKubeProvider) handleDeleteConfigMap(w http.ResponseWriter, r *http
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.configMaps[key]; !ok {
+	if !p.configMaps.Has(key) {
 		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
 		return
 	}
 
-	delete(p.configMaps, key)
+	p.configMaps.Delete(key)
 
 	// Remove from NATS store
 	if p.deps.Store != nil {
@@ -135,7 +135,7 @@ func (p *MicroKubeProvider) LoadConfigMapsFromStore(ctx context.Context) {
 			continue
 		}
 		mapKey := cm.Namespace + "/" + cm.Name
-		p.configMaps[mapKey] = &cm
+		p.configMaps.Set(mapKey, &cm)
 		loaded++
 	}
 
@@ -155,7 +155,7 @@ func (p *MicroKubeProvider) resolveConfigMapVolume(pod *corev1.Pod, volumeName s
 			return nil
 		}
 		key := pod.Namespace + "/" + v.ConfigMap.Name
-		if cm, ok := p.configMaps[key]; ok {
+		if cm, ok := p.configMaps.Get(key); ok {
 			return cm.Data
 		}
 		return nil

@@ -110,12 +110,12 @@ func (sp *StoragePool) imagesPath() string {
 // resolveStoragePool returns the pool by name, falling back to default, then "raid1".
 func (p *MicroKubeProvider) resolveStoragePool(name string) *StoragePool {
 	if name != "" {
-		if pool, ok := p.storagePools[name]; ok {
+		if pool, ok := p.storagePools.Get(name); ok {
 			return pool
 		}
 	}
 	// Fall back to default pool
-	for _, pool := range p.storagePools {
+	for _, pool := range p.storagePools.Snapshot() {
 		if pool.Spec.Default {
 			return pool
 		}
@@ -132,7 +132,7 @@ func (p *MicroKubeProvider) resolveStoragePool(name string) *StoragePool {
 
 // defaultStoragePool returns the name of the default pool.
 func (p *MicroKubeProvider) defaultStoragePool() string {
-	for name, pool := range p.storagePools {
+	for name, pool := range p.storagePools.Snapshot() {
 		if pool.Spec.Default {
 			return name
 		}
@@ -171,7 +171,7 @@ func (p *MicroKubeProvider) LoadStoragePoolsFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read storage pool from store", "key", key, "error", err)
 			continue
 		}
-		p.storagePools[pool.Name] = &pool
+		p.storagePools.Set(pool.Name, &pool)
 	}
 
 	if len(keys) > 0 {
@@ -205,7 +205,7 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	hasDefault := false
-	for _, pool := range p.storagePools {
+	for _, pool := range p.storagePools.Snapshot() {
 		if pool.Spec.Default {
 			hasDefault = true
 			break
@@ -219,7 +219,7 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 		usedBytes := totalBytes - freeBytes
 		raidDevices, _ := strconv.Atoi(disk.RaidDeviceCount)
 
-		existing, exists := p.storagePools[name]
+		existing, exists := p.storagePools.Get(name)
 		if exists {
 			// Update status only
 			existing.Status.TotalBytes = totalBytes
@@ -266,7 +266,7 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 			if isDefault {
 				hasDefault = true
 			}
-			p.storagePools[name] = pool
+			p.storagePools.Set(name, pool)
 			p.persistStoragePool(ctx, pool)
 			p.deps.Logger.Infow("discovered storage pool", "name", name,
 				"type", disk.Type, "size", formatBytes(totalBytes))
@@ -280,29 +280,29 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 // enrichStoragePoolCounts updates DiskCount and PVCCount on all pools.
 func (p *MicroKubeProvider) enrichStoragePoolCounts() {
 	// Reset counts
-	for _, pool := range p.storagePools {
+	for _, pool := range p.storagePools.Snapshot() {
 		pool.Status.DiskCount = 0
 		pool.Status.PVCCount = 0
 	}
 
 	// Count iSCSI disks per pool
-	for _, disk := range p.iscsiDisks {
+	for _, disk := range p.iscsiDisks.Snapshot() {
 		poolName := disk.Spec.StoragePool
 		if poolName == "" {
 			poolName = p.defaultStoragePool()
 		}
-		if pool, ok := p.storagePools[poolName]; ok {
+		if pool, ok := p.storagePools.Get(poolName); ok {
 			pool.Status.DiskCount++
 		}
 	}
 
 	// Count PVCs per pool
-	for _, pvc := range p.pvcs {
+	for _, pvc := range p.pvcs.Snapshot() {
 		poolName := p.pvcPoolName(pvc)
 		if poolName == "" {
 			poolName = p.defaultStoragePool()
 		}
-		if pool, ok := p.storagePools[poolName]; ok {
+		if pool, ok := p.storagePools.Get(poolName); ok {
 			pool.Status.PVCCount++
 		}
 	}
@@ -328,8 +328,9 @@ func (p *MicroKubeProvider) handleListStoragePools(w http.ResponseWriter, r *htt
 		return
 	}
 
-	items := make([]StoragePool, 0, len(p.storagePools))
-	for _, pool := range p.storagePools {
+	snap := p.storagePools.Snapshot()
+	items := make([]StoragePool, 0, len(snap))
+	for _, pool := range snap {
 		sp := pool.DeepCopy()
 		sp.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "StoragePool"}
 		items = append(items, *sp)
@@ -346,19 +347,15 @@ func (p *MicroKubeProvider) handleListStoragePools(w http.ResponseWriter, r *htt
 	})
 }
 
-// handleGetStoragePool manages its own locking — bypasses middleware lock
-// because enrichStoragePoolStatus makes external HTTP calls to RouterOS.
+// handleGetStoragePool returns a single storage pool with live status enrichment.
 func (p *MicroKubeProvider) handleGetStoragePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	// Snapshot pool under brief lock
-	p.mu.RLock()
-	pool, ok := p.storagePools[name]
+	pool, ok := p.storagePools.Get(name)
 	var sp *StoragePool
 	if ok {
 		sp = pool.DeepCopy()
 	}
-	p.mu.RUnlock()
 
 	if !ok {
 		http.Error(w, fmt.Sprintf("storage pool %q not found", name), http.StatusNotFound)
@@ -389,7 +386,7 @@ func (p *MicroKubeProvider) handleCreateStoragePool(w http.ResponseWriter, r *ht
 		http.Error(w, "storage pool name is required", http.StatusBadRequest)
 		return
 	}
-	if _, exists := p.storagePools[pool.Name]; exists {
+	if p.storagePools.Has(pool.Name) {
 		http.Error(w, fmt.Sprintf("storage pool %q already exists", pool.Name), http.StatusConflict)
 		return
 	}
@@ -407,7 +404,7 @@ func (p *MicroKubeProvider) handleCreateStoragePool(w http.ResponseWriter, r *ht
 
 	// Enforce single default
 	if pool.Spec.Default {
-		for _, existing := range p.storagePools {
+		for _, existing := range p.storagePools.Snapshot() {
 			if existing.Spec.Default {
 				existing.Spec.Default = false
 				p.persistStoragePool(r.Context(), existing)
@@ -415,7 +412,7 @@ func (p *MicroKubeProvider) handleCreateStoragePool(w http.ResponseWriter, r *ht
 		}
 	}
 
-	p.storagePools[pool.Name] = &pool
+	p.storagePools.Set(pool.Name, &pool)
 	p.persistStoragePool(r.Context(), &pool)
 
 	p.deps.Logger.Infow("created storage pool", "name", pool.Name, "mount", pool.Spec.MountPoint)
@@ -425,7 +422,7 @@ func (p *MicroKubeProvider) handleCreateStoragePool(w http.ResponseWriter, r *ht
 func (p *MicroKubeProvider) handleUpdateStoragePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.storagePools[name]
+	existing, ok := p.storagePools.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("storage pool %q not found", name), http.StatusNotFound)
 		return
@@ -443,7 +440,7 @@ func (p *MicroKubeProvider) handleUpdateStoragePool(w http.ResponseWriter, r *ht
 
 	// Enforce single default
 	if pool.Spec.Default && !existing.Spec.Default {
-		for _, other := range p.storagePools {
+		for _, other := range p.storagePools.Snapshot() {
 			if other.Name != name && other.Spec.Default {
 				other.Spec.Default = false
 				p.persistStoragePool(r.Context(), other)
@@ -451,7 +448,7 @@ func (p *MicroKubeProvider) handleUpdateStoragePool(w http.ResponseWriter, r *ht
 		}
 	}
 
-	p.storagePools[name] = &pool
+	p.storagePools.Set(name, &pool)
 	p.persistStoragePool(r.Context(), &pool)
 
 	podWriteJSON(w, http.StatusOK, &pool)
@@ -460,7 +457,7 @@ func (p *MicroKubeProvider) handleUpdateStoragePool(w http.ResponseWriter, r *ht
 func (p *MicroKubeProvider) handlePatchStoragePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.storagePools[name]
+	existing, ok := p.storagePools.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("storage pool %q not found", name), http.StatusNotFound)
 		return
@@ -484,7 +481,7 @@ func (p *MicroKubeProvider) handlePatchStoragePool(w http.ResponseWriter, r *htt
 
 	// Enforce single default
 	if merged.Spec.Default && !existing.Spec.Default {
-		for _, other := range p.storagePools {
+		for _, other := range p.storagePools.Snapshot() {
 			if other.Name != name && other.Spec.Default {
 				other.Spec.Default = false
 				p.persistStoragePool(r.Context(), other)
@@ -492,7 +489,7 @@ func (p *MicroKubeProvider) handlePatchStoragePool(w http.ResponseWriter, r *htt
 		}
 	}
 
-	p.storagePools[name] = merged
+	p.storagePools.Set(name, merged)
 	p.persistStoragePool(r.Context(), merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
@@ -501,7 +498,7 @@ func (p *MicroKubeProvider) handlePatchStoragePool(w http.ResponseWriter, r *htt
 func (p *MicroKubeProvider) handleDeleteStoragePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	pool, ok := p.storagePools[name]
+	pool, ok := p.storagePools.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("storage pool %q not found", name), http.StatusNotFound)
 		return
@@ -527,7 +524,7 @@ func (p *MicroKubeProvider) handleDeleteStoragePool(w http.ResponseWriter, r *ht
 		}
 	}
 
-	delete(p.storagePools, name)
+	p.storagePools.Delete(name)
 
 	p.deps.Logger.Infow("deleted storage pool", "name", name)
 	podWriteJSON(w, http.StatusOK, metav1.Status{
@@ -562,7 +559,7 @@ func (p *MicroKubeProvider) handleMigrateStoragePool(w http.ResponseWriter, r *h
 		return
 	}
 
-	targetPool, ok := p.storagePools[req.TargetPool]
+	targetPool, ok := p.storagePools.Get(req.TargetPool)
 	if !ok {
 		http.Error(w, fmt.Sprintf("target pool %q not found", req.TargetPool), http.StatusNotFound)
 		return
@@ -592,7 +589,7 @@ func (p *MicroKubeProvider) migratePVC(ctx context.Context, req MigrateRequest, 
 	ns, name := parts[0], parts[1]
 	key := ns + "/" + name
 
-	pvc, ok := p.pvcs[key]
+	pvc, ok := p.pvcs.Get(key)
 	if !ok {
 		return MigrateResult{Status: "error", Message: fmt.Sprintf("PVC %q not found", key)}
 	}
@@ -664,7 +661,7 @@ func (p *MicroKubeProvider) migratePVC(ctx context.Context, req MigrateRequest, 
 }
 
 func (p *MicroKubeProvider) migrateISCSIDisk(ctx context.Context, req MigrateRequest, targetPool *StoragePool) MigrateResult {
-	disk, ok := p.iscsiDisks[req.ResourceName]
+	disk, ok := p.iscsiDisks.Get(req.ResourceName)
 	if !ok {
 		return MigrateResult{Status: "error", Message: fmt.Sprintf("iSCSI disk %q not found", req.ResourceName)}
 	}
@@ -735,7 +732,7 @@ func (p *MicroKubeProvider) migrateISCSIDisk(ctx context.Context, req MigrateReq
 // findPodsUsingPVC returns all pods that reference the given PVC.
 func (p *MicroKubeProvider) findPodsUsingPVC(namespace, claimName string) []*corev1.Pod {
 	var result []*corev1.Pod
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Namespace != namespace {
 			continue
 		}
@@ -846,12 +843,11 @@ func (p *MicroKubeProvider) enrichStoragePoolStatus(ctx context.Context, pool *S
 		}
 	}
 
-	// Count resources under brief lock
-	p.mu.RLock()
+	// Count resources
 	pool.Status.DiskCount = 0
 	pool.Status.PVCCount = 0
 	defPool := p.defaultStoragePool()
-	for _, d := range p.iscsiDisks {
+	for _, d := range p.iscsiDisks.Snapshot() {
 		pn := d.Spec.StoragePool
 		if pn == "" {
 			pn = defPool
@@ -860,7 +856,7 @@ func (p *MicroKubeProvider) enrichStoragePoolStatus(ctx context.Context, pool *S
 			pool.Status.DiskCount++
 		}
 	}
-	for _, pvc := range p.pvcs {
+	for _, pvc := range p.pvcs.Snapshot() {
 		pn := p.pvcPoolName(pvc)
 		if pn == "" {
 			pn = defPool
@@ -869,7 +865,6 @@ func (p *MicroKubeProvider) enrichStoragePoolStatus(ctx context.Context, pool *S
 			pool.Status.PVCCount++
 		}
 	}
-	p.mu.RUnlock()
 }
 
 // ─── Watch Handler ──────────────────────────────────────────────────────────
@@ -897,12 +892,10 @@ func (p *MicroKubeProvider) handleWatchStoragePools(w http.ResponseWriter, r *ht
 
 	// Send existing objects as ADDED events
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	snapshot := make([]*StoragePool, 0, len(p.storagePools))
-	for _, pool := range p.storagePools {
+	snapshot := make([]*StoragePool, 0, p.storagePools.Len())
+	for _, pool := range p.storagePools.Snapshot() {
 		snapshot = append(snapshot, pool.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, sp := range snapshot {
 		sp.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "StoragePool"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: sp}
@@ -1043,6 +1036,8 @@ func formatBytes(b int64) string {
 func (p *MicroKubeProvider) checkStoragePoolCRDs(ctx context.Context) []CheckItem {
 	var items []CheckItem
 
+	poolSnap := p.storagePools.Snapshot()
+
 	// Verify memory ↔ NATS sync
 	if p.deps.Store != nil && p.deps.Store.StoragePools != nil {
 		storeKeys, err := p.deps.Store.StoragePools.Keys(ctx, "")
@@ -1052,7 +1047,7 @@ func (p *MicroKubeProvider) checkStoragePoolCRDs(ctx context.Context) []CheckIte
 				storeSet[k] = true
 			}
 
-			for name := range p.storagePools {
+			for name := range poolSnap {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("storage-pool/%s", name),
@@ -1080,7 +1075,7 @@ func (p *MicroKubeProvider) checkStoragePoolCRDs(ctx context.Context) []CheckIte
 	}
 
 	// Verify mount-point exists on disk
-	for name, pool := range p.storagePools {
+	for name, pool := range poolSnap {
 		mountPath := "/" + pool.Spec.MountPoint
 		if _, err := os.Stat(mountPath); err != nil {
 			items = append(items, CheckItem{
@@ -1099,12 +1094,12 @@ func (p *MicroKubeProvider) checkStoragePoolCRDs(ctx context.Context) []CheckIte
 
 	// Verify exactly one default pool
 	defaultCount := 0
-	for _, pool := range p.storagePools {
+	for _, pool := range poolSnap {
 		if pool.Spec.Default {
 			defaultCount++
 		}
 	}
-	if len(p.storagePools) > 0 {
+	if len(poolSnap) > 0 {
 		if defaultCount == 1 {
 			items = append(items, CheckItem{
 				Name:    "storage-pool/default",

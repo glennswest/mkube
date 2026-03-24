@@ -274,11 +274,9 @@ func isDeploymentWritePath(method, path string) bool {
 
 // WrapHandler returns an http.Handler that wraps the given handler with:
 // 1. Panic recovery — catches panics and returns 500 instead of crashing
-// 2. Mutex serialization — prevents concurrent map access crashes
-// Write handlers (POST/PUT/PATCH/DELETE) acquire a write lock.
-// Read handlers (GET/HEAD) acquire a read lock.
-// Watch requests (?watch=true) skip locking — they are long-lived streaming
-// connections and watch handlers use their own polling/snapshot logic.
+// 2. CORS headers for cross-origin console access
+// All map fields are SafeMap instances that handle their own per-map locking,
+// so there is no blanket middleware lock. Events are protected by p.eventsMu.
 func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Panic recovery — never let a handler crash the process
@@ -303,60 +301,6 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			return
 		}
 
-		// Endpoints that don't access shared state — skip mutex entirely.
-		// /healthz must NEVER be blocked by lock contention, otherwise stormd
-		// kills mkube when a long-running operation holds the write lock.
-		// Console UI pages (/ui/) are pure HTML generation, no shared state.
-		if r.URL.Path == "/healthz" || r.URL.Path == "/version" || r.URL.Path == "/apis" ||
-			strings.HasPrefix(r.URL.Path, "/ui/") ||
-			r.URL.Path == "/api/v1/consistency" {
-			h.ServeHTTP(w, r)
-			return
-		}
-
-		// Endpoints that do heavy I/O (RouterOS HTTP calls, container creation,
-		// image pulls) manage their own brief internal locks. Holding the
-		// blanket lock during these calls causes RWMutex priority inversion:
-		// a pending writer blocks all new readers, stalling the entire API.
-		//
-		// Only bypass for genuinely slow operations — fast handlers (configmaps,
-		// PVCs, events, BMH, etc.) work fine under the blanket middleware lock.
-		if strings.HasPrefix(r.URL.Path, "/api/v1/nodes") ||
-			(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/storagepools/")) {
-			h.ServeHTTP(w, r)
-			return
-		}
-		// Pod CRUD and deployment delete do minutes of container I/O —
-		// these manage their own brief locks around map writes.
-		if isPodCRUDPath(r.URL.Path) || isDeploymentWritePath(r.Method, r.URL.Path) {
-			h.ServeHTTP(w, r)
-			return
-		}
-
-		// Watch requests are long-lived streams — skip mutex to avoid blocking writes.
-		isWatch := r.URL.Query().Get("watch") == "true"
-		if !isWatch {
-			switch r.Method {
-			case http.MethodGet, http.MethodHead:
-				start := time.Now()
-				p.mu.RLock()
-				wait := time.Since(start)
-				if wait > 50*time.Millisecond {
-					p.deps.Logger.Warnw("slow RLock acquisition",
-						"path", r.URL.Path, "wait", wait)
-				}
-				defer p.mu.RUnlock()
-			default:
-				start := time.Now()
-				p.mu.Lock()
-				wait := time.Since(start)
-				if wait > 50*time.Millisecond {
-					p.deps.Logger.Warnw("slow Lock acquisition",
-						"path", r.URL.Path, "wait", wait)
-				}
-				defer p.mu.Unlock()
-			}
-		}
 		h.ServeHTTP(w, r)
 	})
 }
@@ -713,10 +657,7 @@ func (p *MicroKubeProvider) handleGetNode(w http.ResponseWriter, r *http.Request
 // Uses brief internal lock for shared state (pod count), then makes external
 // HTTP calls to RouterOS lock-free.
 func (p *MicroKubeProvider) buildNode(r *http.Request) *corev1.Node {
-	// Snapshot pod count under brief lock
-	p.mu.RLock()
-	podCount := len(p.pods)
-	p.mu.RUnlock()
+	podCount := p.pods.Len()
 
 	node := &corev1.Node{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Node"},
@@ -1033,7 +974,7 @@ func (p *MicroKubeProvider) handleHealthz(w http.ResponseWriter, r *http.Request
 // and returns the result synchronously (with 30s timeout).
 func (p *MicroKubeProvider) handleNetworkSmokeTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	net, ok := p.networks[name]
+	net, ok := p.networks.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", name), http.StatusNotFound)
 		return
@@ -1134,7 +1075,7 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 	// Find all tracked pods using this image
 	var podKeys []string
 	var targets []*corev1.Pod
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Annotations[annotationImagePolicy] != "auto" {
 			continue
 		}
@@ -1151,7 +1092,7 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 	// reconciler skips them (prevents race with orphan detection).
 	for _, pod := range targets {
 		key := pod.Namespace + "/" + pod.Name
-		p.redeploying[key] = true
+		p.redeploying.Set(key, true)
 		for _, c := range pod.Spec.Containers {
 			if imageMatches(c.Image, req.Image) {
 				p.deps.StorageMgr.ClearImageDigest(c.Image)
@@ -1168,7 +1109,7 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 				"index", i+1, "total", len(targets))
 			if err := p.UpdatePod(bgCtx, pod); err != nil {
 				log.Errorw("redeploy failed", "pod", key, "error", err)
-				delete(p.redeploying, key)
+				p.redeploying.Delete(key)
 				continue
 			}
 			log.Infow("redeploy complete, waiting for liveness", "pod", key)
@@ -1177,15 +1118,15 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 				if !p.waitForPodLiveness(bgCtx, pod, 60*time.Second) {
 					log.Errorw("pod failed liveness after redeploy, halting rollout",
 						"pod", key, "image", req.Image)
-					delete(p.redeploying, key)
+					p.redeploying.Delete(key)
 					// Unmark remaining pods
 					for _, rem := range targets[i+1:] {
-						delete(p.redeploying, rem.Namespace+"/"+rem.Name)
+						p.redeploying.Delete(rem.Namespace + "/" + rem.Name)
 					}
 					break
 				}
 			}
-			delete(p.redeploying, key)
+			p.redeploying.Delete(key)
 		}
 	}()
 
@@ -1326,7 +1267,7 @@ func (p *MicroKubeProvider) handleUpdateConfigMap(w http.ResponseWriter, r *http
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.configMaps[key]; !ok {
+	if !p.configMaps.Has(key) {
 		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
 		return
 	}
@@ -1348,7 +1289,7 @@ func (p *MicroKubeProvider) handleUpdateConfigMap(w http.ResponseWriter, r *http
 		}
 	}
 
-	p.configMaps[key] = &cm
+	p.configMaps.Set(key, &cm)
 	podWriteJSON(w, http.StatusOK, &cm)
 }
 
@@ -1358,7 +1299,7 @@ func (p *MicroKubeProvider) handlePatchConfigMap(w http.ResponseWriter, r *http.
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.configMaps[key]
+	existing, ok := p.configMaps.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("configmap %s not found", key), http.StatusNotFound)
 		return
@@ -1382,7 +1323,7 @@ func (p *MicroKubeProvider) handlePatchConfigMap(w http.ResponseWriter, r *http.
 		}
 	}
 
-	p.configMaps[key] = merged
+	p.configMaps.Set(key, merged)
 
 	// Sync to disk and trigger pod updates if content changed
 	p.syncConfigMapsToDisk(r.Context())
@@ -1393,23 +1334,23 @@ func (p *MicroKubeProvider) handlePatchConfigMap(w http.ResponseWriter, r *http.
 // handleListNamespaces returns namespaces derived from tracked pods and configmaps.
 func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.Request) {
 	nsSet := make(map[string]bool)
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		nsSet[pod.Namespace] = true
 	}
-	for _, cm := range p.configMaps {
+	for _, cm := range p.configMaps.Snapshot() {
 		nsSet[cm.Namespace] = true
 	}
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		nsSet[bmh.Namespace] = true
 	}
-	for _, deploy := range p.deployments {
+	for _, deploy := range p.deployments.Snapshot() {
 		nsSet[deploy.Namespace] = true
 	}
-	for _, pvc := range p.pvcs {
+	for _, pvc := range p.pvcs.Snapshot() {
 		nsSet[pvc.Namespace] = true
 	}
 	// Include network names as namespaces (for DNS/DHCP proxy resources)
-	for name := range p.networks {
+	for _, name := range p.networks.Keys() {
 		nsSet[name] = true
 	}
 	// Always include "default"
@@ -1440,24 +1381,26 @@ func (p *MicroKubeProvider) handleGetNamespace(w http.ResponseWriter, r *http.Re
 	// Check if namespace exists in tracked resources
 	found := name == "default"
 	if !found {
-		for _, pod := range p.pods {
+		p.pods.Range(func(_ string, pod *corev1.Pod) bool {
 			if pod.Namespace == name {
 				found = true
-				break
+				return false
 			}
-		}
+			return true
+		})
 	}
 	if !found {
-		for _, cm := range p.configMaps {
+		p.configMaps.Range(func(_ string, cm *corev1.ConfigMap) bool {
 			if cm.Namespace == name {
 				found = true
-				break
+				return false
 			}
-		}
+			return true
+		})
 	}
 	// Check if it's a network name (used as namespace for DNS/DHCP proxy resources)
 	if !found {
-		if _, ok := p.networks[name]; ok {
+		if p.networks.Has(name) {
 			found = true
 		}
 	}
@@ -1488,8 +1431,13 @@ func (p *MicroKubeProvider) handleListEvents(w http.ResponseWriter, r *http.Requ
 	ns := r.PathValue("namespace")
 	fieldSelector := r.URL.Query().Get("fieldSelector")
 
+	p.eventsMu.Lock()
+	eventsSnap := make([]corev1.Event, len(p.events))
+	copy(eventsSnap, p.events)
+	p.eventsMu.Unlock()
+
 	items := make([]corev1.Event, 0)
-	for _, evt := range p.events {
+	for _, evt := range eventsSnap {
 		if ns != "" && evt.Namespace != ns {
 			continue
 		}
@@ -1536,10 +1484,12 @@ func (p *MicroKubeProvider) handleCreateEvent(w http.ResponseWriter, r *http.Req
 	}
 	evt.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Event"}
 
+	p.eventsMu.Lock()
 	p.events = append(p.events, evt)
 	if len(p.events) > maxEvents {
 		p.events = p.events[len(p.events)-maxEvents:]
 	}
+	p.eventsMu.Unlock()
 
 	podWriteJSON(w, http.StatusCreated, &evt)
 }

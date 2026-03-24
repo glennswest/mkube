@@ -65,16 +65,12 @@ func (p *MicroKubeProvider) runDeploymentWatch(ctx context.Context) error {
 					continue
 				}
 				key := deploy.Namespace + "/" + deploy.Name
-				p.mu.Lock()
-				p.deployments[key] = &deploy
-				p.mu.Unlock()
+				p.deployments.Set(key, &deploy)
 				p.triggerReconcile()
 			case store.EventDelete:
 				ns, name := parseStoreKey(evt.Key)
 				key := ns + "/" + name
-				p.mu.Lock()
-				delete(p.deployments, key)
-				p.mu.Unlock()
+				p.deployments.Delete(key)
 				p.triggerReconcile()
 			}
 		}
@@ -120,16 +116,12 @@ func (p *MicroKubeProvider) runBMHWatch(ctx context.Context) error {
 					continue
 				}
 				key := bmh.Namespace + "/" + bmh.Name
-				p.mu.Lock()
-				p.bareMetalHosts[key] = &bmh
-				p.mu.Unlock()
+				p.bareMetalHosts.Set(key, &bmh)
 				p.triggerScheduler()
 			case store.EventDelete:
 				ns, name := parseStoreKey(evt.Key)
 				key := ns + "/" + name
-				p.mu.Lock()
-				delete(p.bareMetalHosts, key)
-				p.mu.Unlock()
+				p.bareMetalHosts.Delete(key)
 				p.triggerScheduler()
 			}
 		}
@@ -175,18 +167,18 @@ func (p *MicroKubeProvider) runNetworkWatch(ctx context.Context) error {
 				if err := json.Unmarshal(evt.Value, &net); err != nil {
 					continue
 				}
-				p.mu.Lock()
-				p.networks[net.Name] = &net
+				p.networks.Set(net.Name, &net)
+				p.dhcpMu.Lock()
 				p.rebuildDHCPIndex()
-				p.mu.Unlock()
+				p.dhcpMu.Unlock()
 				p.triggerNetworkReseed(net.Name)
 				p.triggerReconcile()
 			case store.EventDelete:
 				_, name := parseStoreKey(evt.Key)
-				p.mu.Lock()
-				delete(p.networks, name)
+				p.networks.Delete(name)
+				p.dhcpMu.Lock()
 				p.rebuildDHCPIndex()
-				p.mu.Unlock()
+				p.dhcpMu.Unlock()
 				p.triggerReconcile()
 			}
 		}
@@ -232,16 +224,12 @@ func (p *MicroKubeProvider) runJobWatch(ctx context.Context) error {
 					continue
 				}
 				key := job.Namespace + "/" + job.Name
-				p.mu.Lock()
-				p.jobs[key] = &job
-				p.mu.Unlock()
+				p.jobs.Set(key, &job)
 				p.triggerScheduler()
 			case store.EventDelete:
 				ns, name := parseStoreKey(evt.Key)
 				key := ns + "/" + name
-				p.mu.Lock()
-				delete(p.jobs, key)
-				p.mu.Unlock()
+				p.jobs.Delete(key)
 				p.triggerScheduler()
 			}
 		}
@@ -286,15 +274,11 @@ func (p *MicroKubeProvider) runJobRunnerWatch(ctx context.Context) error {
 				if err := json.Unmarshal(evt.Value, &jr); err != nil {
 					continue
 				}
-				p.mu.Lock()
-				p.jobRunners[jr.Name] = &jr
-				p.mu.Unlock()
+				p.jobRunners.Set(jr.Name, &jr)
 				p.triggerScheduler()
 			case store.EventDelete:
 				_, name := parseStoreKey(evt.Key)
-				p.mu.Lock()
-				delete(p.jobRunners, name)
-				p.mu.Unlock()
+				p.jobRunners.Delete(name)
 				p.triggerScheduler()
 			}
 		}
@@ -305,9 +289,7 @@ func (p *MicroKubeProvider) runJobRunnerWatch(ctx context.Context) error {
 // Uses an atomic guard to prevent unbounded goroutine growth when events arrive
 // faster than seeds complete.
 func (p *MicroKubeProvider) triggerNetworkReseed(networkName string) {
-	p.mu.RLock()
-	net, ok := p.networks[networkName]
-	p.mu.RUnlock()
+	net, ok := p.networks.Get(networkName)
 	if !ok || !net.Spec.Managed || net.Spec.ExternalDNS {
 		return
 	}

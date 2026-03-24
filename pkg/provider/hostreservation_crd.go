@@ -106,7 +106,7 @@ func (p *MicroKubeProvider) LoadHostReservationsFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read host reservation from store", "key", key, "error", err)
 			continue
 		}
-		p.hostReservations[hr.Namespace+"/"+hr.Name] = &hr
+		p.hostReservations.Set(hr.Namespace+"/"+hr.Name, &hr)
 	}
 
 	if len(keys) > 0 {
@@ -131,8 +131,9 @@ func (p *MicroKubeProvider) handleListAllHostReservations(w http.ResponseWriter,
 		return
 	}
 
-	items := make([]HostReservation, 0, len(p.hostReservations))
-	for _, hr := range p.hostReservations {
+	snap := p.hostReservations.Snapshot()
+	items := make([]HostReservation, 0, len(snap))
+	for _, hr := range snap {
 		c := hr.DeepCopy()
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "HostReservation"}
 		items = append(items, *c)
@@ -157,7 +158,7 @@ func (p *MicroKubeProvider) handleListNamespacedHostReservations(w http.Response
 
 	ns := r.PathValue("namespace")
 	items := make([]HostReservation, 0)
-	for _, hr := range p.hostReservations {
+	for _, hr := range p.hostReservations.Snapshot() {
 		if hr.Namespace == ns {
 			c := hr.DeepCopy()
 			c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "HostReservation"}
@@ -181,7 +182,7 @@ func (p *MicroKubeProvider) handleGetHostReservation(w http.ResponseWriter, r *h
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	hr, ok := p.hostReservations[key]
+	hr, ok := p.hostReservations.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("HostReservation %q not found", name), http.StatusNotFound)
 		return
@@ -215,7 +216,7 @@ func (p *MicroKubeProvider) handleCreateHostReservation(w http.ResponseWriter, r
 	hr.Namespace = ns
 	key := ns + "/" + hr.Name
 
-	if _, exists := p.hostReservations[key]; exists {
+	if p.hostReservations.Has(key) {
 		http.Error(w, fmt.Sprintf("HostReservation %q already exists", hr.Name), http.StatusConflict)
 		return
 	}
@@ -233,7 +234,7 @@ func (p *MicroKubeProvider) handleCreateHostReservation(w http.ResponseWriter, r
 
 	// Check BMH exists
 	bmhFound := false
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Name == hr.Spec.BMHRef {
 			bmhFound = true
 			hr.Status.BMHNetwork = bmh.Spec.Network
@@ -247,7 +248,7 @@ func (p *MicroKubeProvider) handleCreateHostReservation(w http.ResponseWriter, r
 	}
 
 	// Check no other reservation references same BMH
-	for _, existing := range p.hostReservations {
+	for _, existing := range p.hostReservations.Snapshot() {
 		if existing.Spec.BMHRef == hr.Spec.BMHRef {
 			http.Error(w, fmt.Sprintf("BareMetalHost %q is already reserved by %s/%s",
 				hr.Spec.BMHRef, existing.Namespace, existing.Name), http.StatusConflict)
@@ -267,7 +268,7 @@ func (p *MicroKubeProvider) handleCreateHostReservation(w http.ResponseWriter, r
 	}
 
 	p.persistHostReservation(r.Context(), &hr)
-	p.hostReservations[key] = &hr
+	p.hostReservations.Set(key, &hr)
 
 	podWriteJSON(w, http.StatusCreated, &hr)
 }
@@ -277,7 +278,7 @@ func (p *MicroKubeProvider) handleUpdateHostReservation(w http.ResponseWriter, r
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	old, ok := p.hostReservations[key]
+	old, ok := p.hostReservations.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("HostReservation %q not found", name), http.StatusNotFound)
 		return
@@ -300,7 +301,7 @@ func (p *MicroKubeProvider) handleUpdateHostReservation(w http.ResponseWriter, r
 	}
 
 	p.persistHostReservation(r.Context(), &hr)
-	p.hostReservations[key] = &hr
+	p.hostReservations.Set(key, &hr)
 
 	podWriteJSON(w, http.StatusOK, &hr)
 }
@@ -310,7 +311,7 @@ func (p *MicroKubeProvider) handlePatchHostReservation(w http.ResponseWriter, r 
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.hostReservations[key]
+	existing, ok := p.hostReservations.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("HostReservation %q not found", name), http.StatusNotFound)
 		return
@@ -333,7 +334,7 @@ func (p *MicroKubeProvider) handlePatchHostReservation(w http.ResponseWriter, r 
 	merged.CreationTimestamp = existing.CreationTimestamp
 
 	p.persistHostReservation(r.Context(), merged)
-	p.hostReservations[key] = merged
+	p.hostReservations.Set(key, merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
@@ -343,7 +344,7 @@ func (p *MicroKubeProvider) handleDeleteHostReservation(w http.ResponseWriter, r
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	hr, ok := p.hostReservations[key]
+	hr, ok := p.hostReservations.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("HostReservation %q not found", name), http.StatusNotFound)
 		return
@@ -364,7 +365,7 @@ func (p *MicroKubeProvider) handleDeleteHostReservation(w http.ResponseWriter, r
 		}
 	}
 
-	delete(p.hostReservations, key)
+	p.hostReservations.Delete(key)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -397,12 +398,10 @@ func (p *MicroKubeProvider) handleWatchHostReservations(w http.ResponseWriter, r
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
 
-	p.mu.RLock()
-	snapshot := make([]*HostReservation, 0, len(p.hostReservations))
-	for _, hr := range p.hostReservations {
+	snapshot := make([]*HostReservation, 0)
+	for _, hr := range p.hostReservations.Snapshot() {
 		snapshot = append(snapshot, hr.DeepCopy())
 	}
-	p.mu.RUnlock()
 
 	for _, c := range snapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "HostReservation"}
@@ -519,7 +518,7 @@ func (p *MicroKubeProvider) checkHostReservationCRDs(ctx context.Context) []Chec
 				storeSet[k] = true
 			}
 
-			for key, hr := range p.hostReservations {
+			for key, hr := range p.hostReservations.Snapshot() {
 				storeKey := hr.Namespace + "." + hr.Name
 				if storeSet[storeKey] {
 					items = append(items, CheckItem{
@@ -548,9 +547,9 @@ func (p *MicroKubeProvider) checkHostReservationCRDs(ctx context.Context) []Chec
 	}
 
 	// Verify BMH refs
-	for key, hr := range p.hostReservations {
+	for key, hr := range p.hostReservations.Snapshot() {
 		found := false
-		for _, bmh := range p.bareMetalHosts {
+		for _, bmh := range p.bareMetalHosts.Snapshot() {
 			if bmh.Name == hr.Spec.BMHRef {
 				found = true
 				break

@@ -160,7 +160,7 @@ func (p *MicroKubeProvider) handleCreateBMH(w http.ResponseWriter, r *http.Reque
 
 	key := ns + "/" + bmh.Name
 
-	if _, exists := p.bareMetalHosts[key]; exists {
+	if p.bareMetalHosts.Has(key) {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s already exists", key), http.StatusConflict)
 		return
 	}
@@ -174,7 +174,7 @@ func (p *MicroKubeProvider) handleCreateBMH(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	p.bareMetalHosts[key] = &bmh
+	p.bareMetalHosts.Set(key, &bmh)
 
 	// Sync DHCP reservations to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), &bmh, "", "", "", "")
@@ -191,7 +191,7 @@ func (p *MicroKubeProvider) handleGetBMH(w http.ResponseWriter, r *http.Request)
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	bmh, ok := p.bareMetalHosts[key]
+	bmh, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
 		return
@@ -214,8 +214,9 @@ func (p *MicroKubeProvider) handleListAllBMH(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	items := make([]BareMetalHost, 0, len(p.bareMetalHosts))
-	for _, bmh := range p.bareMetalHosts {
+	snap := p.bareMetalHosts.Snapshot()
+	items := make([]BareMetalHost, 0, len(snap))
+	for _, bmh := range snap {
 		enriched := bmh.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
 		items = append(items, *enriched)
@@ -241,7 +242,7 @@ func (p *MicroKubeProvider) handleListNamespacedBMH(w http.ResponseWriter, r *ht
 	}
 
 	items := make([]BareMetalHost, 0)
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if !bmhReferencesNetwork(bmh, ns) {
 			continue
 		}
@@ -266,7 +267,7 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.bareMetalHosts[key]
+	existing, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
 		return
@@ -320,7 +321,7 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	p.bareMetalHosts[key] = &bmh
+	p.bareMetalHosts.Set(key, &bmh)
 
 	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), &bmh, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
@@ -337,7 +338,7 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.bareMetalHosts[key]
+	existing, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
 		return
@@ -397,7 +398,7 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	p.bareMetalHosts[key] = merged
+	p.bareMetalHosts.Set(key, merged)
 
 	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI)
 	p.syncBMHToNetwork(r.Context(), merged, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
@@ -414,7 +415,7 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	bmh, ok := p.bareMetalHosts[key]
+	bmh, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("BareMetalHost %s not found", key), http.StatusNotFound)
 		return
@@ -435,7 +436,7 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 	// Remove from BootConfig assignedTo
 	p.removeBootConfigRef(r.Context(), bmh.Name, bmh.Spec.BootConfigRef)
 
-	delete(p.bareMetalHosts, key)
+	p.bareMetalHosts.Delete(key)
 
 	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
 		storeKey := ns + "." + name
@@ -479,7 +480,7 @@ func (p *MicroKubeProvider) handleRefreshAllBMH(w http.ResponseWriter, r *http.R
 	ts := time.Now().UTC().Format(time.RFC3339)
 	var names []string
 
-	for key, bmh := range p.bareMetalHosts {
+	for key, bmh := range p.bareMetalHosts.Snapshot() {
 		if err := p.updateBMHFields(r.Context(), key, func(b *BareMetalHost) {
 			if b.Annotations == nil {
 				b.Annotations = make(map[string]string)
@@ -507,13 +508,12 @@ func (p *MicroKubeProvider) handleRefreshAllBMH(w http.ResponseWriter, r *http.R
 // The mutate function receives the live in-memory BMH and should only modify
 // the specific fields it owns. The updated object is then persisted to NATS.
 func (p *MicroKubeProvider) updateBMHFields(ctx context.Context, key string, mutate func(bmh *BareMetalHost)) error {
-	bmh, ok := p.bareMetalHosts[key]
+	bmh, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		return fmt.Errorf("BareMetalHost %s not found", key)
 	}
 
-	// Apply the mutation to the live object (already under p.mu from WrapHandler
-	// or caller must hold p.mu for background goroutines)
+	// Apply the mutation to the live object
 	mutate(bmh)
 
 	// Persist to NATS
@@ -560,8 +560,8 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 
 		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway
 		if bmh.Spec.Image != "" {
-			if cdrom, ok := p.iscsiCdroms[bmh.Spec.Image]; ok && cdrom.Status.TargetIQN != "" {
-				if net, ok := p.networks[bmh.Spec.Network]; ok {
+			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
+				if net, ok := p.networks.Get(bmh.Spec.Network); ok {
 					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
 					log.Infow("BMH reservation root_path set", "bmh", bmh.Name, "image", bmh.Spec.Image, "root_path", res.RootPath)
 				}
@@ -603,7 +603,7 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 func (p *MicroKubeProvider) upsertNetworkReservation(ctx context.Context, networkName string, res NetworkDHCPReservation, bmhName string) {
 	log := p.deps.Logger
 
-	net, ok := p.networks[networkName]
+	net, ok := p.networks.Get(networkName)
 	if !ok {
 		log.Warnw("BMH references unknown network", "bmh", bmhName, "network", networkName)
 		return
@@ -674,7 +674,7 @@ func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, netwo
 		return
 	}
 
-	net, ok := p.networks[networkName]
+	net, ok := p.networks.Get(networkName)
 	if !ok {
 		return
 	}
@@ -859,18 +859,18 @@ func (p *MicroKubeProvider) LoadBMHFromStore(ctx context.Context) {
 			continue
 		}
 		mapKey := bmh.Namespace + "/" + bmh.Name
-		p.bareMetalHosts[mapKey] = &bmh
+		p.bareMetalHosts.Set(mapKey, &bmh)
 		loaded++
 	}
 
-	p.deps.Logger.Infow("loaded BMH from store", "keys", len(keys), "loaded", loaded, "mapSize", len(p.bareMetalHosts))
+	p.deps.Logger.Infow("loaded BMH from store", "keys", len(keys), "loaded", loaded, "mapSize", p.bareMetalHosts.Len())
 }
 
 // handleReloadBMH is a debug endpoint that reloads BMH from NATS store.
 func (p *MicroKubeProvider) handleReloadBMH(w http.ResponseWriter, r *http.Request) {
 	storeNil := p.deps.Store == nil
 	bucketNil := storeNil || p.deps.Store.BareMetalHosts == nil
-	beforeCount := len(p.bareMetalHosts)
+	beforeCount := p.bareMetalHosts.Len()
 
 	// Directly try Keys and report
 	var keysErr string
@@ -896,7 +896,7 @@ func (p *MicroKubeProvider) handleReloadBMH(w http.ResponseWriter, r *http.Reque
 	}
 
 	p.LoadBMHFromStore(r.Context())
-	afterCount := len(p.bareMetalHosts)
+	afterCount := p.bareMetalHosts.Len()
 
 	resp := map[string]interface{}{
 		"storeNil":    storeNil,
@@ -933,17 +933,15 @@ func (p *MicroKubeProvider) handleWatchBMH(w http.ResponseWriter, r *http.Reques
 
 	ctx := r.Context()
 
-	// Send existing BMH objects as ADDED events first (snapshot under read lock)
+	// Send existing BMH objects as ADDED events first (snapshot)
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	snapshot := make([]*BareMetalHost, 0, len(p.bareMetalHosts))
-	for _, bmh := range p.bareMetalHosts {
+	snapshot := make([]*BareMetalHost, 0)
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if nsFilter != "" && bmh.Namespace != nsFilter {
 			continue
 		}
 		snapshot = append(snapshot, bmh.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, enriched := range snapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
 		evt := K8sWatchEvent{Type: "ADDED", Object: enriched}

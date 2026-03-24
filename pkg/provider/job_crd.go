@@ -120,7 +120,7 @@ func (p *MicroKubeProvider) LoadJobsFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read job from store", "key", key, "error", err)
 			continue
 		}
-		p.jobs[job.Namespace+"/"+job.Name] = &job
+		p.jobs.Set(job.Namespace+"/"+job.Name, &job)
 	}
 
 	if len(keys) > 0 {
@@ -145,8 +145,9 @@ func (p *MicroKubeProvider) handleListAllJobs(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	items := make([]Job, 0, len(p.jobs))
-	for _, job := range p.jobs {
+	snap := p.jobs.Snapshot()
+	items := make([]Job, 0, len(snap))
+	for _, job := range snap {
 		c := job.DeepCopy()
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
 		items = append(items, *c)
@@ -171,7 +172,7 @@ func (p *MicroKubeProvider) handleListNamespacedJobs(w http.ResponseWriter, r *h
 
 	ns := r.PathValue("namespace")
 	items := make([]Job, 0)
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Namespace == ns {
 			c := job.DeepCopy()
 			c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
@@ -195,7 +196,7 @@ func (p *MicroKubeProvider) handleGetJob(w http.ResponseWriter, r *http.Request)
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	job, ok := p.jobs[key]
+	job, ok := p.jobs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
@@ -229,7 +230,7 @@ func (p *MicroKubeProvider) handleCreateJob(w http.ResponseWriter, r *http.Reque
 	job.Namespace = ns
 	key := ns + "/" + job.Name
 
-	if _, exists := p.jobs[key]; exists {
+	if p.jobs.Has(key) {
 		http.Error(w, fmt.Sprintf("Job %q already exists", job.Name), http.StatusConflict)
 		return
 	}
@@ -252,7 +253,7 @@ func (p *MicroKubeProvider) handleCreateJob(w http.ResponseWriter, r *http.Reque
 
 	// Verify a runner exists for this pool
 	runnerFound := false
-	for _, jr := range p.jobRunners {
+	for _, jr := range p.jobRunners.Snapshot() {
 		if jr.Spec.Pool == job.Spec.Pool {
 			runnerFound = true
 			break
@@ -272,7 +273,7 @@ func (p *MicroKubeProvider) handleCreateJob(w http.ResponseWriter, r *http.Reque
 	}
 
 	p.persistJob(r.Context(), &job)
-	p.jobs[key] = &job
+	p.jobs.Set(key, &job)
 	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusCreated, &job)
@@ -283,7 +284,7 @@ func (p *MicroKubeProvider) handleUpdateJob(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	old, ok := p.jobs[key]
+	old, ok := p.jobs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
@@ -314,7 +315,7 @@ func (p *MicroKubeProvider) handleUpdateJob(w http.ResponseWriter, r *http.Reque
 	}
 
 	p.persistJob(r.Context(), &job)
-	p.jobs[key] = &job
+	p.jobs.Set(key, &job)
 	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, &job)
@@ -325,7 +326,7 @@ func (p *MicroKubeProvider) handlePatchJob(w http.ResponseWriter, r *http.Reques
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	existing, ok := p.jobs[key]
+	existing, ok := p.jobs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
@@ -356,7 +357,7 @@ func (p *MicroKubeProvider) handlePatchJob(w http.ResponseWriter, r *http.Reques
 	}
 
 	p.persistJob(r.Context(), merged)
-	p.jobs[key] = merged
+	p.jobs.Set(key, merged)
 	p.triggerScheduler()
 
 	podWriteJSON(w, http.StatusOK, merged)
@@ -367,7 +368,7 @@ func (p *MicroKubeProvider) handleDeleteJob(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	job, ok := p.jobs[key]
+	job, ok := p.jobs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
@@ -396,7 +397,7 @@ func (p *MicroKubeProvider) handleDeleteJob(w http.ResponseWriter, r *http.Reque
 		_ = p.deps.Store.JobLogs.Delete(r.Context(), logKey)
 	}
 
-	delete(p.jobs, key)
+	p.jobs.Delete(key)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -412,7 +413,7 @@ func (p *MicroKubeProvider) handleCancelJob(w http.ResponseWriter, r *http.Reque
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	job, ok := p.jobs[key]
+	job, ok := p.jobs.Get(key)
 	if !ok {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
@@ -442,14 +443,14 @@ func (p *MicroKubeProvider) releaseJobHost(ctx context.Context, job *Job) {
 	}
 	// Count remaining active jobs on this BMH (excluding the one being released)
 	remaining := 0
-	for _, j := range p.jobs {
+	for _, j := range p.jobs.Snapshot() {
 		if j.Spec.Pool == job.Spec.Pool && j.Status.BMHRef == job.Status.BMHRef &&
 			(j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") &&
 			jobKey(j) != jobKey(job) {
 			remaining++
 		}
 	}
-	for _, hr := range p.hostReservations {
+	for _, hr := range p.hostReservations.Snapshot() {
 		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Spec.Pool == job.Spec.Pool {
 			if remaining == 0 {
 				hr.Status.ActiveJob = ""
@@ -485,7 +486,7 @@ func (p *MicroKubeProvider) handleCleanupJobs(w http.ResponseWriter, r *http.Req
 	cutoff := time.Now().Add(-threshold)
 
 	var toDelete []string
-	for key, job := range p.jobs {
+	for key, job := range p.jobs.Snapshot() {
 		// Only terminal phases
 		switch job.Status.Phase {
 		case "Completed", "Failed", "TimedOut", "Cancelled":
@@ -537,7 +538,7 @@ func (p *MicroKubeProvider) handleCleanupJobs(w http.ResponseWriter, r *http.Req
 			}
 		}
 
-		delete(p.jobs, key)
+		p.jobs.Delete(key)
 		deleted++
 	}
 
@@ -570,7 +571,7 @@ func parseDuration(s string) (time.Duration, error) {
 
 func (p *MicroKubeProvider) handleGetJobQueue(w http.ResponseWriter, r *http.Request) {
 	var pending []Job
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.Phase == "Pending" {
 			c := job.DeepCopy()
 			c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
@@ -659,7 +660,7 @@ func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Reque
 
 	// Find BMH by source IP
 	var matchedBMH *BareMetalHost
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			break
@@ -672,7 +673,7 @@ func (p *MicroKubeProvider) handleAgentWork(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Find next Provisioning job assigned to this BMH
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.BMHRef == matchedBMH.Name && job.Status.Phase == "Provisioning" {
 			c := job.DeepCopy()
 			c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
@@ -705,7 +706,7 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 	}
 
 	var matchedBMH *BareMetalHost
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			break
@@ -730,7 +731,7 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 	// Store agent environment on the HostReservation if provided
 	if hbReq.Env != nil {
 		hbReq.Env.ReportedAt = time.Now().UTC().Format(time.RFC3339)
-		for _, hr := range p.hostReservations {
+		for _, hr := range p.hostReservations.Snapshot() {
 			if hr.Spec.BMHRef == matchedBMH.Name {
 				hr.Status.AgentEnv = hbReq.Env
 				p.persistHostReservation(r.Context(), hr)
@@ -741,7 +742,7 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	updated := 0
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
 			continue
 		}
@@ -756,14 +757,14 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 
 	// Append status message to runner log if provided
 	if hbReq.Status != "" && hbReq.Job != "" {
-		if job, ok := p.jobs[hbReq.Job]; ok && job.Status.RunnerRef != "" {
+		if job, ok := p.jobs.Get(hbReq.Job); ok && job.Status.RunnerRef != "" {
 			p.appendRunnerEvent(job.Status.RunnerRef, fmt.Sprintf("%s: %s", hbReq.Job, hbReq.Status))
 		}
 	}
 
 	// Check if the specific job has been cancelled — signal the agent to stop
 	if hbReq.Job != "" {
-		if job, ok := p.jobs[hbReq.Job]; ok && (job.Status.Phase == "Cancelled" || job.Status.Phase == "TimedOut") {
+		if job, ok := p.jobs.Get(hbReq.Job); ok && (job.Status.Phase == "Cancelled" || job.Status.Phase == "TimedOut") {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]bool{"cancel": true})
@@ -790,7 +791,7 @@ func (p *MicroKubeProvider) handleAgentLogs(w http.ResponseWriter, r *http.Reque
 	}
 
 	var matchedBMH *BareMetalHost
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			break
@@ -806,7 +807,7 @@ func (p *MicroKubeProvider) handleAgentLogs(w http.ResponseWriter, r *http.Reque
 	jobRef := r.URL.Query().Get("job")
 
 	var matchedJob *Job
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
 			continue
 		}
@@ -855,7 +856,7 @@ func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.R
 	}
 
 	var matchedBMH *BareMetalHost
-	for _, bmh := range p.bareMetalHosts {
+	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		if bmh.Spec.IP == sourceIP {
 			matchedBMH = bmh
 			break
@@ -875,7 +876,7 @@ func (p *MicroKubeProvider) handleAgentComplete(w http.ResponseWriter, r *http.R
 
 	// Find matching job — by identity if provided, else first running
 	var matchedJob *Job
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.BMHRef != matchedBMH.Name || job.Status.Phase != "Running" {
 			continue
 		}
@@ -935,7 +936,7 @@ func (p *MicroKubeProvider) handleGetJobLogs(w http.ResponseWriter, r *http.Requ
 	name := r.PathValue("name")
 	key := ns + "/" + name
 
-	if _, ok := p.jobs[key]; !ok {
+	if !p.jobs.Has(key) {
 		http.Error(w, fmt.Sprintf("Job %q not found", name), http.StatusNotFound)
 		return
 	}
@@ -954,7 +955,7 @@ func (p *MicroKubeProvider) handleGetJobLogs(w http.ResponseWriter, r *http.Requ
 func (p *MicroKubeProvider) handleGetRunnerLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	if _, ok := p.jobRunners[name]; !ok {
+	if !p.jobRunners.Has(name) {
 		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
 		return
 	}
@@ -992,12 +993,10 @@ func (p *MicroKubeProvider) handleWatchJobs(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
 
-	p.mu.RLock()
-	snapshot := make([]*Job, 0, len(p.jobs))
-	for _, job := range p.jobs {
+	snapshot := make([]*Job, 0)
+	for _, job := range p.jobs.Snapshot() {
 		snapshot = append(snapshot, job.DeepCopy())
 	}
-	p.mu.RUnlock()
 
 	for _, c := range snapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Job"}
@@ -1152,7 +1151,7 @@ func (p *MicroKubeProvider) checkJobCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for key, job := range p.jobs {
+			for key, job := range p.jobs.Snapshot() {
 				storeKey := job.Namespace + "." + job.Name
 				if storeSet[storeKey] {
 					items = append(items, CheckItem{

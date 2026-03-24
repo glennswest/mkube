@@ -153,9 +153,7 @@ func (p *MicroKubeProvider) rebuildDHCPIndex() {
 	}
 
 	// Include Network CRDs (these take precedence — overwrite static entries)
-	// NOTE: caller must hold p.mu (Lock or RLock) when from background goroutines.
-	// HTTP handlers are protected by WrapHandler.
-	for _, crd := range p.networks {
+	for _, crd := range p.networks.Snapshot() {
 		if crd.Spec.CIDR != "" {
 			_, subnet, err := net.ParseCIDR(crd.Spec.CIDR)
 			if err == nil {
@@ -196,9 +194,9 @@ func (p *MicroKubeProvider) rebuildDHCPIndex() {
 // polls each DHCP-enabled microdns as a fallback consistency check.
 func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 	// Rebuild index from CRDs (covers networks loaded from NATS)
-	p.mu.Lock()
+	p.dhcpMu.Lock()
 	p.rebuildDHCPIndex()
-	p.mu.Unlock()
+	p.dhcpMu.Unlock()
 
 	// Check if any network has DHCP enabled (static config or CRDs)
 	hasAny := false
@@ -209,14 +207,12 @@ func (p *MicroKubeProvider) RunDHCPWatcher(ctx context.Context) {
 		}
 	}
 	if !hasAny {
-		p.mu.RLock()
-		for _, n := range p.networks {
+		for _, n := range p.networks.Values() {
 			if n.Spec.DHCP.Enabled {
 				hasAny = true
 				break
 			}
 		}
-		p.mu.RUnlock()
 	}
 	if !hasAny {
 		p.deps.Logger.Info("DHCP watcher disabled (no networks have DHCP enabled)")
@@ -301,12 +297,16 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 		return
 	}
 
-	if p.dhcpIndex == nil {
+	p.dhcpMu.RLock()
+	idx := p.dhcpIndex
+	p.dhcpMu.RUnlock()
+
+	if idx == nil {
 		return
 	}
 
 	// Resolve hostname from reservation if available
-	if entry, ok := p.dhcpIndex.reservationsByIP[ip]; ok {
+	if entry, ok := idx.reservationsByIP[ip]; ok {
 		if network == "" {
 			network = entry.Network
 		}
@@ -314,7 +314,7 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 			hostname = entry.Hostname
 		}
 	} else if network == "" {
-		network = p.dhcpIndex.networkForIP(ip)
+		network = idx.networkForIP(ip)
 	}
 
 	if network == "" {
@@ -323,7 +323,7 @@ func (p *MicroKubeProvider) publishDHCPEvent(eventType, network, ip, mac, hostna
 
 	// Look up network type
 	networkType := ""
-	if net, ok := p.networks[network]; ok {
+	if net, ok := p.networks.Get(network); ok {
 		networkType = string(net.Spec.Type)
 	}
 
@@ -375,13 +375,7 @@ func (p *MicroKubeProvider) reconcileDHCPLeases(ctx context.Context) {
 	}
 
 	// Poll Network CRD networks
-	p.mu.RLock()
-	pollNetsSnap := make([]*Network, 0, len(p.networks))
-	for _, n := range p.networks {
-		pollNetsSnap = append(pollNetsSnap, n)
-	}
-	p.mu.RUnlock()
-	for _, n := range pollNetsSnap {
+	for _, n := range p.networks.Values() {
 		if !n.Spec.DHCP.Enabled {
 			continue
 		}

@@ -17,10 +17,9 @@ const (
 )
 
 // schedulerDeferred collects NATS writes to perform outside the lock.
-// The scheduler does all in-memory mutations under p.mu.Lock(), then
-// releases the lock and flushes these writes. This prevents the write
-// lock from being held during I/O, which was causing a deadlock:
-// scheduler Lock() + slow NATS → blocks all API RLock() → healthz blocked → stormd kills mkube.
+// The scheduler does all in-memory mutations via SafeMap methods, then
+// flushes NATS writes. SafeMap instances handle their own per-map locking,
+// eliminating the old blanket lock that caused priority inversion deadlocks.
 type schedulerDeferred struct {
 	jobs       []*Job
 	hrs        []*HostReservation
@@ -79,21 +78,17 @@ func (p *MicroKubeProvider) RunJobScheduler(ctx context.Context) {
 			log.Info("job scheduler stopping")
 			return
 		case <-ticker.C:
-			p.mu.Lock()
 			deferred := p.schedulerTick(ctx)
-			p.mu.Unlock()
 			deferred.flush(ctx, p)
 		case <-p.kickScheduler:
-			p.mu.Lock()
 			deferred := p.schedulerTick(ctx)
-			p.mu.Unlock()
 			deferred.flush(ctx, p)
 		}
 	}
 }
 
-// schedulerTick performs one scheduling cycle. Must be called with p.mu held.
-// Returns deferred NATS writes to flush outside the lock.
+// schedulerTick performs one scheduling cycle. All map fields are SafeMap
+// instances that handle their own locking. Returns deferred NATS writes.
 func (p *MicroKubeProvider) schedulerTick(ctx context.Context) schedulerDeferred {
 	log := p.deps.Logger.Named("scheduler")
 	var d schedulerDeferred
@@ -125,7 +120,7 @@ func (p *MicroKubeProvider) schedulerTick(ctx context.Context) schedulerDeferred
 // deferBMHUpdate applies an in-memory mutation to a BMH (fast, under lock)
 // and queues the NATS write for later flushing outside the lock.
 func (p *MicroKubeProvider) deferBMHUpdate(d *schedulerDeferred, key string, mutate func(bmh *BareMetalHost)) error {
-	bmh, ok := p.bareMetalHosts[key]
+	bmh, ok := p.bareMetalHosts.Get(key)
 	if !ok {
 		return fmt.Errorf("BareMetalHost %s not found", key)
 	}
@@ -138,7 +133,7 @@ func (p *MicroKubeProvider) deferBMHUpdate(d *schedulerDeferred, key string, mut
 func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	// Collect pending jobs sorted by priority DESC, creation time ASC
 	var pending []*Job
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.Phase == "Pending" {
 			pending = append(pending, job)
 		}
@@ -157,7 +152,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 	for _, job := range pending {
 		// Find matching JobRunner
 		var runner *JobRunner
-		for _, jr := range p.jobRunners {
+		for _, jr := range p.jobRunners.Snapshot() {
 			if jr.Spec.Pool == job.Spec.Pool && jr.Status.Phase == "Active" {
 				runner = jr
 				break
@@ -171,7 +166,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 		maxConc := runner.Spec.MaxConcurrent
 		if maxConc > 0 {
 			activeCount := 0
-			for _, j := range p.jobs {
+			for _, j := range p.jobs.Snapshot() {
 				if j.Spec.Pool == runner.Spec.Pool &&
 					(j.Status.Phase == "Scheduling" || j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") {
 					activeCount++
@@ -194,7 +189,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 		job.Status.BMHRef = bmhName
 
 		// Mark host reservation as active
-		for _, hr := range p.hostReservations {
+		for _, hr := range p.hostReservations.Snapshot() {
 			if hr.Spec.BMHRef == bmhName {
 				hr.Status.ActiveJob = jobKey(job)
 				d.hrs = append(d.hrs, hr)
@@ -207,7 +202,7 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 		// overwriting template/bootConfigRef/image would trigger a PXE reboot
 		// via the BMH operator. The running agent will pick up the new job
 		// through its work poll loop.
-		for bmhKey, bmh := range p.bareMetalHosts {
+		for bmhKey, bmh := range p.bareMetalHosts.Snapshot() {
 			if bmh.Name == bmhName {
 				job.Status.HostIP = bmh.Spec.IP
 				alreadyOnline := bmh.Spec.Online != nil && *bmh.Spec.Online
@@ -259,7 +254,7 @@ func (p *MicroKubeProvider) findAvailableHost(pool string, maxConcurrent int, al
 
 	// Count active jobs per BMH
 	bmhActive := make(map[string]int)
-	for _, j := range p.jobs {
+	for _, j := range p.jobs.Snapshot() {
 		if j.Spec.Pool == pool &&
 			(j.Status.Phase == "Scheduling" || j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") {
 			bmhActive[j.Status.BMHRef]++
@@ -267,7 +262,7 @@ func (p *MicroKubeProvider) findAvailableHost(pool string, maxConcurrent int, al
 	}
 
 	// First: reserved hosts for this pool under the limit
-	for _, hr := range p.hostReservations {
+	for _, hr := range p.hostReservations.Snapshot() {
 		if hr.Spec.Pool == pool && hr.Status.Phase == "Active" {
 			if bmhActive[hr.Spec.BMHRef] < maxConcurrent {
 				return hr.Spec.BMHRef
@@ -278,10 +273,10 @@ func (p *MicroKubeProvider) findAvailableHost(pool string, maxConcurrent int, al
 	// Overflow: unreserved BMHs under the limit
 	if allowOverflow {
 		reserved := make(map[string]bool)
-		for _, hr := range p.hostReservations {
+		for _, hr := range p.hostReservations.Snapshot() {
 			reserved[hr.Spec.BMHRef] = true
 		}
-		for _, bmh := range p.bareMetalHosts {
+		for _, bmh := range p.bareMetalHosts.Snapshot() {
 			if !reserved[bmh.Name] && bmhActive[bmh.Name] < maxConcurrent {
 				return bmh.Name
 			}
@@ -299,14 +294,14 @@ func (p *MicroKubeProvider) releaseJobHostDeferred(job *Job, d *schedulerDeferre
 	}
 	// Count remaining active jobs on this BMH (excluding the one being released)
 	remaining := 0
-	for _, j := range p.jobs {
+	for _, j := range p.jobs.Snapshot() {
 		if j.Spec.Pool == job.Spec.Pool && j.Status.BMHRef == job.Status.BMHRef &&
 			(j.Status.Phase == "Provisioning" || j.Status.Phase == "Running") &&
 			jobKey(j) != jobKey(job) {
 			remaining++
 		}
 	}
-	for _, hr := range p.hostReservations {
+	for _, hr := range p.hostReservations.Snapshot() {
 		if hr.Spec.BMHRef == job.Status.BMHRef && hr.Spec.Pool == job.Spec.Pool {
 			if remaining == 0 {
 				hr.Status.ActiveJob = ""
@@ -319,7 +314,7 @@ func (p *MicroKubeProvider) releaseJobHostDeferred(job *Job, d *schedulerDeferre
 
 // checkProvisioningTimeouts fails jobs stuck in Provisioning too long.
 func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.Phase != "Provisioning" {
 			continue
 		}
@@ -341,7 +336,7 @@ func (p *MicroKubeProvider) checkProvisioningTimeouts(ctx context.Context, log i
 
 // checkRunningTimeouts fails jobs exceeding their spec.timeout.
 func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.Phase != "Running" || job.Spec.Timeout <= 0 {
 			continue
 		}
@@ -368,7 +363,7 @@ func (p *MicroKubeProvider) checkRunningTimeouts(ctx context.Context, log interf
 
 // checkHeartbeatTimeouts fails jobs with stale heartbeats.
 func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.Phase != "Running" || job.Status.LastHeartbeat == "" {
 			continue
 		}
@@ -394,7 +389,7 @@ func (p *MicroKubeProvider) checkHeartbeatTimeouts(ctx context.Context, log inte
 // Hosts in pools with an active schedule are not powered off during scheduled hours.
 func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	now := time.Now()
-	for _, runner := range p.jobRunners {
+	for _, runner := range p.jobRunners.Snapshot() {
 		if runner.Spec.IdleTimeout <= 0 || runner.Spec.ReclaimPolicy == "Retain" {
 			continue
 		}
@@ -409,7 +404,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 		// Check if any pending or active jobs for this pool
 		hasWork := false
 		var lastCompletion time.Time
-		for _, job := range p.jobs {
+		for _, job := range p.jobs.Snapshot() {
 			if job.Spec.Pool != pool {
 				continue
 			}
@@ -436,11 +431,11 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 		}
 
 		// Power off all reserved hosts in this pool
-		for _, hr := range p.hostReservations {
+		for _, hr := range p.hostReservations.Snapshot() {
 			if hr.Spec.Pool != pool || hr.Status.ActiveJob != "" {
 				continue
 			}
-			for bmhKey, bmh := range p.bareMetalHosts {
+			for bmhKey, bmh := range p.bareMetalHosts.Snapshot() {
 				if bmh.Name == hr.Spec.BMHRef && bmh.Spec.Online != nil && *bmh.Spec.Online {
 					// Skip hosts manually powered on by user
 					if bmh.Annotations != nil && bmh.Annotations["bmh.mkube.io/manual-power"] != "" {
@@ -465,18 +460,18 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 // ensureScheduledHostsOnline powers on reserved hosts during active schedule hours.
 func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log interface{ Infow(string, ...interface{}) }, d *schedulerDeferred) {
 	now := time.Now()
-	for _, runner := range p.jobRunners {
+	for _, runner := range p.jobRunners.Snapshot() {
 		if runner.Spec.Schedule == nil || !runner.Spec.Schedule.IsActive(now) {
 			continue
 		}
 
 		pool := runner.Spec.Pool
 
-		for _, hr := range p.hostReservations {
+		for _, hr := range p.hostReservations.Snapshot() {
 			if hr.Spec.Pool != pool || hr.Status.ActiveJob != "" {
 				continue
 			}
-			for bmhKey, bmh := range p.bareMetalHosts {
+			for bmhKey, bmh := range p.bareMetalHosts.Snapshot() {
 				if bmh.Name != hr.Spec.BMHRef {
 					continue
 				}
@@ -510,7 +505,7 @@ func (p *MicroKubeProvider) autoCleanupOldJobs(ctx context.Context, log interfac
 	cutoff := time.Now().Add(-jobRetentionDefault)
 	var toDelete []string
 
-	for key, job := range p.jobs {
+	for key, job := range p.jobs.Snapshot() {
 		switch job.Status.Phase {
 		case "Completed", "Failed", "TimedOut", "Cancelled":
 		default:
@@ -536,7 +531,7 @@ func (p *MicroKubeProvider) autoCleanupOldJobs(ctx context.Context, log interfac
 
 	for _, key := range toDelete {
 		p.deleteJobLogs(key)
-		delete(p.jobs, key)
+		p.jobs.Delete(key)
 	}
 
 	// Queue NATS deletes for deferred flush (outside lock)

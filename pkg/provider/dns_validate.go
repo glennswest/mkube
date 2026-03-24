@@ -6,8 +6,6 @@ import (
 	"net"
 	"net/http"
 	"time"
-
-	corev1 "k8s.io/api/core/v1"
 )
 
 // DNSValidationReport is the response for GET /api/v1/dns/validate.
@@ -162,10 +160,7 @@ func (p *MicroKubeProvider) runDNSValidation(ctx context.Context) DNSValidationR
 		}
 
 		// 5. Pod alias records — iterate tracked pods, rebuild expected aliases
-		pods := make([]*corev1.Pod, 0, len(p.pods))
-		for _, pod := range p.pods {
-			pods = append(pods, pod)
-		}
+		pods := p.pods.Values()
 		expectedRecords := p.buildExpectedDNSRecords(pods, netName)
 		for hostname, expected := range expectedRecords {
 			checkName := fmt.Sprintf("zone/%s/pod/%s", netName, hostname)

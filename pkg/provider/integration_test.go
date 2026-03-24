@@ -214,7 +214,7 @@ func TestProviderPodCreateAndDelete(t *testing.T) {
 	}
 
 	// Pod should be tracked
-	if _, ok := p.pods["default/myapp"]; !ok {
+	if !p.pods.Has("default/myapp") {
 		t.Fatal("pod not tracked after create")
 	}
 
@@ -242,7 +242,7 @@ func TestProviderPodCreateAndDelete(t *testing.T) {
 	}
 
 	// Pod should no longer be tracked
-	if _, ok := p.pods["default/myapp"]; ok {
+	if p.pods.Has("default/myapp") {
 		t.Error("pod still tracked after delete")
 	}
 
@@ -408,14 +408,14 @@ func TestProviderDeleteMissing(t *testing.T) {
 
 	// Fabricate a pod that was never created in the runtime
 	pod := testPod("ghost", "phantom")
-	p.pods[podKey(pod)] = pod.DeepCopy()
+	p.pods.Set(podKey(pod), pod.DeepCopy())
 
 	// Delete should succeed (log warnings but no error)
 	if err := p.DeletePod(ctx, pod); err != nil {
 		t.Fatalf("DeletePod on missing containers should not error: %v", err)
 	}
 
-	if _, ok := p.pods[podKey(pod)]; ok {
+	if p.pods.Has(podKey(pod)) {
 		t.Error("pod still tracked after delete")
 	}
 }

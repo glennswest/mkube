@@ -264,7 +264,7 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 					continue
 				}
 				key := podKey(&pod)
-				if _, tracked := p.pods[key]; !tracked {
+				if !p.pods.Has(key) {
 					log.Infow("watch: creating pod", "pod", key)
 					if err := p.CreatePod(ctx, &pod); err != nil {
 						log.Errorw("watch: failed to create pod", "pod", key, "error", err)
@@ -274,7 +274,7 @@ func (p *MicroKubeProvider) runWatchLoop(ctx context.Context) error {
 			case store.EventDelete:
 				ns, name := parseStoreKey(evt.Key)
 				key := ns + "/" + name
-				if pod, tracked := p.pods[key]; tracked {
+				if pod, tracked := p.pods.Get(key); tracked {
 					log.Infow("watch: deleting pod", "pod", key)
 					if err := p.DeletePod(ctx, pod); err != nil {
 						log.Errorw("watch: failed to delete pod", "pod", key, "error", err)

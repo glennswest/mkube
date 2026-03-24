@@ -138,7 +138,7 @@ type DNSForwarderList struct {
 // Returns the endpoint URL, the network, and true on success.
 // On failure, writes an HTTP error and returns false.
 func (p *MicroKubeProvider) resolveDNSEndpoint(w http.ResponseWriter, ns string) (string, *Network, bool) {
-	net, ok := p.networks[ns]
+	net, ok := p.networks.Get(ns)
 	if !ok {
 		http.Error(w, fmt.Sprintf("network %q not found", ns), http.StatusNotFound)
 		return "", nil, false

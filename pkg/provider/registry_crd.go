@@ -90,7 +90,7 @@ func (p *MicroKubeProvider) LoadRegistriesFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read registry from store", "key", key, "error", err)
 			continue
 		}
-		p.registries[reg.Name] = &reg
+		p.registries.Set(reg.Name, &reg)
 	}
 
 	if len(keys) > 0 {
@@ -165,7 +165,7 @@ func (p *MicroKubeProvider) MigrateRegistryConfig(ctx context.Context) {
 		p.deps.Logger.Warnw("failed to migrate registry config", "error", err)
 		return
 	}
-	p.registries[reg.Name] = &reg
+	p.registries.Set(reg.Name, &reg)
 	p.deps.Logger.Infow("migrated registry config to CRD", "name", reg.Name)
 }
 
@@ -177,8 +177,9 @@ func (p *MicroKubeProvider) handleListRegistries(w http.ResponseWriter, r *http.
 		return
 	}
 
-	items := make([]Registry, 0, len(p.registries))
-	for _, reg := range p.registries {
+	snap := p.registries.Snapshot()
+	items := make([]Registry, 0, len(snap))
+	for _, reg := range snap {
 		enriched := reg.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Registry"}
 		p.enrichRegistryStatus(r.Context(), enriched)
@@ -199,7 +200,7 @@ func (p *MicroKubeProvider) handleListRegistries(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleGetRegistry(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	reg, ok := p.registries[name]
+	reg, ok := p.registries.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("registry %q not found", name), http.StatusNotFound)
 		return
@@ -238,12 +239,12 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 	}
 
 	// Validate network exists
-	if _, exists := p.networks[reg.Spec.Network]; !exists {
+	if !p.networks.Has(reg.Spec.Network) {
 		http.Error(w, fmt.Sprintf("network %q not found", reg.Spec.Network), http.StatusBadRequest)
 		return
 	}
 
-	if _, exists := p.registries[reg.Name]; exists {
+	if p.registries.Has(reg.Name) {
 		http.Error(w, fmt.Sprintf("registry %q already exists", reg.Name), http.StatusConflict)
 		return
 	}
@@ -264,7 +265,7 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 		reg.Spec.ListenAddr = ":5000"
 	}
 	if reg.Spec.Hostname == "" {
-		net := p.networks[reg.Spec.Network]
+		net, _ := p.networks.Get(reg.Spec.Network)
 		reg.Spec.Hostname = fmt.Sprintf("registry-%s.%s", reg.Name, net.Spec.DNS.Zone)
 	}
 	if reg.Spec.WatchPollSeconds == 0 {
@@ -279,7 +280,7 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 		}
 	}
 
-	p.registries[reg.Name] = &reg
+	p.registries.Set(reg.Name, &reg)
 
 	// Auto-deploy managed registry pod
 	if reg.Spec.Managed {
@@ -294,7 +295,7 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	old, ok := p.registries[name]
+	old, ok := p.registries.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("registry %q not found", name), http.StatusNotFound)
 		return
@@ -320,7 +321,7 @@ func (p *MicroKubeProvider) handleUpdateRegistry(w http.ResponseWriter, r *http.
 		}
 	}
 
-	p.registries[name] = &reg
+	p.registries.Set(name, &reg)
 
 	p.handleManagedRegistryTransition(r.Context(), wasManaged, &reg)
 
@@ -330,7 +331,7 @@ func (p *MicroKubeProvider) handleUpdateRegistry(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handlePatchRegistry(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.registries[name]
+	existing, ok := p.registries.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("registry %q not found", name), http.StatusNotFound)
 		return
@@ -359,7 +360,7 @@ func (p *MicroKubeProvider) handlePatchRegistry(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	p.registries[name] = merged
+	p.registries.Set(name, merged)
 
 	p.handleManagedRegistryTransition(r.Context(), wasManaged, merged)
 
@@ -369,7 +370,7 @@ func (p *MicroKubeProvider) handlePatchRegistry(w http.ResponseWriter, r *http.R
 func (p *MicroKubeProvider) handleDeleteRegistry(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	reg, ok := p.registries[name]
+	reg, ok := p.registries.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("registry %q not found", name), http.StatusNotFound)
 		return
@@ -389,7 +390,7 @@ func (p *MicroKubeProvider) handleDeleteRegistry(w http.ResponseWriter, r *http.
 		}
 	}
 
-	delete(p.registries, name)
+	p.registries.Delete(name)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -404,7 +405,7 @@ func (p *MicroKubeProvider) handleDeleteRegistry(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleGetRegistryConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	reg, ok := p.registries[name]
+	reg, ok := p.registries.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("registry %q not found", name), http.StatusNotFound)
 		return
@@ -470,14 +471,14 @@ func (p *MicroKubeProvider) enrichRegistryStatus(ctx context.Context, reg *Regis
 	// Count pods matching this registry
 	count := 0
 	podName := "registry-" + reg.Name
-	for _, pod := range p.pods {
+	for _, pod := range p.pods.Snapshot() {
 		if pod.Name == podName && pod.Namespace == reg.Spec.Network {
 			count++
 		}
 	}
 	// Also check for default registry pod
 	if reg.Name == "default" {
-		for _, pod := range p.pods {
+		for _, pod := range p.pods.Snapshot() {
 			if pod.Name == "registry" && pod.Namespace == reg.Spec.Network {
 				count++
 			}
@@ -570,14 +571,12 @@ func (p *MicroKubeProvider) handleWatchRegistries(w http.ResponseWriter, r *http
 
 	ctx := r.Context()
 
-	// Send existing Registry objects as ADDED events (snapshot under read lock)
+	// Send existing Registry objects as ADDED events (snapshot)
 	enc := json.NewEncoder(w)
-	p.mu.RLock()
-	regSnapshot := make([]*Registry, 0, len(p.registries))
-	for _, reg := range p.registries {
+	regSnapshot := make([]*Registry, 0)
+	for _, reg := range p.registries.Snapshot() {
 		regSnapshot = append(regSnapshot, reg.DeepCopy())
 	}
-	p.mu.RUnlock()
 	for _, enriched := range regSnapshot {
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Registry"}
 		p.enrichRegistryStatus(ctx, enriched)
@@ -710,7 +709,7 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 	}
 
 	cmKey := reg.Spec.Network + "/" + cmName
-	p.configMaps[cmKey] = &cm
+	p.configMaps.Set(cmKey, &cm)
 
 	if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
 		storeKey := reg.Spec.Network + "." + cmName
@@ -825,7 +824,7 @@ func (p *MicroKubeProvider) teardownManagedRegistry(ctx context.Context, reg *Re
 	podMapKey := reg.Spec.Network + "/" + podName
 
 	// Remove registry pod
-	if pod, ok := p.pods[podMapKey]; ok {
+	if pod, ok := p.pods.Get(podMapKey); ok {
 		if err := p.DeletePod(ctx, pod); err != nil {
 			log.Warnw("failed to delete managed registry pod", "error", err)
 		} else {
@@ -842,8 +841,8 @@ func (p *MicroKubeProvider) teardownManagedRegistry(ctx context.Context, reg *Re
 	// Remove registry ConfigMap
 	cmName := "registry-" + reg.Name + "-config"
 	cmKey := reg.Spec.Network + "/" + cmName
-	if _, ok := p.configMaps[cmKey]; ok {
-		delete(p.configMaps, cmKey)
+	if p.configMaps.Has(cmKey) {
+		p.configMaps.Delete(cmKey)
 		if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
 			storeKey := reg.Spec.Network + "." + cmName
 			if err := p.deps.Store.ConfigMaps.Delete(ctx, storeKey); err != nil {
@@ -878,7 +877,7 @@ func (p *MicroKubeProvider) handleManagedRegistryTransition(ctx context.Context,
 		cfgYAML := p.generateRegistryConfigYAML(reg)
 		cmName := "registry-" + reg.Name + "-config"
 		cmKey := reg.Spec.Network + "/" + cmName
-		if cm, ok := p.configMaps[cmKey]; ok {
+		if cm, ok := p.configMaps.Get(cmKey); ok {
 			if cm.Data["config.yaml"] != cfgYAML {
 				cm.Data["config.yaml"] = cfgYAML
 				if p.deps.Store != nil && p.deps.Store.ConfigMaps != nil {
@@ -908,7 +907,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 				storeSet[k] = true
 			}
 
-			for name := range p.registries {
+			for name := range p.registries.Snapshot() {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("registry-crd/%s", name),
@@ -936,7 +935,7 @@ func (p *MicroKubeProvider) checkRegistryCRDs(ctx context.Context) []CheckItem {
 	}
 
 	// Liveness per registry
-	for _, reg := range p.registries {
+	for _, reg := range p.registries.Snapshot() {
 		if reg.Spec.StaticIP == "" {
 			continue
 		}

@@ -185,13 +185,7 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 		return
 	}
 
-	// Snapshot networks under lock (called from reconciler goroutine)
-	p.mu.RLock()
-	ihNets := make([]*Network, 0, len(p.networks))
-	for _, netObj := range p.networks {
-		ihNets = append(ihNets, netObj)
-	}
-	p.mu.RUnlock()
+	ihNets := p.networks.Values()
 
 	for _, netObj := range ihNets {
 		if netObj.Spec.ExternalDNS || netObj.Spec.DNS.Zone == "" || netObj.Spec.DNS.Server == "" {
@@ -237,9 +231,7 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 				"network", netObj.Name, "failures", failures)
 
 			podKey := netObj.Name + "/dns"
-			p.mu.RLock()
-			pod, exists := p.pods[podKey]
-			p.mu.RUnlock()
+			pod, exists := p.pods.Get(podKey)
 			if exists {
 				p.recordEvent(pod, "DNSCriticalFailure",
 					fmt.Sprintf("DNS fully dead for %d consecutive checks, forcing recreation", failures),
@@ -285,13 +277,7 @@ const podHealthFailureThreshold = 3
 // checkPodPortHealth probes declared TCP ports on all tracked running pods.
 // On consecutive failures, restarts the container.
 func (p *MicroKubeProvider) checkPodPortHealth(ctx context.Context) {
-	// Snapshot pods under lock (called from reconciler goroutine)
-	p.mu.RLock()
-	phSnap := make([]*corev1.Pod, 0, len(p.pods))
-	for _, pod := range p.pods {
-		phSnap = append(phSnap, pod)
-	}
-	p.mu.RUnlock()
+	phSnap := p.pods.Values()
 
 	for _, pod := range phSnap {
 		for i, c := range pod.Spec.Containers {

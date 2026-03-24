@@ -196,7 +196,7 @@ func (p *MicroKubeProvider) LoadJobRunnersFromStore(ctx context.Context) {
 			p.deps.Logger.Warnw("failed to read job runner from store", "key", key, "error", err)
 			continue
 		}
-		p.jobRunners[jr.Name] = &jr
+		p.jobRunners.Set(jr.Name, &jr)
 	}
 
 	if len(keys) > 0 {
@@ -220,8 +220,9 @@ func (p *MicroKubeProvider) handleListJobRunners(w http.ResponseWriter, r *http.
 		return
 	}
 
-	items := make([]JobRunner, 0, len(p.jobRunners))
-	for _, jr := range p.jobRunners {
+	snap := p.jobRunners.Snapshot()
+	items := make([]JobRunner, 0, len(snap))
+	for _, jr := range snap {
 		c := jr.DeepCopy()
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "JobRunner"}
 		// Enrich status
@@ -243,7 +244,7 @@ func (p *MicroKubeProvider) handleListJobRunners(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleGetJobRunner(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	jr, ok := p.jobRunners[name]
+	jr, ok := p.jobRunners.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
 		return
@@ -273,7 +274,7 @@ func (p *MicroKubeProvider) handleCreateJobRunner(w http.ResponseWriter, r *http
 		return
 	}
 
-	if _, exists := p.jobRunners[jr.Name]; exists {
+	if p.jobRunners.Has(jr.Name) {
 		http.Error(w, fmt.Sprintf("JobRunner %q already exists", jr.Name), http.StatusConflict)
 		return
 	}
@@ -289,7 +290,7 @@ func (p *MicroKubeProvider) handleCreateJobRunner(w http.ResponseWriter, r *http
 
 	// Validate BootConfigRef if set (not required when using cloudid Template)
 	if jr.Spec.BootConfigRef != "" {
-		if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+		if !p.bootConfigs.Has(jr.Spec.BootConfigRef) {
 			http.Error(w, fmt.Sprintf("BootConfig %q not found", jr.Spec.BootConfigRef), http.StatusBadRequest)
 			return
 		}
@@ -307,7 +308,7 @@ func (p *MicroKubeProvider) handleCreateJobRunner(w http.ResponseWriter, r *http
 	}
 
 	p.persistJobRunner(r.Context(), &jr)
-	p.jobRunners[jr.Name] = &jr
+	p.jobRunners.Set(jr.Name, &jr)
 
 	podWriteJSON(w, http.StatusCreated, &jr)
 }
@@ -315,7 +316,7 @@ func (p *MicroKubeProvider) handleCreateJobRunner(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handleUpdateJobRunner(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	old, ok := p.jobRunners[name]
+	old, ok := p.jobRunners.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
 		return
@@ -337,7 +338,7 @@ func (p *MicroKubeProvider) handleUpdateJobRunner(w http.ResponseWriter, r *http
 	}
 
 	p.persistJobRunner(r.Context(), &jr)
-	p.jobRunners[name] = &jr
+	p.jobRunners.Set(name, &jr)
 
 	podWriteJSON(w, http.StatusOK, &jr)
 }
@@ -345,7 +346,7 @@ func (p *MicroKubeProvider) handleUpdateJobRunner(w http.ResponseWriter, r *http
 func (p *MicroKubeProvider) handlePatchJobRunner(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	existing, ok := p.jobRunners[name]
+	existing, ok := p.jobRunners.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
 		return
@@ -367,7 +368,7 @@ func (p *MicroKubeProvider) handlePatchJobRunner(w http.ResponseWriter, r *http.
 	merged.CreationTimestamp = existing.CreationTimestamp
 
 	p.persistJobRunner(r.Context(), merged)
-	p.jobRunners[name] = merged
+	p.jobRunners.Set(name, merged)
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
@@ -375,7 +376,7 @@ func (p *MicroKubeProvider) handlePatchJobRunner(w http.ResponseWriter, r *http.
 func (p *MicroKubeProvider) handleDeleteJobRunner(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	jr, ok := p.jobRunners[name]
+	jr, ok := p.jobRunners.Get(name)
 	if !ok {
 		http.Error(w, fmt.Sprintf("JobRunner %q not found", name), http.StatusNotFound)
 		return
@@ -383,7 +384,7 @@ func (p *MicroKubeProvider) handleDeleteJobRunner(w http.ResponseWriter, r *http
 
 	// Block delete if active jobs exist
 	activeCount := 0
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Status.RunnerRef == name && (job.Status.Phase == "Running" || job.Status.Phase == "Provisioning" || job.Status.Phase == "Scheduling") {
 			activeCount++
 		}
@@ -402,7 +403,7 @@ func (p *MicroKubeProvider) handleDeleteJobRunner(w http.ResponseWriter, r *http
 		}
 	}
 
-	delete(p.jobRunners, name)
+	p.jobRunners.Delete(name)
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -418,13 +419,13 @@ func (p *MicroKubeProvider) enrichJobRunnerStatus(jr *JobRunner) {
 	jr.Status.TotalCompleted = 0
 	jr.Status.TotalFailed = 0
 
-	for _, hr := range p.hostReservations {
+	for _, hr := range p.hostReservations.Snapshot() {
 		if hr.Spec.Pool == jr.Spec.Pool {
 			jr.Status.ReservedHosts++
 		}
 	}
 
-	for _, job := range p.jobs {
+	for _, job := range p.jobs.Snapshot() {
 		if job.Spec.Pool != jr.Spec.Pool {
 			continue
 		}
@@ -463,12 +464,10 @@ func (p *MicroKubeProvider) handleWatchJobRunners(w http.ResponseWriter, r *http
 	ctx := r.Context()
 	enc := json.NewEncoder(w)
 
-	p.mu.RLock()
-	snapshot := make([]*JobRunner, 0, len(p.jobRunners))
-	for _, jr := range p.jobRunners {
+	snapshot := make([]*JobRunner, 0)
+	for _, jr := range p.jobRunners.Snapshot() {
 		snapshot = append(snapshot, jr.DeepCopy())
 	}
-	p.mu.RUnlock()
 
 	for _, c := range snapshot {
 		c.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "JobRunner"}
@@ -601,7 +600,7 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 				storeSet[k] = true
 			}
 
-			for name := range p.jobRunners {
+			for name := range p.jobRunners.Snapshot() {
 				if storeSet[name] {
 					items = append(items, CheckItem{
 						Name:    fmt.Sprintf("jobrunner/%s", name),
@@ -629,7 +628,7 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 	}
 
 	// Validate provisioning config (Template or BootConfigRef)
-	for name, jr := range p.jobRunners {
+	for name, jr := range p.jobRunners.Snapshot() {
 		if jr.Spec.Template != "" {
 			// cloudid template — no local validation (cloudid resolves templates)
 			items = append(items, CheckItem{
@@ -638,7 +637,7 @@ func (p *MicroKubeProvider) checkJobRunnerCRDs(ctx context.Context) []CheckItem 
 				Message: fmt.Sprintf("uses cloudid template %q", jr.Spec.Template),
 			})
 		} else if jr.Spec.BootConfigRef != "" {
-			if _, ok := p.bootConfigs[jr.Spec.BootConfigRef]; !ok {
+			if !p.bootConfigs.Has(jr.Spec.BootConfigRef) {
 				items = append(items, CheckItem{
 					Name:    fmt.Sprintf("jobrunner-ref/%s", name),
 					Status:  "warn",
