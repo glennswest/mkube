@@ -44,6 +44,17 @@ type BMHSpec struct {
 	Template       string          `json:"template,omitempty"`       // cloudid template ref (e.g. "agent-runner.ign.json")
 	Ignition       json.RawMessage `json:"ignition,omitempty"`       // base Ignition v3 JSON (platform config — disks, filesystems)
 	Kickstart      string          `json:"kickstart,omitempty"`      // base kickstart text (platform config)
+	NICs           []BMHNICSpec    `json:"nics,omitempty"`           // secondary NICs (B ports) — IP only, no gateway, no PXE
+}
+
+// BMHNICSpec describes a secondary NIC on a bare metal host.
+// Secondary NICs get DHCP reservations with no default gateway and no PXE
+// options, preventing competing routes and accidental PXE boot.
+type BMHNICSpec struct {
+	MAC     string `json:"mac"`
+	IP      string `json:"ip,omitempty"`
+	Role    string `json:"role"`              // "data", "mgmt", "storage"
+	Network string `json:"network,omitempty"` // defaults to spec.network
 }
 
 type BMCDetails struct {
@@ -111,6 +122,11 @@ func (b *BareMetalHost) DeepCopy() *BareMetalHost {
 		ign := make(json.RawMessage, len(b.Spec.Ignition))
 		copy(ign, b.Spec.Ignition)
 		out.Spec.Ignition = ign
+	}
+	if b.Spec.NICs != nil {
+		nics := make([]BMHNICSpec, len(b.Spec.NICs))
+		copy(nics, b.Spec.NICs)
+		out.Spec.NICs = nics
 	}
 	if b.Status.Hardware != nil {
 		hw := *b.Status.Hardware
@@ -323,7 +339,10 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 
 	p.bareMetalHosts.Set(key, &bmh)
 
-	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI)
+	// Clean up DHCP reservations for NICs that were removed
+	p.cleanRemovedNICs(r.Context(), existing, &bmh)
+
+	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI + NICs)
 	p.syncBMHToNetwork(r.Context(), &bmh, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
 
 	// Sync BootConfig assignedTo
@@ -400,7 +419,10 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 
 	p.bareMetalHosts.Set(key, merged)
 
-	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI)
+	// Clean up DHCP reservations for NICs that were removed
+	p.cleanRemovedNICs(r.Context(), existing, merged)
+
+	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI + NICs)
 	p.syncBMHToNetwork(r.Context(), merged, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
 
 	// Sync BootConfig assignedTo
@@ -421,9 +443,25 @@ func (p *MicroKubeProvider) handleDeleteBMH(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Remove DHCP reservations from referenced Network CRDs (data + IPMI)
+	// Remove DHCP reservations from referenced Network CRDs (data + IPMI + NICs)
 	p.removeBMHFromNetwork(r.Context(), bmh.Spec.BootMACAddress, bmh.Spec.Network)
 	p.removeBMHFromNetwork(r.Context(), bmh.Spec.BMC.MAC, bmh.Spec.BMC.Network)
+
+	// Remove secondary NIC reservations and DNS
+	for _, nic := range bmh.Spec.NICs {
+		nicNetwork := nic.Network
+		if nicNetwork == "" {
+			nicNetwork = bmh.Spec.Network
+		}
+		p.removeBMHFromNetwork(r.Context(), nic.MAC, nicNetwork)
+		if nicNetwork != "" && nic.IP != "" {
+			hostname := firstNonEmpty(bmh.Spec.Hostname, bmh.Name)
+			nicHostname := hostname + "-" + nic.Role
+			if err := p.deps.NetworkMgr.DeregisterDNS(r.Context(), nicNetwork, nicHostname, nic.IP); err != nil {
+				p.deps.Logger.Warnw("BMH NIC DNS deregistration failed", "bmh", bmh.Name, "nic", nic.MAC, "error", err)
+			}
+		}
+	}
 
 	// Remove DNS A record for data network
 	if bmh.Spec.Network != "" && bmh.Spec.IP != "" {
@@ -583,6 +621,44 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 		}
 	}
 
+	// Sync secondary NIC reservations (B ports — IP only, no gateway, no PXE).
+	// Gateway is set to 0.0.0.0 to suppress the pool default route,
+	// preventing B ports from creating competing default routes with the A port.
+	for _, nic := range bmh.Spec.NICs {
+		nicNetwork := nic.Network
+		if nicNetwork == "" {
+			nicNetwork = bmh.Spec.Network
+		}
+		if nicNetwork == "" || nic.MAC == "" {
+			continue
+		}
+
+		hostname := firstNonEmpty(bmh.Spec.Hostname, bmh.Name)
+		nicHostname := hostname + "-" + nic.Role
+
+		res := NetworkDHCPReservation{
+			MAC:      nic.MAC,
+			IP:       nic.IP,
+			Hostname: nicHostname,
+			Gateway:  "0.0.0.0", // suppress default route — B port must not have a gateway
+			// NextServer, BootFile intentionally empty — no PXE for secondary NICs
+		}
+
+		p.upsertNetworkReservation(ctx, nicNetwork, res, bmh.Name)
+
+		// Auto-register DNS A record for the secondary NIC
+		if nic.IP != "" {
+			if err := p.deps.NetworkMgr.CleanStaleDNS(ctx, nicNetwork, nicHostname, nic.IP); err != nil {
+				log.Warnw("BMH NIC DNS stale cleanup failed", "bmh", bmh.Name, "nic", nic.MAC, "error", err)
+			}
+			if err := p.deps.NetworkMgr.RegisterDNS(ctx, nicNetwork, nicHostname, nic.IP); err != nil {
+				log.Warnw("BMH NIC DNS registration failed", "bmh", bmh.Name, "nic", nic.MAC, "error", err)
+			} else {
+				log.Infow("registered BMH NIC DNS A record", "bmh", bmh.Name, "hostname", nicHostname, "ip", nic.IP, "network", nicNetwork)
+			}
+		}
+	}
+
 	// Sync IPMI network reservation (IPMI MAC → IPMI network)
 	if oldIPMINetwork != "" && oldIPMINetwork != bmh.Spec.BMC.Network {
 		p.removeBMHFromNetwork(ctx, bmh.Spec.BMC.MAC, oldIPMINetwork)
@@ -593,6 +669,39 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			IP:       bmh.Spec.BMC.Address,
 			Hostname: firstNonEmpty(bmh.Spec.BMC.Hostname, bmh.Name+"-ipmi"),
 		}, bmh.Name)
+	}
+}
+
+// cleanRemovedNICs removes DHCP reservations and DNS records for secondary NICs
+// that were present in the old BMH spec but are missing from the new one.
+func (p *MicroKubeProvider) cleanRemovedNICs(ctx context.Context, oldBMH, newBMH *BareMetalHost) {
+	newMACs := make(map[string]struct{}, len(newBMH.Spec.NICs))
+	for _, nic := range newBMH.Spec.NICs {
+		newMACs[strings.ToLower(nic.MAC)] = struct{}{}
+	}
+
+	for _, nic := range oldBMH.Spec.NICs {
+		if _, kept := newMACs[strings.ToLower(nic.MAC)]; kept {
+			continue
+		}
+		// This NIC was removed — clean up its reservation and DNS
+		nicNetwork := nic.Network
+		if nicNetwork == "" {
+			nicNetwork = oldBMH.Spec.Network
+		}
+		p.removeBMHFromNetwork(ctx, nic.MAC, nicNetwork)
+
+		if nicNetwork != "" && nic.IP != "" {
+			hostname := firstNonEmpty(oldBMH.Spec.Hostname, oldBMH.Name)
+			nicHostname := hostname + "-" + nic.Role
+			if err := p.deps.NetworkMgr.DeregisterDNS(ctx, nicNetwork, nicHostname, nic.IP); err != nil {
+				p.deps.Logger.Warnw("removed NIC DNS deregistration failed",
+					"bmh", oldBMH.Name, "nic", nic.MAC, "error", err)
+			}
+		}
+
+		p.deps.Logger.Infow("cleaned up removed NIC reservation",
+			"bmh", oldBMH.Name, "mac", nic.MAC, "network", nicNetwork)
 	}
 }
 
@@ -1013,6 +1122,16 @@ func bmhReferencesNetwork(bmh *BareMetalHost, network string) bool {
 	}
 	if bmh.Spec.BMC.Network != "" && bmh.Spec.BMC.Network == network {
 		return true
+	}
+	// Check secondary NICs (B ports)
+	for _, nic := range bmh.Spec.NICs {
+		nicNet := nic.Network
+		if nicNet == "" {
+			nicNet = bmh.Spec.Network
+		}
+		if nicNet == network {
+			return true
+		}
 	}
 	for _, nic := range bmh.Status.NetworkInterfaces {
 		if nic.Network == network {
