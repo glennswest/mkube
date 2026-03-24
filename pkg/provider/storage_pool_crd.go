@@ -346,19 +346,28 @@ func (p *MicroKubeProvider) handleListStoragePools(w http.ResponseWriter, r *htt
 	})
 }
 
+// handleGetStoragePool manages its own locking — bypasses middleware lock
+// because enrichStoragePoolStatus makes external HTTP calls to RouterOS.
 func (p *MicroKubeProvider) handleGetStoragePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
+	// Snapshot pool under brief lock
+	p.mu.RLock()
 	pool, ok := p.storagePools[name]
+	var sp *StoragePool
+	if ok {
+		sp = pool.DeepCopy()
+	}
+	p.mu.RUnlock()
+
 	if !ok {
 		http.Error(w, fmt.Sprintf("storage pool %q not found", name), http.StatusNotFound)
 		return
 	}
 
-	sp := pool.DeepCopy()
 	sp.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "StoragePool"}
 
-	// Live status enrichment
+	// Live status enrichment — external HTTP call, no lock held
 	p.enrichStoragePoolStatus(r.Context(), sp)
 
 	if wantsTable(r) {
@@ -837,13 +846,15 @@ func (p *MicroKubeProvider) enrichStoragePoolStatus(ctx context.Context, pool *S
 		}
 	}
 
-	// Count resources
+	// Count resources under brief lock
+	p.mu.RLock()
 	pool.Status.DiskCount = 0
 	pool.Status.PVCCount = 0
+	defPool := p.defaultStoragePool()
 	for _, d := range p.iscsiDisks {
 		pn := d.Spec.StoragePool
 		if pn == "" {
-			pn = p.defaultStoragePool()
+			pn = defPool
 		}
 		if pn == pool.Name {
 			pool.Status.DiskCount++
@@ -852,12 +863,13 @@ func (p *MicroKubeProvider) enrichStoragePoolStatus(ctx context.Context, pool *S
 	for _, pvc := range p.pvcs {
 		pn := p.pvcPoolName(pvc)
 		if pn == "" {
-			pn = p.defaultStoragePool()
+			pn = defPool
 		}
 		if pn == pool.Name {
 			pool.Status.PVCCount++
 		}
 	}
+	p.mu.RUnlock()
 }
 
 // ─── Watch Handler ──────────────────────────────────────────────────────────

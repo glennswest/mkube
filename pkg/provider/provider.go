@@ -1674,7 +1674,9 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// so that config-derived ConfigMaps (DNS, DHCP) always reflect the
 	// live mkube config rather than stale copies persisted in NATS.
 	// Lock protects configMaps writes and networks iteration (background goroutine).
+	lockStart := time.Now()
 	p.mu.Lock()
+	lockWait := time.Since(lockStart)
 	for _, cm := range manifestCMs {
 		p.configMaps[cm.Namespace+"/"+cm.Name] = cm
 	}
@@ -1694,7 +1696,12 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			cm.Data["microdns.toml"] = p.generateMinimalTOML(net)
 		}
 	}
+	lockHeld := time.Since(lockStart) - lockWait
 	p.mu.Unlock()
+	if lockWait > 50*time.Millisecond || lockHeld > 10*time.Millisecond {
+		log.Warnw("RECONCILE: slow configMap lock",
+			"wait", lockWait, "held", lockHeld)
+	}
 
 	// 1c. Stamp vkube.io/node on pods that lack it (one-time migration for clustering)
 	var allClusterPods []*corev1.Pod // unfiltered, used for stale container cleanup

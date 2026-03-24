@@ -291,15 +291,37 @@ func (p *MicroKubeProvider) WrapHandler(h http.Handler) http.Handler {
 			return
 		}
 
+		// Endpoints that make external HTTP calls (RouterOS, cluster peers)
+		// manage their own brief internal locks. Holding the blanket lock
+		// during these calls causes RWMutex priority inversion: a pending
+		// writer blocks all new readers, stalling the entire API.
+		if strings.HasPrefix(r.URL.Path, "/api/v1/nodes") ||
+			(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/storagepools/")) {
+			h.ServeHTTP(w, r)
+			return
+		}
+
 		// Watch requests are long-lived streams — skip mutex to avoid blocking writes.
 		isWatch := r.URL.Query().Get("watch") == "true"
 		if !isWatch {
 			switch r.Method {
 			case http.MethodGet, http.MethodHead:
+				start := time.Now()
 				p.mu.RLock()
+				wait := time.Since(start)
+				if wait > 50*time.Millisecond {
+					p.deps.Logger.Warnw("slow RLock acquisition",
+						"path", r.URL.Path, "wait", wait)
+				}
 				defer p.mu.RUnlock()
 			default:
+				start := time.Now()
 				p.mu.Lock()
+				wait := time.Since(start)
+				if wait > 50*time.Millisecond {
+					p.deps.Logger.Warnw("slow Lock acquisition",
+						"path", r.URL.Path, "wait", wait)
+				}
 				defer p.mu.Unlock()
 			}
 		}
@@ -606,10 +628,12 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 }
 
 // handleListNodes returns a NodeList with this node and any cluster peers.
+// This handler manages its own locking — bypasses middleware lock because
+// buildNode makes external HTTP calls to RouterOS (GetSystemResource).
 func (p *MicroKubeProvider) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	nodes := []corev1.Node{*p.buildNode(r)}
 
-	// Include peer nodes if clustering is enabled
+	// Include peer nodes if clustering is enabled (cluster mgr has its own sync)
 	if p.clusterMgr != nil {
 		for _, peer := range p.clusterMgr.Peers() {
 			if peerNode := p.buildPeerNode(r.Context(), peer.Name); peerNode != nil {
@@ -630,6 +654,7 @@ func (p *MicroKubeProvider) handleListNodes(w http.ResponseWriter, r *http.Reque
 }
 
 // handleGetNode returns the node object for the requested node name.
+// This handler manages its own locking — bypasses middleware lock.
 func (p *MicroKubeProvider) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
@@ -653,7 +678,14 @@ func (p *MicroKubeProvider) handleGetNode(w http.ResponseWriter, r *http.Request
 }
 
 // buildNode constructs a corev1.Node enriched with live system resource data.
+// Uses brief internal lock for shared state (pod count), then makes external
+// HTTP calls to RouterOS lock-free.
 func (p *MicroKubeProvider) buildNode(r *http.Request) *corev1.Node {
+	// Snapshot pod count under brief lock
+	p.mu.RLock()
+	podCount := len(p.pods)
+	p.mu.RUnlock()
+
 	node := &corev1.Node{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Node"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -661,9 +693,10 @@ func (p *MicroKubeProvider) buildNode(r *http.Request) *corev1.Node {
 			CreationTimestamp: metav1.Time{Time: p.startTime},
 		},
 	}
+	// ConfigureNode reads only immutable config — no lock needed
 	p.ConfigureNode(r.Context(), node)
 
-	// Enrich with live system resource data
+	// External HTTP call to RouterOS — must NOT hold any lock
 	sysRes, err := p.deps.Runtime.GetSystemResource(r.Context())
 	if err == nil {
 		if sysRes.CPUCount != "" {
@@ -688,9 +721,7 @@ func (p *MicroKubeProvider) buildNode(r *http.Request) *corev1.Node {
 		node.Annotations["mkube.io/cpu-load"] = sysRes.CPULoad
 	}
 
-	// Pod count
-	pods, _ := p.GetPods(r.Context())
-	node.Status.Allocatable[corev1.ResourcePods] = resource.MustParse(fmt.Sprintf("%d", 20-len(pods)))
+	node.Status.Allocatable[corev1.ResourcePods] = resource.MustParse(fmt.Sprintf("%d", 20-podCount))
 
 	node.Status.Addresses = []corev1.NodeAddress{
 		{Type: corev1.NodeInternalIP, Address: p.deps.Config.DefaultNetwork().Gateway},
