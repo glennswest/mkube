@@ -127,8 +127,16 @@ func main() {
 		}
 	}
 
-	// Clean up stale container storage on startup
-	pruneContainerStorage("startup")
+	// Clean up stale containers and images from previous agent lifecycle
+	{
+		bgCtx := context.Background()
+		if n, err := podmanClient.PruneContainers(bgCtx); err == nil && n > 0 {
+			log.Printf("[startup] pruned %d stopped containers", n)
+		}
+		if n, err := podmanClient.PruneImages(bgCtx, false, ""); err == nil && n > 0 {
+			log.Printf("[startup] pruned %d dangling images", n)
+		}
+	}
 
 	// Collect and report podman environment on startup
 	agentEnv := collectPodmanEnv()
@@ -660,23 +668,15 @@ func reportComplete(apiURL string, job *agentJob, exitCode int, execErr error) {
 }
 
 
-// pruneContainerStorage removes unused images and stopped containers via socket API.
+// pruneContainerStorage removes dangling (untagged) images.
+// Stopped containers are kept so their filesystems remain accessible
+// for extracting build artifacts. They get cleaned up on next startup.
 func pruneContainerStorage(ctx2 string) {
-	log.Printf("[%s] pruning container storage", ctx2)
-
 	bgCtx := context.Background()
-
-	if n, err := podmanClient.PruneContainers(bgCtx); err == nil && n > 0 {
-		log.Printf("[%s] pruned %d stopped containers", ctx2, n)
-	}
 
 	if n, err := podmanClient.PruneImages(bgCtx, false, ""); err == nil && n > 0 {
 		log.Printf("[%s] pruned %d dangling images", ctx2, n)
 	}
-
-	// Only prune dangling images (above). Do NOT prune all unused images —
-	// imagesync keeps base build images pre-cached and aggressive pruning
-	// creates a pull/prune tug-of-war.
 
 	// Clean TMPDIR if it exists
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
