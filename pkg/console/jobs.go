@@ -17,8 +17,8 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
     <select id="job-phase" onchange="loadJobs()"><option value="">All Phases</option><option>Pending</option><option>Provisioning</option><option>Running</option><option>Completed</option><option>Failed</option><option>Cancelled</option></select>
     <button class="btn btn-danger" onclick="deleteSelected()">Delete Selected</button>
   </div>
-  <table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Age</th><th>Actions</th></tr></thead>
-  <tbody id="jobs-tbl"><tr><td colspan="9" class="loading">Loading...</td></tr></tbody></table>
+  <table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Duration</th><th>Age</th><th>Actions</th></tr></thead>
+  <tbody id="jobs-tbl"><tr><td colspan="10" class="loading">Loading...</td></tr></tbody></table>
   <div id="job-detail-panel" style="display:none;margin-top:12px">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div class="card" style="margin-bottom:0">
@@ -135,6 +135,25 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 </div></div>`
 
 	js := `
+function humanDuration(startedAt,completedAt){
+  if(!startedAt) return '—';
+  const start=new Date(startedAt).getTime();
+  if(isNaN(start)) return '—';
+  const end=completedAt?new Date(completedAt).getTime():Date.now();
+  if(isNaN(end)) return '—';
+  let secs=Math.floor((end-start)/1000);
+  if(secs<0) secs=0;
+  const h=Math.floor(secs/3600);
+  const m=Math.floor((secs%3600)/60);
+  const s=secs%60;
+  const parts=[];
+  if(h>0) parts.push(h+(h===1?' hour':' hours'));
+  if(m>0) parts.push(m+(m===1?' minute':' minutes'));
+  if(s>0||parts.length===0) parts.push(s+(s===1?' second':' seconds'));
+  if(parts.length>2) return parts.slice(0,-1).join(', ')+' and '+parts[parts.length-1];
+  return parts.join(' and ');
+}
+
 function switchTab(id){
   document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));
@@ -249,12 +268,14 @@ function renderJobDetail(){
   // Status details
   let statusHtml='';
   statusHtml+='<div class="k">Phase</div><div class="v">'+statusBadge(st.phase||'Pending')+'</div>';
+  const dur=st.startedAt?humanDuration(st.startedAt,st.completedAt):null;
   const statusFields=[
     ['Assigned Host',st.bmhRef],
     ['Runner',st.runnerRef],
     ['Host IP',st.hostIP],
     ['Started',st.startedAt],
     ['Completed',st.completedAt],
+    ['Duration',dur],
     ['Exit Code',st.exitCode!==undefined&&st.exitCode!==null?String(st.exitCode):null],
     ['Error',st.errorMessage],
     ['Log Lines',st.logLines||0],
@@ -331,7 +352,7 @@ async function loadJobs(){
   if(sel.options.length<=1) nss.forEach(n=>{const o=document.createElement('option');o.value=n;o.text=n;sel.add(o);});
 
   const tb=document.getElementById('jobs-tbl');
-  if(items.length===0){tb.innerHTML='<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">No jobs</td></tr>';return;}
+  if(items.length===0){tb.innerHTML='<tr><td colspan="10" class="muted" style="text-align:center;padding:16px">No jobs</td></tr>';return;}
   const jobRows=[];
   items.forEach(j=>{
     const ns=j.metadata.namespace||'default';
@@ -350,6 +371,7 @@ async function loadJobs(){
       +'<td>'+escapeHtml(s.pool||'—')+'</td>'
       +'<td>'+(s.priority||0)+'</td>'
       +'<td>'+escapeHtml(bmh)+'</td>'
+      +'<td>'+humanDuration(st.startedAt,st.completedAt)+'</td>'
       +'<td>'+timeSince(j.metadata?.creationTimestamp)+'</td>'
       +'<td onclick="event.stopPropagation()">'
       +(canCancel?'<button class="btn btn-danger" onclick="cancelJob(\''+encodeURIComponent(ns)+'\',\''+escapeHtml(j.metadata.name)+'\')">Cancel</button> ':'')
