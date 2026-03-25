@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -58,9 +59,15 @@ func (p *MicroKubeProvider) createFileBackedPVC(ctx context.Context, pvc *corev1
 	imgPath := p.pvcImagePath(pvc)
 	dirPath := p.pvcHostPath(pvc)
 
-	// Ensure the directory exists
+	// Ensure the PVC directory exists on the host (for bind-mounting to pods)
 	if err := p.deps.Runtime.EnsureDirectory(ctx, dirPath); err != nil {
 		return fmt.Errorf("creating PVC directory: %w", err)
+	}
+
+	// Ensure the parent directory for the image file exists locally
+	// (same pattern as iSCSI disk creation in cloneDiskFile)
+	if err := os.MkdirAll(filepath.Dir(imgPath), 0o755); err != nil {
+		return fmt.Errorf("creating image parent directory: %w", err)
 	}
 
 	// Create sparse image file (capacity marker)
@@ -199,6 +206,10 @@ func (p *MicroKubeProvider) handleMigratePVCType(w http.ResponseWriter, r *http.
 		}
 
 		imgPath := p.pvcImagePath(pvc)
+		if err := os.MkdirAll(filepath.Dir(imgPath), 0o755); err != nil {
+			http.Error(w, fmt.Sprintf("creating image parent directory: %v", err), http.StatusInternalServerError)
+			return
+		}
 		f, err := os.Create(imgPath)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("creating image file: %v", err), http.StatusInternalServerError)
