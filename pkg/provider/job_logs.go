@@ -18,13 +18,15 @@ type jobLogBuffer struct {
 
 // jobLogStore manages in-memory log buffers for all jobs.
 type jobLogStore struct {
-	mu      sync.RWMutex
-	buffers map[string]*jobLogBuffer // job key → buffer
+	mu          sync.RWMutex
+	buffers     map[string]*jobLogBuffer // job key → buffer
+	subscribers map[string][]chan string  // job key → fan-out channels
 }
 
 func newJobLogStore() *jobLogStore {
 	return &jobLogStore{
-		buffers: make(map[string]*jobLogBuffer),
+		buffers:     make(map[string]*jobLogBuffer),
+		subscribers: make(map[string][]chan string),
 	}
 }
 
@@ -59,6 +61,73 @@ func (s *jobLogStore) delete(key string) {
 	delete(s.buffers, key)
 }
 
+// subscribe atomically snapshots the current buffer and registers a channel
+// for new lines. The channel is buffered (1000) so the append path never blocks.
+func (s *jobLogStore) subscribe(key string) ([]string, chan string) {
+	ch := make(chan string, 1000)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Snapshot existing lines under the store lock so no lines are lost
+	// between snapshot and subscribe.
+	var backlog []string
+	if buf, ok := s.buffers[key]; ok {
+		buf.mu.Lock()
+		backlog = make([]string, len(buf.lines))
+		copy(backlog, buf.lines)
+		buf.mu.Unlock()
+	}
+
+	s.subscribers[key] = append(s.subscribers[key], ch)
+	return backlog, ch
+}
+
+// unsubscribe removes a channel from the subscriber list.
+func (s *jobLogStore) unsubscribe(key string, ch chan string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	subs := s.subscribers[key]
+	for i, c := range subs {
+		if c == ch {
+			s.subscribers[key] = append(subs[:i], subs[i+1:]...)
+			break
+		}
+	}
+	if len(s.subscribers[key]) == 0 {
+		delete(s.subscribers, key)
+	}
+}
+
+// notifySubscribers sends lines to all subscriber channels for a job key.
+// Non-blocking: drops lines if a subscriber channel is full.
+func (s *jobLogStore) notifySubscribers(key string, lines []string) {
+	s.mu.RLock()
+	subs := s.subscribers[key]
+	s.mu.RUnlock()
+
+	for _, ch := range subs {
+		for _, line := range lines {
+			select {
+			case ch <- line:
+			default:
+			}
+		}
+	}
+}
+
+// deleteSubscribers closes all subscriber channels for a job key and removes them.
+func (s *jobLogStore) deleteSubscribers(key string) {
+	s.mu.Lock()
+	subs := s.subscribers[key]
+	delete(s.subscribers, key)
+	s.mu.Unlock()
+
+	for _, ch := range subs {
+		close(ch)
+	}
+}
+
 // append adds lines to the ring buffer, evicting oldest if over max.
 func (b *jobLogBuffer) append(lines []string) {
 	b.mu.Lock()
@@ -85,6 +154,9 @@ func (b *jobLogBuffer) snapshot() []string {
 func (p *MicroKubeProvider) appendJobLogs(ctx context.Context, jobKey string, lines []string) {
 	buf := p.jobLogBuf.getOrCreate(jobKey)
 	buf.append(lines)
+
+	// Fan out to any follow subscribers
+	p.jobLogBuf.notifySubscribers(jobKey, lines)
 
 	// Persist to NATS (store all lines as JSON array, overwriting)
 	if p.deps.Store != nil && p.deps.Store.JobLogs != nil {
@@ -123,8 +195,9 @@ func (p *MicroKubeProvider) getJobLogs(ctx context.Context, key string) []string
 	return nil
 }
 
-// deleteJobLogs removes the log buffer for a job.
+// deleteJobLogs removes the log buffer for a job and closes any follow subscribers.
 func (p *MicroKubeProvider) deleteJobLogs(key string) {
+	p.jobLogBuf.deleteSubscribers(key)
 	p.jobLogBuf.delete(key)
 }
 

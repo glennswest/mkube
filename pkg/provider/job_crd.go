@@ -941,12 +941,123 @@ func (p *MicroKubeProvider) handleGetJobLogs(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Follow mode: stream logs in real time, close when job reaches terminal phase
+	if r.URL.Query().Get("follow") == "true" {
+		p.handleFollowJobLogs(w, r, key)
+		return
+	}
+
 	lines := p.getJobLogs(r.Context(), key)
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	for _, line := range lines {
 		_, _ = fmt.Fprintln(w, line)
+	}
+}
+
+// handleFollowJobLogs streams log lines as chunked text/plain.
+// Sends existing backlog immediately, then streams new lines as they arrive.
+// Closes when the job reaches a terminal phase or the client disconnects.
+func (p *MicroKubeProvider) handleFollowJobLogs(w http.ResponseWriter, r *http.Request, key string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if job is already terminal — send full log and close immediately
+	if job, ok := p.jobs.Get(key); ok {
+		switch job.Status.Phase {
+		case "Completed", "Failed", "TimedOut", "Cancelled":
+			lines := p.getJobLogs(r.Context(), key)
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Transfer-Encoding", "chunked")
+			w.WriteHeader(http.StatusOK)
+			for _, line := range lines {
+				_, _ = fmt.Fprintln(w, line)
+			}
+			flusher.Flush()
+			return
+		}
+	}
+
+	// Atomically get backlog and subscribe for new lines
+	backlog, ch := p.jobLogBuf.subscribe(key)
+	defer p.jobLogBuf.unsubscribe(key, ch)
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	// Send backlog
+	for _, line := range backlog {
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return
+		}
+	}
+	flusher.Flush()
+
+	// Stream new lines until job is terminal or client disconnects
+	ctx := r.Context()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case line, open := <-ch:
+			if !open {
+				// Channel closed (job logs deleted) — done
+				return
+			}
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return
+			}
+			// Drain any buffered lines before flushing
+			for drain := true; drain; {
+				select {
+				case l, ok := <-ch:
+					if !ok {
+						flusher.Flush()
+						return
+					}
+					if _, err := fmt.Fprintln(w, l); err != nil {
+						return
+					}
+				default:
+					drain = false
+				}
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			// Check if job reached terminal phase
+			if job, ok := p.jobs.Get(key); ok {
+				switch job.Status.Phase {
+				case "Completed", "Failed", "TimedOut", "Cancelled":
+					// Drain remaining lines from channel
+					for {
+						select {
+						case l, ok := <-ch:
+							if !ok {
+								flusher.Flush()
+								return
+							}
+							_, _ = fmt.Fprintln(w, l)
+						default:
+							flusher.Flush()
+							return
+						}
+					}
+				}
+			} else {
+				// Job deleted
+				return
+			}
+		}
 	}
 }
 
