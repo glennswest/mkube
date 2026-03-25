@@ -594,7 +594,7 @@ func (p *MicroKubeProvider) handleUnsubscribeISCSICdrom(w http.ResponseWriter, r
 func (p *MicroKubeProvider) configureISCSITarget(ctx context.Context, cdrom *ISCSICdrom) error {
 	ros := p.deps.Runtime
 	rosClient, ok := ros.(interface {
-		CreateISCSITarget(ctx context.Context, name, filePath string) (string, error)
+		CreateISCSITarget(ctx context.Context, name, filePath, username, password string) (string, error)
 	})
 	if !ok {
 		p.deps.Logger.Warnw("runtime does not support iSCSI operations (not RouterOS), skipping")
@@ -604,8 +604,8 @@ func (p *MicroKubeProvider) configureISCSITarget(ctx context.Context, cdrom *ISC
 	// Translate container path to host-visible path for RouterOS
 	hostPath := p.deps.StorageMgr.HostVisiblePath(cdrom.Status.ISOPath)
 
-	// Create file-backed disk with iSCSI export enabled
-	diskID, err := rosClient.CreateISCSITarget(ctx, cdrom.Name, hostPath)
+	// Create file-backed disk with iSCSI export enabled (no CHAP for read-only CDROMs)
+	diskID, err := rosClient.CreateISCSITarget(ctx, cdrom.Name, hostPath, "", "")
 	if err != nil {
 		return fmt.Errorf("creating iSCSI target: %w", err)
 	}
