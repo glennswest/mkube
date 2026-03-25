@@ -158,6 +158,9 @@ func main() {
 	var activeJobs sync.Map
 	var activeCount int64
 
+	// Track when we last ran container cleanup
+	var lastCleanup time.Time
+
 	// Main dispatch loop
 	for {
 		// Check for self-update when no jobs are running
@@ -168,6 +171,12 @@ func main() {
 				time.Sleep(10 * time.Second)
 				continue
 			}
+		}
+
+		// Periodically clean up build containers whose jobs no longer exist
+		if atomic.LoadInt64(&activeCount) == 0 && time.Since(lastCleanup) > 60*time.Second {
+			cleanupOrphanedContainers(apiURL)
+			lastCleanup = time.Now()
 		}
 
 		job, err := tryGetWork(apiURL)
@@ -700,6 +709,61 @@ func cleanJobOutputDir(job *agentJob) {
 	if len(entries) == 0 {
 		os.Remove(outputDir)
 		log.Printf("[%s] removed empty output dir", job.jobKey())
+	}
+}
+
+// cleanupOrphanedContainers removes stopped build containers whose jobs
+// no longer exist in mkube. This frees disk after jobs are deleted.
+func cleanupOrphanedContainers(apiURL string) {
+	bgCtx := context.Background()
+	containers, err := podmanClient.ListContainers(bgCtx)
+	if err != nil {
+		return
+	}
+
+	// Collect stopped build containers: name → container ID
+	buildContainers := make(map[string]string) // "namespace/jobname" → container ID
+	for _, c := range containers {
+		if c.State == "running" {
+			continue
+		}
+		for _, name := range c.Names {
+			// Container names are "build-<namespace>-<jobname>"
+			if !strings.HasPrefix(name, "build-") {
+				continue
+			}
+			rest := strings.TrimPrefix(name, "build-")
+			// Split into namespace and job name at first "-"
+			if ns, jobName, ok := strings.Cut(rest, "-"); ok {
+				buildContainers[ns+"/"+jobName] = c.ID
+			}
+		}
+	}
+
+	if len(buildContainers) == 0 {
+		return
+	}
+
+	// Check which jobs still exist in mkube
+	for jobKey, containerID := range buildContainers {
+		parts := strings.SplitN(jobKey, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ns, name := parts[0], parts[1]
+
+		// GET the job from mkube — 404 means it's been deleted
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(apiURL + "/api/v1/namespaces/" + url.PathEscape(ns) + "/jobs/" + url.PathEscape(name))
+		if err != nil {
+			continue // can't reach mkube, skip
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			log.Printf("[cleanup] removing container for deleted job %s", jobKey)
+			_ = podmanClient.RemoveContainer(bgCtx, containerID, true)
+		}
 	}
 }
 

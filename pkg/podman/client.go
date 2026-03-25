@@ -441,6 +441,40 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) err
 	return nil
 }
 
+// ContainerInfo describes a container returned by the list API.
+type ContainerInfo struct {
+	ID    string
+	Names []string
+	State string // running, exited, etc.
+}
+
+// ListContainers returns all containers (including stopped).
+func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
+	ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	body, err := c.get(ctx2, "/containers/json?all=true", 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+	defer body.Close()
+
+	var raw []struct {
+		ID    string   `json:"Id"`
+		Names []string `json:"Names"`
+		State string   `json:"State"`
+	}
+	if err := json.NewDecoder(body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("list containers decode: %w", err)
+	}
+
+	out := make([]ContainerInfo, len(raw))
+	for i, r := range raw {
+		out[i] = ContainerInfo{ID: r.ID, Names: r.Names, State: r.State}
+	}
+	return out, nil
+}
+
 // PruneContainers removes all stopped containers.
 func (c *Client) PruneContainers(ctx context.Context) (int, error) {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
