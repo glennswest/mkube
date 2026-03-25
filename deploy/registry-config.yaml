@@ -31,8 +31,6 @@ watchImages:
     localRepo: "agent-monitor"
   - upstream: "ghcr.io/glennswest/ipmiserial:edge"
     localRepo: "ipmiserial"
-  - upstream: "ghcr.io/glennswest/mkube-console:edge"
-    localRepo: "mkube-console"
   - upstream: "ghcr.io/glennswest/nats:edge"
     localRepo: "nats"
 

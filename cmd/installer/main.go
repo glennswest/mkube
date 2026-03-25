@@ -73,7 +73,6 @@ func main() {
 		"ghcr.io/glennswest/micrologs:edge",
 		"ghcr.io/glennswest/micrologs-collector-routeros:edge",
 		"ghcr.io/glennswest/ipmiserial:edge",
-		"ghcr.io/glennswest/mkube-console:edge",
 		"ghcr.io/glennswest/agent-monitor:edge",
 		"ghcr.io/glennswest/fastregistry:edge",
 	}, "Images to seed from GHCR into local registry")
@@ -418,8 +417,6 @@ watchImages:
     localRepo: "agent-monitor"
   - upstream: "ghcr.io/glennswest/ipmiserial:edge"
     localRepo: "ipmiserial"
-  - upstream: "ghcr.io/glennswest/mkube-console:edge"
-    localRepo: "mkube-console"
   - upstream: "ghcr.io/glennswest/nats:edge"
     localRepo: "nats"
 `, ins.mkubeIP)
