@@ -143,6 +143,7 @@ storage:
   basePath: /raid1/images
   tarballCache: /raid1/cache
   selfRootDir: raid1/images/kube.gt.lo
+  iscsiPortalIP: "192.168.10.1"
   persistentMounts:
     - containerPath: "/raid1/cache"
       hostPath: "raid1/cache"
