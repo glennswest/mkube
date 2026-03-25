@@ -19,16 +19,16 @@ func TestGenerateDefaultConfigMaps_DNSRecursor(t *testing.T) {
 
 	cms := generateDefaultConfigMaps(cfg)
 
-	// 1 console + 3 dns = 4
-	if len(cms) != 4 {
-		t.Fatalf("expected 4 configmaps, got %d", len(cms))
+	// 3 dns ConfigMaps (console was removed — UI is built into mkube)
+	if len(cms) != 3 {
+		t.Fatalf("expected 3 configmaps, got %d", len(cms))
 	}
 
 	// Verify DNS ConfigMaps contain minimal structural config.
 	// Forward zones and DHCP pools/reservations are now seeded via REST API,
 	// not baked into the TOML.
 	for i, net := range cfg.Networks {
-		cm := cms[i+1] // skip console
+		cm := cms[i]
 		if cm.Namespace != net.Name {
 			t.Errorf("cm[%d] namespace = %q, want %q", i, cm.Namespace, net.Name)
 		}
@@ -72,8 +72,8 @@ func TestGenerateDefaultConfigMaps_NoDNS(t *testing.T) {
 	}
 
 	cms := generateDefaultConfigMaps(cfg)
-	// Only console ConfigMap — no DNS
-	if len(cms) != 1 {
-		t.Fatalf("expected 1 configmap (console only), got %d", len(cms))
+	// No DNS, no console — empty
+	if len(cms) != 0 {
+		t.Fatalf("expected 0 configmaps, got %d", len(cms))
 	}
 }
