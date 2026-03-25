@@ -141,8 +141,8 @@ func (r *RouterOSRuntime) DirectoryDiskUsage(ctx context.Context, path string) (
 
 // ─── iSCSI Operations (via ROSE /disk) ──────────────────────────────────────
 
-func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, filePath, chapUser, chapPassword string) (string, error) {
-	return r.client.CreateISCSITarget(ctx, name, filePath, chapUser, chapPassword)
+func (r *RouterOSRuntime) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {
+	return r.client.CreateISCSITarget(ctx, name, filePath)
 }
 
 func (r *RouterOSRuntime) RemoveISCSITarget(ctx context.Context, id string) error {

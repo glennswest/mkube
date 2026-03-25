@@ -34,14 +34,12 @@ type ISCSIDisk struct {
 
 // ISCSIDiskSpec defines the desired state of an ISCSIDisk.
 type ISCSIDiskSpec struct {
-	Source        string `json:"source,omitempty"`        // source ISCSICdrom name, ISCSIDisk name, or raw path (empty = empty thin volume)
-	SizeGB        int    `json:"sizeGB"`                  // disk size in GB (must be >= source size)
-	Format        string `json:"format,omitempty"`        // raw | qcow2 (default: raw)
-	Host          string `json:"host,omitempty"`          // BMH name this disk is bound to
-	Description   string `json:"description,omitempty"`   // human-readable description
-	StoragePool   string `json:"storagePool,omitempty"`   // storage pool name (default: default pool)
-	CHAPUser      string `json:"chapUser,omitempty"`      // CHAP username for iSCSI target auth
-	CHAPPassword  string `json:"chapPassword,omitempty"`  // CHAP password for iSCSI target auth (min 12 chars)
+	Source      string `json:"source,omitempty"`      // source ISCSICdrom name, ISCSIDisk name, or raw path (empty = empty thin volume)
+	SizeGB      int    `json:"sizeGB"`                // disk size in GB (must be >= source size)
+	Format      string `json:"format,omitempty"`      // raw | qcow2 (default: raw)
+	Host        string `json:"host,omitempty"`        // BMH name this disk is bound to
+	Description string `json:"description,omitempty"` // human-readable description
+	StoragePool string `json:"storagePool,omitempty"` // storage pool name (default: default pool)
 }
 
 // ISCSIDiskStatus reports the observed state of an ISCSIDisk.
@@ -967,7 +965,7 @@ func getDiskUsage(path string) (*diskUsage, error) {
 func (p *MicroKubeProvider) configureISCSIDiskTarget(ctx context.Context, disk *ISCSIDisk) error {
 	ros := p.deps.Runtime
 	rosClient, ok := ros.(interface {
-		CreateISCSITarget(ctx context.Context, name, filePath, chapUser, chapPassword string) (string, error)
+		CreateISCSITarget(ctx context.Context, name, filePath string) (string, error)
 	})
 	if !ok {
 		p.deps.Logger.Warnw("runtime does not support iSCSI operations (not RouterOS), skipping")
@@ -980,7 +978,7 @@ func (p *MicroKubeProvider) configureISCSIDiskTarget(ctx context.Context, disk *
 	// Use "disk-" prefix to differentiate from cdrom targets
 	targetName := "disk-" + disk.Name
 
-	diskID, err := rosClient.CreateISCSITarget(ctx, targetName, hostPath, disk.Spec.CHAPUser, disk.Spec.CHAPPassword)
+	diskID, err := rosClient.CreateISCSITarget(ctx, targetName, hostPath)
 	if err != nil {
 		return fmt.Errorf("creating iSCSI target: %w", err)
 	}
@@ -997,8 +995,7 @@ func (p *MicroKubeProvider) configureISCSIDiskTarget(ctx context.Context, disk *
 		"name", disk.Name,
 		"iqn", disk.Status.TargetIQN,
 		"diskID", diskID,
-		"file", hostPath,
-		"chapAuth", disk.Spec.CHAPUser != "")
+		"file", hostPath)
 
 	return nil
 }
