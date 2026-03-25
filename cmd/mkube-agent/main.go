@@ -365,11 +365,29 @@ func executeBuildContainer(ctx context.Context, apiURL string, job *agentJob) (i
 		image = defaultBuildImage
 	}
 
-	// Pull the build image via socket API
-	reportStatus(apiURL, key, fmt.Sprintf("Pulling build image %s", image))
-	if err := podmanClient.Pull(ctx, image, false); err != nil {
-		reportStatus(apiURL, key, fmt.Sprintf("FAILED to pull %s: %v", image, err))
-		return 1, fmt.Errorf("pulling image %s: %w", image, err)
+	// Check if image is already present (pre-cached by imagesync); pull only if missing
+	imagePresent := false
+	if imgs, err := podmanClient.Images(ctx); err == nil {
+		for _, img := range imgs {
+			for _, name := range img.Names {
+				if name == image {
+					imagePresent = true
+					break
+				}
+			}
+			if imagePresent {
+				break
+			}
+		}
+	}
+	if imagePresent {
+		log.Printf("[%s] Image %s already present, skipping pull", key, image)
+	} else {
+		reportStatus(apiURL, key, fmt.Sprintf("Pulling build image %s", image))
+		if err := podmanClient.Pull(ctx, image, false); err != nil {
+			reportStatus(apiURL, key, fmt.Sprintf("FAILED to pull %s: %v", image, err))
+			return 1, fmt.Errorf("pulling image %s: %w", image, err)
+		}
 	}
 	reportStatus(apiURL, key, fmt.Sprintf("Image %s ready", image))
 
@@ -656,9 +674,9 @@ func pruneContainerStorage(ctx2 string) {
 		log.Printf("[%s] pruned %d dangling images", ctx2, n)
 	}
 
-	if n, err := podmanClient.PruneImages(bgCtx, true, "24h"); err == nil && n > 0 {
-		log.Printf("[%s] pruned %d old images", ctx2, n)
-	}
+	// Only prune dangling images (above). Do NOT prune all unused images —
+	// imagesync keeps base build images pre-cached and aggressive pruning
+	// creates a pull/prune tug-of-war.
 
 	// Clean TMPDIR if it exists
 	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
