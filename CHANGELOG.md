@@ -8,6 +8,7 @@
 - **fix:** `handleISCSIDiskCapacity` sparseBytes calculation — was using `fi.Size()` (logical size) instead of `syscall.Stat_t.Blocks*512` (actual on-disk allocation). Thin volume savings are now reported correctly.
 - **feat:** Storage pool capacity is now refreshed every reconcile cycle (10s) instead of only at startup. Write rate computed from capacity delta between polls. Disk file stats (ActualBytes, LastModified, ThinRatio) refreshed each cycle.
 - **feat:** `ISCSIDiskStatus` gains `actualBytes`, `lastModified`, `thinRatio` fields. `StoragePoolStatus` gains `prevUsedBytes`, `writeRateBPS`, `lastRefreshed` fields. `PhysicalDisk` gains speculative `diskReads`, `diskWrites`, `smartStatus` fields.
+- **fix:** UI API cache not invalidated after mutations (POST/DELETE/PATCH/PUT). Deleting a job, disk, or any resource would show stale data until the 15s cache expired. Mutations now invalidate all cache entries for the affected resource collection. Reduced cache TTL from 15s to 5s.
 
 ### 2026-03-24
 - **feat:** BMH secondary NIC (B port) DHCP filtering — `spec.nics[]` on BareMetalHost creates DHCP reservations with gateway=0.0.0.0 (no default route) and no PXE options. Prevents B ports from creating competing routes or accidentally PXE booting. Includes DNS A record registration (`{hostname}-{role}`), cleanup on delete/update, and network reference filtering.

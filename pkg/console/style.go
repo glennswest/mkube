@@ -186,7 +186,7 @@ function fmtSize(s){
 
 // ── API cache + prefetch ──
 var _apiCache={};
-var _apiCacheTTL=15000; // 15s TTL
+var _apiCacheTTL=5000; // 5s TTL — short enough for fresh data, long enough to dedup parallel fetches
 var _apiInflight={};
 
 function _apiCacheGet(url){
@@ -196,6 +196,26 @@ function _apiCacheGet(url){
 }
 function _apiCacheSet(url,val){
   _apiCache[url]={v:val,t:Date.now()};
+}
+// Invalidate cache entries whose URL contains the given path prefix.
+// Called after mutations so the next apiGet fetches fresh data.
+function _apiCacheInvalidate(urlHint){
+  // Extract the API path (e.g. /api/v1/jobs from /api/v1/namespaces/x/jobs/y)
+  // Strategy: drop the cache for any URL that shares the same resource base
+  var parts=urlHint.replace(/\/+$/,'').split('/');
+  // Find the resource collection: walk backwards past IDs to the collection name
+  // e.g. /api/v1/namespaces/build/jobs/foo -> invalidate anything containing /jobs
+  var resource='';
+  for(var i=parts.length-1;i>=0;i--){
+    if(parts[i]==='api'||parts[i]==='v1'||parts[i]==='namespaces') break;
+    // Skip URL-encoded segments that look like names (contain hyphens/dots/digits)
+    // Keep the first segment that looks like a collection keyword
+    if(/^[a-z]/.test(parts[i])&&!/\./.test(parts[i])){resource=parts[i];break;}
+  }
+  if(!resource) resource=parts[parts.length-1];
+  for(var key in _apiCache){
+    if(key.indexOf('/'+resource)!==-1) delete _apiCache[key];
+  }
 }
 
 // Prefetch common endpoints on app load for instant first page render
@@ -244,7 +264,9 @@ function apiGetText(url){
 }
 
 function apiPost(url,body){
+  _apiCacheInvalidate(url);
   return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(r=>{
+    _apiCacheInvalidate(url);
     const ct=r.headers.get('content-type')||'';
     if(ct.includes('json')) return r.json();
     return r.text().then(t=>{try{return JSON.parse(t)}catch(e){return t}});
@@ -252,15 +274,18 @@ function apiPost(url,body){
 }
 
 function apiDelete(url){
-  return fetch(url,{method:'DELETE'}).then(r=>r.ok).catch(e=>false);
+  _apiCacheInvalidate(url);
+  return fetch(url,{method:'DELETE'}).then(r=>{_apiCacheInvalidate(url);return r.ok;}).catch(e=>false);
 }
 
 function apiPatch(url,body){
-  return fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(e=>null);
+  _apiCacheInvalidate(url);
+  return fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>{_apiCacheInvalidate(url);return r.json();}).catch(e=>null);
 }
 
 function apiPut(url,body){
-  return fetch(url,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(e=>null);
+  _apiCacheInvalidate(url);
+  return fetch(url,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>{_apiCacheInvalidate(url);return r.json();}).catch(e=>null);
 }
 
 // ── Loading indicator ──
