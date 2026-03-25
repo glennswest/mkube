@@ -162,32 +162,11 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 
 	p.pvcs.Set(key, &pvc)
 
-	// Branch on PVC type
-	if pvcType(&pvc) == PVCTypeFile {
-		if err := p.createFileBackedPVC(r.Context(), &pvc); err != nil {
-			// Rollback in-memory and store
-			p.pvcs.Delete(key)
-			if p.deps.Store != nil {
-				_ = p.deps.Store.PersistentVolumeClaims.Delete(r.Context(), ns+"."+pvc.Name)
-			}
-			http.Error(w, fmt.Sprintf("creating file-backed PVC: %v", err), http.StatusInternalServerError)
-			return
-		}
-		// Re-persist with updated annotations
-		if p.deps.Store != nil {
-			storeKey := ns + "." + pvc.Name
-			if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(r.Context(), storeKey, &pvc); err != nil {
-				p.deps.Logger.Warnw("failed to persist file-backed PVC annotations", "key", storeKey, "error", err)
-			}
-		}
-		p.pvcs.Set(key, &pvc)
-	} else {
-		// Ensure the PVC directory exists on disk (directory type)
-		hostPath := p.pvcHostPath(&pvc)
-		if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
-			p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
-				"path", hostPath, "pvc", key, "error", err)
-		}
+	// Ensure the PVC directory exists on disk
+	hostPath := p.pvcHostPath(&pvc)
+	if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
+		p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
+			"path", hostPath, "pvc", key, "error", err)
 	}
 
 	podWriteJSON(w, http.StatusCreated, &pvc)
@@ -359,10 +338,6 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 		hostPath := p.pvcHostPath(pvc)
 		if err := p.deps.Runtime.RemoveFile(r.Context(), hostPath); err != nil {
 			p.deps.Logger.Warnw("failed to purge PVC directory", "path", hostPath, "error", err)
-		}
-		// Also remove the image file for file-backed PVCs
-		if pvcType(pvc) == PVCTypeFile {
-			p.deleteFileBackedPVC(pvc)
 		}
 	}
 
@@ -608,7 +583,6 @@ func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.Pers
 		pvc.Annotations = make(map[string]string)
 	}
 	pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
-	enrichFileBackedPVCUsage(pvc)
 }
 
 // enrichPVCUsageBatch enriches all PVCs with disk usage in a single RouterOS
@@ -632,7 +606,6 @@ func (p *MicroKubeProvider) enrichPVCUsageBatch(ctx context.Context, pvcs []core
 			}
 			pvcs[i].Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
 		}
-		enrichFileBackedPVCUsage(&pvcs[i])
 	}
 }
 

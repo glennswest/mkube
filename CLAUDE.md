@@ -123,9 +123,5 @@ Known test failures (pre-existing):
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 
-### Completed (Recent)
-- [x] (2026-03-25) Console container cleanup — removed standalone mkube-console (UI built into mkube)
-- [x] (2026-03-25) File-backed PVC type — sparse image capacity tracking, migrate/resize API, UI columns
-
 ### In Progress
 <!-- - [ ] (started YYYY-MM-DD) Task description -->

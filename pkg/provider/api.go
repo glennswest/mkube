@@ -59,8 +59,6 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/persistentvolumeclaims", p.handleCreatePVC)
 	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleUpdatePVC)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}", p.handleDeletePVC)
-	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}/migrate", p.handleMigratePVCType)
-	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}/resize", p.handleResizePVC)
 
 	// Networks (cluster-scoped)
 	mux.HandleFunc("GET /api/v1/networks", p.handleListNetworks)

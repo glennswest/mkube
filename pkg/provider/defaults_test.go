@@ -19,7 +19,7 @@ func TestGenerateDefaultConfigMaps_DNSRecursor(t *testing.T) {
 
 	cms := generateDefaultConfigMaps(cfg)
 
-	// 3 dns ConfigMaps (console was removed — UI is built into mkube)
+	// 3 dns ConfigMaps (console removed — UI is built into mkube)
 	if len(cms) != 3 {
 		t.Fatalf("expected 3 configmaps, got %d", len(cms))
 	}
@@ -72,7 +72,7 @@ func TestGenerateDefaultConfigMaps_NoDNS(t *testing.T) {
 	}
 
 	cms := generateDefaultConfigMaps(cfg)
-	// No DNS, no console — empty
+	// No DNS — empty
 	if len(cms) != 0 {
 		t.Fatalf("expected 0 configmaps, got %d", len(cms))
 	}

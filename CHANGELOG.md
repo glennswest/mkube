@@ -3,8 +3,6 @@
 ## [Unreleased]
 
 ### 2026-03-25
-- **feat:** File-backed PVC type — `vkube.io/pvc-type: file-backed` creates a sparse `.img` file alongside the PVC directory for capacity tracking and thin ratio computation. Supports `directory` (default) and `file-backed` types. New API endpoints: `POST .../migrate` (convert between types) and `POST .../resize` (resize file-backed capacity). Storage UI gains Type, Capacity, Thin% columns and Convert/Resize action buttons.
-- **refactor:** Removed standalone `mkube-console` container — console UI is built into mkube at `/ui/`. Deleted deploy manifests, ConfigMap generation in `defaults.go`, and installer/registry references.
 - **fix:** Replaced global `diskCloneMu sync.Mutex` with per-path locking via `sync.Map`. Disk clones to different paths now run fully in parallel. NATS writes and RouterOS REST calls no longer hold any lock — only file I/O on the same target path is serialized.
 - **feat:** I/O stats in storage UI — pool cards show live write rate (cyan) and thin provisioning savings (purple: actual vs logical bytes). iSCSI Disks table gains Actual, Thin%, and Last Active columns.
 - **fix:** `handleISCSIDiskCapacity` sparseBytes calculation — was using `fi.Size()` (logical size) instead of `syscall.Stat_t.Blocks*512` (actual on-disk allocation). Thin volume savings are now reported correctly.

@@ -15,7 +15,7 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
   <table><thead><tr><th>Name</th><th>Type</th><th>Interface</th><th>Mount</th><th>Total</th><th>Used</th><th>Avail</th><th>Phase</th><th>Default</th><th>Disks</th><th>PVCs</th></tr></thead><tbody id="pools-tbl"></tbody></table>
 </div>
 <div id="pvcs" class="tab-content">
-  <table><thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Pool</th><th>Status</th><th>Used</th><th>Capacity</th><th>Thin%</th><th>Created</th><th></th></tr></thead><tbody id="pvcs-tbl"><tr><td colspan="10" class="loading">Loading...</td></tr></tbody></table>
+  <table><thead><tr><th>Name</th><th>Namespace</th><th>Pool</th><th>Status</th><th>Used</th><th>Size</th><th>Created</th><th></th></tr></thead><tbody id="pvcs-tbl"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody></table>
 </div>
 <div id="cdroms" class="tab-content">
   <table><thead><tr><th>Name</th><th>Version</th><th>Phase</th><th>Size</th><th>Subscribers</th><th>Created</th></tr></thead><tbody id="cdroms-tbl"></tbody></table>
@@ -36,35 +36,6 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
       <button class="btn btn-primary" onclick="doMove()">Move</button>
     </div>
     <div id="move-status" style="font-size:12px;margin-top:8px"></div>
-  </div>
-</div>
-<div id="migrate-type-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
-  <div class="card" style="min-width:320px;max-width:400px">
-    <h3 id="migrate-type-title">Convert PVC</h3>
-    <div id="migrate-type-info" style="font-size:12px;color:var(--comment);margin:8px 0"></div>
-    <div id="migrate-type-capacity-row" style="margin:12px 0;display:none">
-      <label style="font-size:12px;color:var(--comment)">Capacity</label>
-      <input type="text" id="migrate-type-capacity" placeholder="10Gi" style="width:100%;padding:6px;margin-top:4px;background:var(--bg);color:var(--fg);border:1px solid var(--selection);border-radius:4px">
-    </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn" onclick="closeMigrateType()">Cancel</button>
-      <button class="btn btn-primary" onclick="doMigrateType()">Convert</button>
-    </div>
-    <div id="migrate-type-status" style="font-size:12px;margin-top:8px"></div>
-  </div>
-</div>
-<div id="resize-pvc-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
-  <div class="card" style="min-width:320px;max-width:400px">
-    <h3>Resize PVC</h3>
-    <div style="margin:12px 0">
-      <label style="font-size:12px;color:var(--comment)">New Capacity</label>
-      <input type="text" id="resize-pvc-capacity" placeholder="20Gi" style="width:100%;padding:6px;margin-top:4px;background:var(--bg);color:var(--fg);border:1px solid var(--selection);border-radius:4px">
-    </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn" onclick="closeResizePVC()">Cancel</button>
-      <button class="btn btn-primary" onclick="doResizePVC()">Resize</button>
-    </div>
-    <div id="resize-pvc-status" style="font-size:12px;margin-top:8px"></div>
   </div>
 </div>
 <div class="modal-overlay" id="disk-modal">
@@ -263,31 +234,22 @@ async function load(){
 
   // PVCs
   var pt=document.getElementById('pvcs-tbl');
-  if(pvcItems.length===0){pt.innerHTML='<tr><td colspan="10" class="muted" style="text-align:center;padding:8px">No PVCs</td></tr>';}
+  if(pvcItems.length===0){pt.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">No PVCs</td></tr>';}
   else{
     var pvcRows=[];
     pvcItems.forEach(function(p){
       var s=p.spec||{};
       var st=p.status||{};
       var ann=p.metadata?.annotations||{};
-      var ptype=ann['vkube.io/pvc-type']||'directory';
       var usedBytes=ann['vkube.io/used-bytes'];
       var used=usedBytes?fmtBytes(parseInt(usedBytes)):'—';
-      var capBytes=ann['vkube.io/pvc-capacity'];
-      var cap=capBytes?fmtBytes(parseInt(capBytes)):(st.capacity?.storage||s.resources?.requests?.storage||'');
+      var cap=st.capacity?.storage||s.resources?.requests?.storage||'';
       if(!cap||cap==='0'||String(cap)==='undefined') cap='—';
-      var thinRatio=ann['vkube.io/thin-ratio'];
-      var thinPct=thinRatio?(parseFloat(thinRatio)*100).toFixed(1)+'%':'—';
       var pool=pvcPool(p);
       var ns=p.metadata.namespace||'default';
       var name=p.metadata.name||'';
-      var typeBadge=ptype==='file-backed'?'<span style="color:var(--cyan)">File</span>':'Dir';
-      var actions='';
-      if(_poolNames.length>1) actions+='<button class="btn" style="font-size:10px;padding:2px 6px;margin-right:4px" onclick="openMove(\''+escapeHtml(ns)+'/'+escapeHtml(name)+'\',\''+escapeHtml(pool)+'\')">Move</button>';
-      if(ptype==='directory') actions+='<button class="btn" style="font-size:10px;padding:2px 6px;margin-right:4px" onclick="openMigrateType(\''+escapeHtml(ns)+'\',\''+escapeHtml(name)+'\',\'directory\')">To File</button>';
-      else actions+='<button class="btn" style="font-size:10px;padding:2px 6px;margin-right:4px" onclick="openMigrateType(\''+escapeHtml(ns)+'\',\''+escapeHtml(name)+'\',\'file-backed\')">To Dir</button>';
-      if(ptype==='file-backed') actions+='<button class="btn" style="font-size:10px;padding:2px 6px" onclick="openResizePVC(\''+escapeHtml(ns)+'\',\''+escapeHtml(name)+'\',\''+escapeHtml(String(capBytes||''))+'\')">Resize</button>';
-      pvcRows.push('<tr><td>'+escapeHtml(name)+'</td><td>'+escapeHtml(ns)+'</td><td>'+typeBadge+'</td><td>'+escapeHtml(pool)+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+used+'</td><td>'+escapeHtml(String(cap))+'</td><td>'+thinPct+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td><td>'+actions+'</td></tr>');
+      var moveBtn=_poolNames.length>1?'<button class="btn" style="font-size:10px;padding:2px 6px" onclick="openMove(\''+escapeHtml(ns)+'/'+escapeHtml(name)+'\',\''+escapeHtml(pool)+'\')">Move</button>':'';
+      pvcRows.push('<tr><td>'+escapeHtml(name)+'</td><td>'+escapeHtml(ns)+'</td><td>'+escapeHtml(pool)+'</td><td>'+statusBadge(st.phase||'Bound')+'</td><td>'+used+'</td><td>'+escapeHtml(String(cap))+'</td><td>'+timeSince(p.metadata?.creationTimestamp)+'</td><td>'+moveBtn+'</td></tr>');
     });
     pt.innerHTML=pvcRows.join('');
   }
@@ -465,59 +427,6 @@ async function doMove(){
     st.textContent='Error: '+(res.message||'unknown');
     st.style.color='var(--red)';
   }
-}
-
-// ── Migrate PVC Type ──
-var _migrateNs='',_migrateName='',_migrateFrom='';
-function openMigrateType(ns,name,currentType){
-  _migrateNs=ns;_migrateName=name;_migrateFrom=currentType;
-  var target=currentType==='directory'?'file-backed':'directory';
-  document.getElementById('migrate-type-title').textContent='Convert '+ns+'/'+name+' to '+target;
-  document.getElementById('migrate-type-info').textContent='Current type: '+currentType+'. Pods using this PVC will be stopped during conversion.';
-  document.getElementById('migrate-type-status').textContent='';
-  var capRow=document.getElementById('migrate-type-capacity-row');
-  if(target==='file-backed'){capRow.style.display='block';document.getElementById('migrate-type-capacity').value='10Gi';}
-  else{capRow.style.display='none';}
-  document.getElementById('migrate-type-modal').style.display='flex';
-}
-function closeMigrateType(){document.getElementById('migrate-type-modal').style.display='none';}
-async function doMigrateType(){
-  var target=_migrateFrom==='directory'?'file-backed':'directory';
-  var body={targetType:target};
-  if(target==='file-backed'){
-    var cap=document.getElementById('migrate-type-capacity').value.trim();
-    if(!cap){document.getElementById('migrate-type-status').textContent='Capacity is required';document.getElementById('migrate-type-status').style.color='var(--red)';return;}
-    body.capacity=cap;
-  }
-  var st=document.getElementById('migrate-type-status');
-  st.textContent='Converting...';st.style.color='var(--comment)';
-  try{
-    var res=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(_migrateNs)+'/persistentvolumeclaims/'+encodeURIComponent(_migrateName)+'/migrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(res.ok){st.textContent='Converted successfully';st.style.color='var(--green)';setTimeout(function(){closeMigrateType();load();},1500);}
-    else{var txt=await res.text();st.textContent='Error: '+txt;st.style.color='var(--red)';}
-  }catch(e){st.textContent='Error: '+e;st.style.color='var(--red)';}
-}
-
-// ── Resize PVC ──
-var _resizeNs='',_resizeName='';
-function openResizePVC(ns,name,currentBytes){
-  _resizeNs=ns;_resizeName=name;
-  document.getElementById('resize-pvc-status').textContent='';
-  var gb=currentBytes?Math.ceil(parseInt(currentBytes)/(1024*1024*1024)):10;
-  document.getElementById('resize-pvc-capacity').value=gb+'Gi';
-  document.getElementById('resize-pvc-modal').style.display='flex';
-}
-function closeResizePVC(){document.getElementById('resize-pvc-modal').style.display='none';}
-async function doResizePVC(){
-  var cap=document.getElementById('resize-pvc-capacity').value.trim();
-  if(!cap){document.getElementById('resize-pvc-status').textContent='Capacity is required';document.getElementById('resize-pvc-status').style.color='var(--red)';return;}
-  var st=document.getElementById('resize-pvc-status');
-  st.textContent='Resizing...';st.style.color='var(--comment)';
-  try{
-    var res=await fetch(API+'/api/v1/namespaces/'+encodeURIComponent(_resizeNs)+'/persistentvolumeclaims/'+encodeURIComponent(_resizeName)+'/resize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({capacity:cap})});
-    if(res.ok){st.textContent='Resized successfully';st.style.color='var(--green)';setTimeout(function(){closeResizePVC();load();},1500);}
-    else{var txt=await res.text();st.textContent='Error: '+txt;st.style.color='var(--red)';}
-  }catch(e){st.textContent='Error: '+e;st.style.color='var(--red)';}
 }
 
 load(); _uiInterval(load,30000);
