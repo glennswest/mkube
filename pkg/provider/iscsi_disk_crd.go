@@ -219,8 +219,10 @@ func (p *MicroKubeProvider) handleCreateISCSIDisk(w http.ResponseWriter, r *http
 		PortalPort: iscsiDefaultPort,
 	}
 
-	// Set portal IP from config (gateway IP of gt network)
-	if len(p.deps.Config.Networks) > 0 {
+	// Set portal IP from config — prefer dedicated iSCSI portal IP, fall back to gateway
+	if p.deps.Config.Storage.ISCSIPortalIP != "" {
+		disk.Status.PortalIP = p.deps.Config.Storage.ISCSIPortalIP
+	} else if len(p.deps.Config.Networks) > 0 {
 		disk.Status.PortalIP = p.deps.Config.Networks[0].Gateway
 	}
 

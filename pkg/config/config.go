@@ -237,6 +237,10 @@ type StorageConfig struct {
 	// data lives on persistent mounts that survive container recreation.
 	PersistentMounts []MountMapping `yaml:"persistentMounts,omitempty"`
 
+	// iSCSI portal IP — the ROSE IP on the storage network (e.g. 192.168.10.1)
+	// If empty, falls back to the first network's gateway.
+	ISCSIPortalIP string `yaml:"iscsiPortalIP,omitempty"`
+
 	// Garbage collection
 	GCIntervalMinutes int  `yaml:"gcIntervalMinutes"`
 	GCKeepLastN       int  `yaml:"gcKeepLastN"` // keep last N unused images

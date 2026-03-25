@@ -29,6 +29,7 @@ storage:
   basePath: /raid1/images
   tarballCache: /raid1/cache
   selfRootDir: ""  # set to container root-dir on RouterOS host to bypass REST upload
+  iscsiPortalIP: "192.168.10.1"  # ROSE IP on g10 storage network (local to servers)
   gcIntervalMinutes: 30
   gcKeepLastN: 5
   gcDryRun: false
