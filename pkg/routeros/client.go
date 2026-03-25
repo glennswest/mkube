@@ -713,19 +713,17 @@ func (c *Client) GetLogs(ctx context.Context) ([]LogEntry, error) {
 
 // FileDisk represents a RouterOS file-backed disk entry.
 type FileDisk struct {
-	ID             string `json:".id"`
-	Slot           string `json:"slot"`
-	Type           string `json:"type"`
-	FilePath       string `json:"file-path"`
-	ISCSIExport    string `json:"iscsi-export"`
+	ID            string `json:".id"`
+	Slot          string `json:"slot"`
+	Type          string `json:"type"`
+	FilePath      string `json:"file-path"`
+	ISCSIExport   string `json:"iscsi-export"`
 	ISCSIServerIQN string `json:"iscsi-server-iqn,omitempty"`
-	ISCSIUsername  string `json:"iscsi-username,omitempty"`
-	ISCSIPassword  string `json:"iscsi-password,omitempty"`
 }
 
-// CreateISCSITarget creates a file-backed disk and enables iSCSI export with CHAP auth.
+// CreateISCSITarget creates a file-backed disk and enables iSCSI export.
 // Returns the .id of the created disk.
-func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath, username, password string) (string, error) {
+func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath string) (string, error) {
 	// RouterOS stores file-path with leading /
 	rosPath := "/" + strings.TrimPrefix(filePath, "/")
 
@@ -756,18 +754,11 @@ func (c *Client) CreateISCSITarget(ctx context.Context, name, filePath, username
 		return "", fmt.Errorf("created file disk for %s but could not find it", rosPath)
 	}
 
-	// Step 2: Enable iSCSI export with CHAP authentication
-	settings := map[string]string{
+	// Step 2: Enable iSCSI export
+	err = c.restPOST(ctx, "/disk/set", map[string]string{
 		".id":          diskID,
 		"iscsi-export": "yes",
-	}
-	if username != "" {
-		settings["iscsi-username"] = username
-	}
-	if password != "" {
-		settings["iscsi-password"] = password
-	}
-	err = c.restPOST(ctx, "/disk/set", settings, nil)
+	}, nil)
 	if err != nil {
 		// Clean up the disk we just created
 		_ = c.restPOST(ctx, "/disk/remove", map[string]string{".id": diskID}, nil)
