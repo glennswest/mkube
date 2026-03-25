@@ -14,7 +14,7 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 <div id="jobs" class="tab-content active">
   <div class="toolbar">
     <select id="job-ns" onchange="loadJobs()"><option value="">All Namespaces</option></select>
-    <select id="job-phase" onchange="loadJobs()"><option value="">All Phases</option><option>Pending</option><option>Provisioning</option><option>Running</option><option>Completed</option><option>Failed</option><option>Cancelled</option></select>
+    <select id="job-phase" onchange="loadJobs()"><option value="">All Phases</option><option value="active">Active</option><option>Pending</option><option>Provisioning</option><option>Running</option><option>Completed</option><option>Failed</option><option>Cancelled</option><option>TimedOut</option></select>
     <button class="btn btn-danger" onclick="deleteSelected()">Delete Selected</button>
   </div>
   <table><thead><tr><th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th><th>Name</th><th>Namespace</th><th>Phase</th><th>Pool</th><th>Priority</th><th>BMH</th><th>Duration</th><th>Age</th><th>Actions</th></tr></thead>
@@ -344,7 +344,19 @@ async function loadJobs(){
   const phaseFilter=document.getElementById('job-phase').value.toLowerCase();
   let items=[..._allJobData];
   if(nsFilter) items=items.filter(j=>j.metadata.namespace===nsFilter);
-  if(phaseFilter) items=items.filter(j=>(j.status?.phase||j.spec?.phase||'').toLowerCase()===phaseFilter);
+  if(phaseFilter==='active'){
+    // Active = running/scheduling/provisioning/pending + recently finished (last 1h)
+    var oneHourAgo=new Date(Date.now()-3600000).toISOString();
+    items=items.filter(function(j){
+      var phase=(j.status?.phase||j.spec?.phase||'').toLowerCase();
+      if(['running','scheduling','provisioning','pending'].includes(phase)) return true;
+      // Include recently completed/failed/cancelled
+      var completed=j.status?.completedAt||'';
+      return completed&&completed>=oneHourAgo;
+    });
+  } else if(phaseFilter){
+    items=items.filter(j=>(j.status?.phase||j.spec?.phase||'').toLowerCase()===phaseFilter);
+  }
 
   // Populate ns filter
   const nss=[...new Set(_allJobData.map(j=>j.metadata.namespace||'default'))].sort();
