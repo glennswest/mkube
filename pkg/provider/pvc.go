@@ -211,9 +211,11 @@ func (p *MicroKubeProvider) handleListPVCs(w http.ResponseWriter, r *http.Reques
 		}
 		enriched := pvc.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
-		p.enrichPVCUsage(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
+
+	// Single /file fetch for all PVCs instead of one per PVC
+	p.enrichPVCUsageBatch(r.Context(), items)
 
 	if r.Header.Get("Accept") == "application/json;as=Table;v=v1;g=meta.k8s.io" {
 		podWriteJSON(w, http.StatusOK, pvcListToTable(items))
@@ -238,9 +240,11 @@ func (p *MicroKubeProvider) handleListAllPVCs(w http.ResponseWriter, r *http.Req
 	for _, pvc := range snap {
 		enriched := pvc.DeepCopy()
 		enriched.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}
-		p.enrichPVCUsage(r.Context(), enriched)
 		items = append(items, *enriched)
 	}
+
+	// Single /file fetch for all PVCs instead of one per PVC
+	p.enrichPVCUsageBatch(r.Context(), items)
 
 	if r.Header.Get("Accept") == "application/json;as=Table;v=v1;g=meta.k8s.io" {
 		podWriteJSON(w, http.StatusOK, pvcListToTable(items))
@@ -568,6 +572,7 @@ func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context
 }
 
 // enrichPVCUsage adds a vkube.io/used-bytes annotation with actual disk usage.
+// For single-PVC gets only; list handlers should use enrichPVCUsageBatch.
 func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.PersistentVolumeClaim) {
 	hostPath := p.pvcHostPath(pvc)
 	used, err := p.deps.Runtime.DirectoryDiskUsage(ctx, hostPath)
@@ -578,6 +583,30 @@ func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.Pers
 		pvc.Annotations = make(map[string]string)
 	}
 	pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
+}
+
+// enrichPVCUsageBatch enriches all PVCs with disk usage in a single RouterOS
+// /file fetch instead of one per PVC.
+func (p *MicroKubeProvider) enrichPVCUsageBatch(ctx context.Context, pvcs []corev1.PersistentVolumeClaim) {
+	rc := p.getRouterOSClient()
+	if rc == nil {
+		return
+	}
+	idx, err := rc.FetchFileUsageIndex(ctx)
+	if err != nil {
+		p.deps.Logger.Debugw("failed to fetch file usage index for PVC enrichment", "error", err)
+		return
+	}
+	for i := range pvcs {
+		hostPath := p.pvcHostPath(&pvcs[i])
+		used := idx.DirectoryUsage(hostPath)
+		if used > 0 {
+			if pvcs[i].Annotations == nil {
+				pvcs[i].Annotations = make(map[string]string)
+			}
+			pvcs[i].Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
+		}
+	}
 }
 
 // formatAccessModes returns a short string representation of access modes.

@@ -9,6 +9,7 @@
 - **feat:** Storage pool capacity is now refreshed every reconcile cycle (10s) instead of only at startup. Write rate computed from capacity delta between polls. Disk file stats (ActualBytes, LastModified, ThinRatio) refreshed each cycle.
 - **feat:** `ISCSIDiskStatus` gains `actualBytes`, `lastModified`, `thinRatio` fields. `StoragePoolStatus` gains `prevUsedBytes`, `writeRateBPS`, `lastRefreshed` fields. `PhysicalDisk` gains speculative `diskReads`, `diskWrites`, `smartStatus` fields.
 - **fix:** UI API cache not invalidated after mutations (POST/DELETE/PATCH/PUT). Deleting a job, disk, or any resource would show stale data until the 15s cache expired. Mutations now invalidate all cache entries for the affected resource collection. Reduced cache TTL from 15s to 5s.
+- **fix:** PVC list endpoint took 69+ seconds — `enrichPVCUsage` called RouterOS `GET /file` (returns every file on disk) once per PVC (19 calls x ~3.5s each). Replaced with `enrichPVCUsageBatch` that fetches `/file` once and indexes by path prefix. 19 PVCs now served in ~3.5s total instead of 69s.
 
 ### 2026-03-24
 - **feat:** BMH secondary NIC (B port) DHCP filtering — `spec.nics[]` on BareMetalHost creates DHCP reservations with gateway=0.0.0.0 (no default route) and no PXE options. Prevents B ports from creating competing routes or accidentally PXE booting. Includes DNS A record registration (`{hostname}-{role}`), cleanup on delete/update, and network reference filtering.

@@ -464,6 +464,54 @@ func (c *Client) DirectoryDiskUsage(ctx context.Context, path string) (int64, er
 	return total, nil
 }
 
+// FileUsageIndex is a pre-fetched index of file sizes from RouterOS /file.
+// Use it to compute directory disk usage without repeated REST calls.
+type FileUsageIndex struct {
+	files []fileEntry
+}
+
+type fileEntry struct {
+	name string
+	size int64
+}
+
+// FetchFileUsageIndex fetches /file once and builds a reusable index.
+func (c *Client) FetchFileUsageIndex(ctx context.Context) (*FileUsageIndex, error) {
+	var allFiles []map[string]interface{}
+	if err := c.restGET(ctx, "/file", &allFiles); err != nil {
+		return nil, fmt.Errorf("fetching file index: %w", err)
+	}
+	idx := &FileUsageIndex{files: make([]fileEntry, 0, len(allFiles))}
+	for _, f := range allFiles {
+		name, _ := f["name"].(string)
+		if name == "" {
+			continue
+		}
+		var sz int64
+		switch v := f["size"].(type) {
+		case float64:
+			sz = int64(v)
+		case string:
+			fmt.Sscanf(v, "%d", &sz)
+		}
+		idx.files = append(idx.files, fileEntry{name: name, size: sz})
+	}
+	return idx, nil
+}
+
+// DirectoryUsage computes the total size under a directory path from the index.
+func (idx *FileUsageIndex) DirectoryUsage(path string) int64 {
+	path = strings.TrimPrefix(path, "/")
+	prefix := path + "/"
+	var total int64
+	for _, f := range idx.files {
+		if strings.HasPrefix(f.name, prefix) || f.name == path {
+			total += f.size
+		}
+	}
+	return total
+}
+
 // ─── Bridge Operations ──────────────────────────────────────────────────────
 
 // BridgePort represents a bridge port assignment.
