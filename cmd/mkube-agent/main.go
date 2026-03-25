@@ -440,9 +440,14 @@ func executeBuildContainer(ctx context.Context, apiURL string, job *agentJob) (i
 		log.Printf("[%s] WARNING: failed to create output dir %s: %v", key, localOutputDir, err)
 	}
 
+	// Persistent cargo registry cache — survives across builds
+	cargoCache := fmt.Sprintf("%s/cargo-cache", hostDataDir())
+	os.MkdirAll("/data/cargo-cache", 0755)
+
 	mounts := []podman.Mount{
 		{Source: buildStorageHost, Dest: "/var/lib/containers"},
 		{Source: hostOutputDir, Dest: "/output"},
+		{Source: cargoCache, Dest: "/root/.cargo/registry"},
 	}
 
 	// Mount podman socket if available (for builds that need nested podman)
