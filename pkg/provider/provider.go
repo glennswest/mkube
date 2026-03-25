@@ -2179,6 +2179,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 9. Infrastructure health checks (registry, mkube-update)
 	p.checkInfraHealth(ctx)
 
+	// 10. Refresh storage pool capacity + disk file stats + reconcile iSCSI targets
+	stepStart = time.Now()
+	p.DiscoverStoragePools(ctx)
+	p.refreshISCSIDiskFileStats(ctx)
+	p.ReconcileISCSIDiskTargets(ctx)
+	log.Debugw("RECONCILE: step 10 storage refresh", "ms", time.Since(stepStart).Milliseconds())
+
 	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", p.pods.Len())
 	return nil
 }

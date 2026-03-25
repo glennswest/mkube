@@ -44,15 +44,18 @@ type ISCSIDiskSpec struct {
 
 // ISCSIDiskStatus reports the observed state of an ISCSIDisk.
 type ISCSIDiskStatus struct {
-	Phase      string `json:"phase"`                 // Pending, Cloning, Ready, Error, Deleting
-	DiskPath   string `json:"diskPath"`              // full path to disk file
-	DiskSize   int64  `json:"diskSize,omitempty"`    // actual size in bytes
-	SourceRef  string `json:"sourceRef,omitempty"`   // resolved source reference
-	TargetIQN  string `json:"targetIQN"`             // e.g. iqn.2000-02.com.mikrotik:disk-{name}
-	PortalIP   string `json:"portalIP"`              // router IP for iSCSI
-	PortalPort int    `json:"portalPort"`            // default 3260
-	RouterOSID string `json:"routerosID,omitempty"`  // RouterOS .id for the file disk
-	Message    string `json:"message,omitempty"`     // error message when phase=Error
+	Phase        string  `json:"phase"`                 // Pending, Cloning, Ready, Error, Deleting
+	DiskPath     string  `json:"diskPath"`              // full path to disk file
+	DiskSize     int64   `json:"diskSize,omitempty"`    // logical size in bytes
+	ActualBytes  int64   `json:"actualBytes,omitempty"` // real on-disk allocation (sparse blocks)
+	LastModified string  `json:"lastModified,omitempty"` // file mtime (RFC3339)
+	ThinRatio    float64 `json:"thinRatio,omitempty"`   // actualBytes / diskSize
+	SourceRef    string  `json:"sourceRef,omitempty"`   // resolved source reference
+	TargetIQN    string  `json:"targetIQN"`             // e.g. iqn.2000-02.com.mikrotik:disk-{name}
+	PortalIP     string  `json:"portalIP"`              // router IP for iSCSI
+	PortalPort   int     `json:"portalPort"`            // default 3260
+	RouterOSID   string  `json:"routerosID,omitempty"`  // RouterOS .id for the file disk
+	Message      string  `json:"message,omitempty"`     // error message when phase=Error
 }
 
 // ISCSIDiskList is a list of ISCSIDisk objects.
@@ -74,8 +77,15 @@ const (
 	diskIQNPrefix    = "iqn.2000-02.com.mikrotik:disk-"
 )
 
-// diskCloneMu serializes clone/resize operations to avoid contention on I/O.
-var diskCloneMu sync.Mutex
+// diskPathLocks provides per-path locking for clone/resize operations.
+// Two clones to different paths run fully in parallel; only file I/O on
+// the same path is serialized.
+var diskPathLocks sync.Map // map[string]*sync.Mutex
+
+func lockDiskPath(path string) *sync.Mutex {
+	v, _ := diskPathLocks.LoadOrStore(path, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
 
 // diskPoolBasePath returns the pool-aware base path for iSCSI disks.
 func (p *MicroKubeProvider) diskPoolBasePath(disk *ISCSIDisk) string {
@@ -478,9 +488,9 @@ func (p *MicroKubeProvider) handleISCSIDiskCapacity(w http.ResponseWriter, r *ht
 	for _, disk := range diskSnap {
 		allocatedBytes += disk.Status.DiskSize
 
-		// Get actual on-disk usage (sparse size)
+		// Get actual on-disk usage (sparse blocks via Stat_t)
 		if fi, err := os.Stat(disk.Status.DiskPath); err == nil {
-			sparseBytes += fi.Size()
+			sparseBytes += getActualDiskBytes(fi)
 		}
 	}
 	cap.AllocatedGB = float64(allocatedBytes) / (1024 * 1024 * 1024)
@@ -569,11 +579,15 @@ func (sf sourceFormat) needsConversion() bool {
 	return sf.compressed != "" || (sf.diskFormat != "raw" && sf.diskFormat != "iso")
 }
 
-// cloneISCSIDisk performs the background clone: creates sparse file, copies source, registers target.
+// cloneISCSIDisk performs the background clone in phases:
+//  1. (no lock) Update status to "Cloning", persist to NATS
+//  2. (per-path lock) File I/O only — cloneDiskFile()
+//  3. (no lock) configureISCSIDiskTarget() — RouterOS REST
+//  4. (no lock) Mark Ready, persist to NATS
 func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath, sourceType, diskPath string, sizeGB int) {
-	diskCloneMu.Lock()
-	defer diskCloneMu.Unlock()
+	log := p.deps.Logger.With("disk", name)
 
+	// Phase 1: Mark Cloning (no lock)
 	disk, ok := p.iscsiDisks.Get(name)
 	if !ok {
 		return
@@ -581,107 +595,114 @@ func (p *MicroKubeProvider) cloneISCSIDisk(ctx context.Context, name, sourcePath
 	disk.Status.Phase = "Cloning"
 	p.persistISCSIDisk(ctx, disk)
 
-	log := p.deps.Logger.With("disk", name)
-
-	// Ensure disk directory exists
-	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
-		p.setDiskError(ctx, name, fmt.Sprintf("creating disk directory: %v", err))
+	// Phase 2: File I/O with per-path lock
+	if err := p.cloneDiskFile(ctx, name, sourcePath, sourceType, diskPath, sizeGB, log); err != nil {
+		p.setDiskError(ctx, name, err.Error())
 		return
 	}
 
-	targetBytes := int64(sizeGB) * 1024 * 1024 * 1024
-
-	if sourcePath == "" {
-		// Empty thin volume: just create a sparse file, no copying
-		if err := createSparseFile(diskPath, targetBytes); err != nil {
-			p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
-			return
-		}
-		log.Infow("empty thin volume created", "path", diskPath, "sizeGB", sizeGB)
-	} else {
-		// Detect source format and convert if needed
-		sf := detectSourceFormat(sourcePath)
-		effectivePath := sourcePath
-
-		if sf.needsConversion() {
-			log.Infow("source needs conversion", "path", sourcePath,
-				"compressed", sf.compressed, "format", sf.diskFormat)
-
-			var err error
-			effectivePath, err = p.convertSourceToRaw(ctx, sourcePath, sf, log)
-			if err != nil {
-				p.setDiskError(ctx, name, fmt.Sprintf("converting source: %v", err))
-				return
-			}
-			defer os.Remove(effectivePath) // clean up intermediate file
-			log.Infow("source converted to raw", "intermediate", effectivePath)
-
-			// For converted sources, treat as raw path
-			sourceType = "path"
-		}
-
-		// Create sparse disk file of target size
-		if err := createSparseFile(diskPath, targetBytes); err != nil {
-			p.setDiskError(ctx, name, fmt.Sprintf("creating sparse file: %v", err))
-			return
-		}
-		log.Infow("sparse disk file created", "path", diskPath, "sizeGB", sizeGB)
-
-		// Copy source into the disk
-		switch sourceType {
-		case "cdrom":
-			// ISO source: dd the ISO into the beginning of the raw disk
-			if err := ddCopy(effectivePath, diskPath); err != nil {
-				os.Remove(diskPath)
-				p.setDiskError(ctx, name, fmt.Sprintf("copying ISO to disk: %v", err))
-				return
-			}
-			log.Infow("ISO copied to disk", "source", effectivePath)
-		case "disk", "path":
-			// Disk-to-disk: cp --sparse=auto
-			if err := sparseCopy(effectivePath, diskPath); err != nil {
-				os.Remove(diskPath)
-				p.setDiskError(ctx, name, fmt.Sprintf("copying disk: %v", err))
-				return
-			}
-			// If target is larger, extend the file
-			if fi, err := os.Stat(diskPath); err == nil && fi.Size() < targetBytes {
-				if err := truncateFile(diskPath, targetBytes); err != nil {
-					log.Warnw("failed to extend disk after copy", "error", err)
-				}
-			}
-			log.Infow("disk copied", "source", effectivePath)
-		}
-	}
-
-	// Configure iSCSI target on RouterOS
+	// Phase 3: Configure iSCSI target on RouterOS (no lock)
 	disk, ok = p.iscsiDisks.Get(name)
 	if !ok {
 		return
 	}
-
 	if err := p.configureISCSIDiskTarget(ctx, disk); err != nil {
 		p.setDiskError(ctx, name, fmt.Sprintf("configuring iSCSI target: %v", err))
 		return
 	}
 
-	// Update status to Ready
+	// Phase 4: Mark Ready (no lock)
 	disk, ok = p.iscsiDisks.Get(name)
 	if ok {
 		disk.Status.Phase = "Ready"
 		disk.Status.Message = ""
 		if fi, err := os.Stat(diskPath); err == nil {
 			disk.Status.DiskSize = fi.Size()
+			disk.Status.ActualBytes = getActualDiskBytes(fi)
+			disk.Status.LastModified = fi.ModTime().UTC().Format("2006-01-02T15:04:05Z")
+			if disk.Status.DiskSize > 0 {
+				disk.Status.ThinRatio = float64(disk.Status.ActualBytes) / float64(disk.Status.DiskSize)
+			}
 		}
-	}
-
-	if ok {
 		p.persistISCSIDisk(ctx, disk)
 		log.Infow("iSCSI disk ready",
 			"iqn", disk.Status.TargetIQN,
 			"diskID", disk.Status.RouterOSID,
 			"path", diskPath)
 	}
+}
+
+// cloneDiskFile performs the file I/O portion of a disk clone under a per-path lock.
+func (p *MicroKubeProvider) cloneDiskFile(ctx context.Context, name, sourcePath, sourceType, diskPath string, sizeGB int, log interface {
+	Infow(string, ...interface{})
+	Warnw(string, ...interface{})
+}) error {
+	mu := lockDiskPath(diskPath)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Ensure disk directory exists
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
+		return fmt.Errorf("creating disk directory: %v", err)
+	}
+
+	targetBytes := int64(sizeGB) * 1024 * 1024 * 1024
+
+	if sourcePath == "" {
+		// Empty thin volume: just create a sparse file
+		if err := createSparseFile(diskPath, targetBytes); err != nil {
+			return fmt.Errorf("creating sparse file: %v", err)
+		}
+		log.Infow("empty thin volume created", "path", diskPath, "sizeGB", sizeGB)
+		return nil
+	}
+
+	// Detect source format and convert if needed
+	sf := detectSourceFormat(sourcePath)
+	effectivePath := sourcePath
+
+	if sf.needsConversion() {
+		log.Infow("source needs conversion", "path", sourcePath,
+			"compressed", sf.compressed, "format", sf.diskFormat)
+
+		var err error
+		effectivePath, err = p.convertSourceToRaw(ctx, sourcePath, sf, log.(interface{ Infow(string, ...interface{}) }))
+		if err != nil {
+			return fmt.Errorf("converting source: %v", err)
+		}
+		defer os.Remove(effectivePath)
+		log.Infow("source converted to raw", "intermediate", effectivePath)
+		sourceType = "path"
+	}
+
+	// Create sparse disk file of target size
+	if err := createSparseFile(diskPath, targetBytes); err != nil {
+		return fmt.Errorf("creating sparse file: %v", err)
+	}
+	log.Infow("sparse disk file created", "path", diskPath, "sizeGB", sizeGB)
+
+	// Copy source into the disk
+	switch sourceType {
+	case "cdrom":
+		if err := ddCopy(effectivePath, diskPath); err != nil {
+			os.Remove(diskPath)
+			return fmt.Errorf("copying ISO to disk: %v", err)
+		}
+		log.Infow("ISO copied to disk", "source", effectivePath)
+	case "disk", "path":
+		if err := sparseCopy(effectivePath, diskPath); err != nil {
+			os.Remove(diskPath)
+			return fmt.Errorf("copying disk: %v", err)
+		}
+		if fi, err := os.Stat(diskPath); err == nil && fi.Size() < targetBytes {
+			if err := truncateFile(diskPath, targetBytes); err != nil {
+				log.Warnw("failed to extend disk after copy", "error", err)
+			}
+		}
+		log.Infow("disk copied", "source", effectivePath)
+	}
+
+	return nil
 }
 
 // convertSourceToRaw handles decompression and format conversion, returning
@@ -1184,6 +1205,30 @@ func iscsiDiskListToTable(disks []ISCSIDisk) *metav1.Table {
 	}
 
 	return table
+}
+
+// ─── File Stats Refresh ─────────────────────────────────────────────────────
+
+// refreshISCSIDiskFileStats updates ActualBytes, LastModified, and ThinRatio
+// for all Ready iSCSI disks by stat-ing each disk file.
+func (p *MicroKubeProvider) refreshISCSIDiskFileStats(ctx context.Context) {
+	for _, disk := range p.iscsiDisks.Snapshot() {
+		if disk.Status.Phase != "Ready" {
+			continue
+		}
+		if disk.Status.DiskPath == "" {
+			continue
+		}
+		fi, err := os.Stat(disk.Status.DiskPath)
+		if err != nil {
+			continue
+		}
+		disk.Status.ActualBytes = getActualDiskBytes(fi)
+		disk.Status.LastModified = fi.ModTime().UTC().Format("2006-01-02T15:04:05Z")
+		if disk.Status.DiskSize > 0 {
+			disk.Status.ThinRatio = float64(disk.Status.ActualBytes) / float64(disk.Status.DiskSize)
+		}
+	}
 }
 
 // ─── Consistency Checks ─────────────────────────────────────────────────────

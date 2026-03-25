@@ -49,20 +49,23 @@ type StoragePoolPaths struct {
 
 // StoragePoolStatus reports the observed state of a StoragePool.
 type StoragePoolStatus struct {
-	Phase       string `json:"phase"`                       // Active, Degraded, Offline, Discovered
-	TotalBytes  int64  `json:"totalBytes,omitempty"`
-	UsedBytes   int64  `json:"usedBytes,omitempty"`
-	AvailBytes  int64  `json:"availBytes,omitempty"`
-	Filesystem  string `json:"filesystem,omitempty"`        // ext4
-	DeviceModel string `json:"deviceModel,omitempty"`
-	DeviceType  string `json:"deviceType,omitempty"`        // hardware, raid
-	RaidType    string `json:"raidType,omitempty"`          // raid-0, raid-1
-	RaidDevices int    `json:"raidDevices,omitempty"`
-	Interface   string `json:"interface,omitempty"`         // NVMe, SATA
-	Slot        string `json:"slot,omitempty"`              // RouterOS slot
-	DiskCount   int    `json:"diskCount,omitempty"`         // iSCSI disks on this pool
-	PVCCount    int    `json:"pvcCount,omitempty"`          // PVCs on this pool
-	LastSeen    string `json:"lastSeen,omitempty"`
+	Phase         string `json:"phase"`                       // Active, Degraded, Offline, Discovered
+	TotalBytes    int64  `json:"totalBytes,omitempty"`
+	UsedBytes     int64  `json:"usedBytes,omitempty"`
+	AvailBytes    int64  `json:"availBytes,omitempty"`
+	PrevUsedBytes int64  `json:"prevUsedBytes,omitempty"`     // previous poll's usedBytes
+	WriteRateBPS  int64  `json:"writeRateBPS,omitempty"`      // delta bytes / elapsed seconds
+	LastRefreshed string `json:"lastRefreshed,omitempty"`     // RFC3339 timestamp of last refresh
+	Filesystem    string `json:"filesystem,omitempty"`        // ext4
+	DeviceModel   string `json:"deviceModel,omitempty"`
+	DeviceType    string `json:"deviceType,omitempty"`        // hardware, raid
+	RaidType      string `json:"raidType,omitempty"`          // raid-0, raid-1
+	RaidDevices   int    `json:"raidDevices,omitempty"`
+	Interface     string `json:"interface,omitempty"`         // NVMe, SATA
+	Slot          string `json:"slot,omitempty"`              // RouterOS slot
+	DiskCount     int    `json:"diskCount,omitempty"`         // iSCSI disks on this pool
+	PVCCount      int    `json:"pvcCount,omitempty"`          // PVCs on this pool
+	LastSeen      string `json:"lastSeen,omitempty"`
 }
 
 // StoragePoolList is a list of StoragePool objects.
@@ -221,7 +224,23 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 
 		existing, exists := p.storagePools.Get(name)
 		if exists {
-			// Update status only
+			// Compute write rate from capacity delta
+			if existing.Status.LastRefreshed != "" && existing.Status.UsedBytes > 0 {
+				if prev, err := time.Parse(time.RFC3339, existing.Status.LastRefreshed); err == nil {
+					elapsed := time.Since(prev).Seconds()
+					if elapsed > 0 {
+						delta := usedBytes - existing.Status.UsedBytes
+						if delta > 0 {
+							existing.Status.WriteRateBPS = int64(float64(delta) / elapsed)
+						} else {
+							existing.Status.WriteRateBPS = 0
+						}
+					}
+				}
+			}
+			existing.Status.PrevUsedBytes = existing.Status.UsedBytes
+
+			// Update status
 			existing.Status.TotalBytes = totalBytes
 			existing.Status.UsedBytes = usedBytes
 			existing.Status.AvailBytes = freeBytes
@@ -233,6 +252,7 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 			existing.Status.Interface = disk.Interface
 			existing.Status.Slot = disk.Slot
 			existing.Status.LastSeen = now
+			existing.Status.LastRefreshed = now
 			existing.Status.Phase = "Active"
 			p.persistStoragePool(ctx, existing)
 		} else {
@@ -249,18 +269,19 @@ func (p *MicroKubeProvider) DiscoverStoragePools(ctx context.Context) {
 					Default:    isDefault,
 				},
 				Status: StoragePoolStatus{
-					Phase:       "Active",
-					TotalBytes:  totalBytes,
-					UsedBytes:   usedBytes,
-					AvailBytes:  freeBytes,
-					Filesystem:  disk.Filesystem,
-					DeviceModel: disk.Model,
-					DeviceType:  disk.Type,
-					RaidType:    disk.RaidType,
-					RaidDevices: raidDevices,
-					Interface:   disk.Interface,
-					Slot:        disk.Slot,
-					LastSeen:    now,
+					Phase:         "Active",
+					TotalBytes:    totalBytes,
+					UsedBytes:     usedBytes,
+					AvailBytes:    freeBytes,
+					LastRefreshed: now,
+					Filesystem:    disk.Filesystem,
+					DeviceModel:   disk.Model,
+					DeviceType:    disk.Type,
+					RaidType:      disk.RaidType,
+					RaidDevices:   raidDevices,
+					Interface:     disk.Interface,
+					Slot:          disk.Slot,
+					LastSeen:      now,
 				},
 			}
 			if isDefault {

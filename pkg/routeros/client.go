@@ -824,6 +824,9 @@ type PhysicalDisk struct {
 	RaidDeviceCount string `json:"raid-device-count,omitempty"`
 	Interface       string `json:"interface,omitempty"` // e.g. "NVMe", "SATA"
 	State           string `json:"state,omitempty"`
+	DiskReads       string `json:"disk-reads,omitempty"`
+	DiskWrites      string `json:"disk-writes,omitempty"`
+	SmartStatus     string `json:"smart-rollup,omitempty"`
 }
 
 // ListPhysicalDisks returns hardware and RAID disks that have a filesystem

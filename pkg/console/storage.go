@@ -22,7 +22,7 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
 </div>
 <div id="disks" class="tab-content">
   <div style="margin-bottom:8px"><button class="btn btn-primary" onclick="showCreateDisk()">Create Disk</button></div>
-  <table><thead><tr><th>Name</th><th>Host</th><th>Pool</th><th>Size</th><th>Phase</th><th>Source</th><th>Created</th><th></th></tr></thead><tbody id="disks-tbl"></tbody></table>
+  <table><thead><tr><th>Name</th><th>Host</th><th>Pool</th><th>Size</th><th>Actual</th><th>Thin%</th><th>Phase</th><th>Last Active</th><th>Source</th><th>Created</th><th></th></tr></thead><tbody id="disks-tbl"></tbody></table>
 </div>
 <div id="move-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
   <div class="card" style="min-width:320px;max-width:400px">
@@ -110,7 +110,7 @@ function diskPool(d){
 // Build index of disks/PVCs per pool for the pool detail view
 function buildPoolIndex(poolItems,pvcItems,diskItems){
   var idx={};
-  poolItems.forEach(function(p){ idx[p.metadata.name]={disks:[],pvcs:[]}; });
+  poolItems.forEach(function(p){ idx[p.metadata.name]={disks:[],pvcs:[],actualBytes:0,logicalBytes:0}; });
   pvcItems.forEach(function(p){
     var pool=pvcPool(p);
     if(idx[pool]) idx[pool].pvcs.push(p.metadata.namespace+'/'+p.metadata.name);
@@ -118,8 +118,15 @@ function buildPoolIndex(poolItems,pvcItems,diskItems){
   });
   diskItems.forEach(function(d){
     var pool=diskPool(d);
-    if(idx[pool]) idx[pool].disks.push(d.metadata.name);
-    else if(idx[_defaultPool]) idx[_defaultPool].disks.push(d.metadata.name);
+    var st=d.status||{};
+    var s=d.spec||{};
+    var target=idx[pool]||idx[_defaultPool];
+    if(target){
+      target.disks.push(d.metadata.name);
+      if(st.actualBytes) target.actualBytes+=st.actualBytes;
+      var logical=s.sizeGB?s.sizeGB*1024*1024*1024:(st.diskSize||0);
+      target.logicalBytes+=logical;
+    }
   });
   return idx;
 }
@@ -178,6 +185,17 @@ async function load(){
       // Physical drives count
       var driveCount=st.raidDevices||1;
       var driveLabel=driveCount===1?'1 drive':driveCount+' drives';
+      // Write rate (only show when > 0)
+      var writeRateLine='';
+      if(st.writeRateBPS&&st.writeRateBPS>0){
+        writeRateLine='<div style="font-size:11px;color:var(--cyan);margin-top:2px"><b>Write Rate</b>: '+fmtPoolBytes(st.writeRateBPS)+'/s</div>';
+      }
+      // Thin savings (only show if pool has disks with actual bytes tracked)
+      var thinLine='';
+      if(pi.actualBytes>0&&pi.logicalBytes>0){
+        var saved=pi.logicalBytes>0?Math.round((1-pi.actualBytes/pi.logicalBytes)*100):0;
+        thinLine='<div style="font-size:11px;color:var(--purple);margin-top:2px"><b>Thin</b>: '+fmtPoolBytes(pi.actualBytes)+' actual / '+fmtPoolBytes(pi.logicalBytes)+' logical ('+saved+'% saved)</div>';
+      }
       // iSCSI disks (only show if any)
       var iscsiLine='';
       if(pi.disks.length>0){
@@ -190,9 +208,11 @@ async function load(){
         '<div style="margin:8px 0;background:var(--selection);border-radius:4px;height:16px;overflow:hidden">'+
         '<div style="width:'+pct+'%;height:100%;background:'+color+';border-radius:4px;transition:width 0.3s"></div></div>'+
         '<div style="font-size:12px">'+fmtPoolBytes(st.usedBytes)+' / '+fmtPoolBytes(st.totalBytes)+' ('+pct+'%)</div>'+
+        writeRateLine+
         '<div style="font-size:11px;color:var(--comment);margin-top:6px"><b>Drives</b>: '+driveLabel+'</div>'+
         '<div style="font-size:11px;color:var(--comment);margin-top:2px"><b>PVCs</b> ('+pi.pvcs.length+'): '+pvcList+'</div>'+
         iscsiLine+
+        thinLine+
         '</div>';
     }).join('')+'</div>';
   }
@@ -251,7 +271,7 @@ async function load(){
 
   // Disks
   var dt=document.getElementById('disks-tbl');
-  if(diskItems.length===0){dt.innerHTML='<tr><td colspan="8" class="muted" style="text-align:center;padding:8px">No disks</td></tr>';}
+  if(diskItems.length===0){dt.innerHTML='<tr><td colspan="11" class="muted" style="text-align:center;padding:8px">No disks</td></tr>';}
   else{
     var diskRows=[];
     diskItems.forEach(function(d){
@@ -262,7 +282,10 @@ async function load(){
       var actions='';
       if(isReady) actions+='<button class="btn" style="font-size:10px;padding:2px 6px;margin-right:4px" onclick="showCloneDisk(\''+escapeHtml(d.metadata.name)+'\')">Clone</button>';
       actions+='<button class="btn btn-danger" style="font-size:10px;padding:2px 6px" onclick="deleteDisk(\''+escapeHtml(d.metadata.name)+'\')">Delete</button>';
-      diskRows.push('<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||_defaultPool||'—')+'</td><td>'+fmtSize(s.sizeGB?s.sizeGB*1024*1024*1024:(s.size||st.diskSize||st.size))+'</td><td>'+statusBadge(phase)+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+actions+'</td></tr>');
+      var actualStr=st.actualBytes?fmtPoolBytes(st.actualBytes):'—';
+      var thinPct=st.thinRatio?(st.thinRatio*100).toFixed(1)+'%':'—';
+      var lastActive=st.lastModified?timeSince(st.lastModified):'—';
+      diskRows.push('<tr><td>'+escapeHtml(d.metadata.name)+'</td><td>'+escapeHtml(s.host||'—')+'</td><td>'+escapeHtml(s.storagePool||_defaultPool||'—')+'</td><td>'+fmtSize(s.sizeGB?s.sizeGB*1024*1024*1024:(s.size||st.diskSize||st.size))+'</td><td>'+actualStr+'</td><td>'+thinPct+'</td><td>'+statusBadge(phase)+'</td><td>'+lastActive+'</td><td>'+escapeHtml(s.source||'—')+'</td><td>'+timeSince(d.metadata?.creationTimestamp)+'</td><td>'+actions+'</td></tr>');
     });
     dt.innerHTML=diskRows.join('');
   }
