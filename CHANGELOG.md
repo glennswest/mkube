@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-25
+- **feat:** iSCSI PVC capacity and usage reporting — RouterOS reports `size` and `free` for mounted ext4 file disks. PVC enrichment now sets `vkube.io/capacity-bytes` and `vkube.io/used-bytes` annotations, and populates `Status.Capacity` for iSCSI PVCs. `mk get pvc` table now shows "Used" column. Batch enrichment fetches `/disk` once for all iSCSI PVCs (same optimization as directory PVCs use `/file`).
+- **feat:** `FileDisk` struct extended with `Size`, `Free`, `Mounted` fields. New `FileDiskIndex` type for batch disk lookups by path or ID.
 - **feat:** iSCSI-backed PVC provisioning — PVCs with `storageClassName: iscsi` or annotation `vkube.io/pvc-type: iscsi` are provisioned as file-backed disks on RouterOS with ext4 filesystem. RouterOS auto-mounts the formatted disk and mkube uses the mount-point as a container bind source. Flow: create file disk → iSCSI export → ext4 format via iscsi-pvc tool → disable export → auto-mount. Includes reconciler for recovering mount-points after RouterOS reboot.
 - **feat:** New RouterOS client methods: `FindFileDiskByPath`, `SetISCSIExport`, `CreateFileDisk`, `RemoveFileDisk`. Extended `FileDisk` struct with `FileSize`, `Filesystem`, `MountPoint` fields.
 - **fix:** Replaced global `diskCloneMu sync.Mutex` with per-path locking via `sync.Map`. Disk clones to different paths now run fully in parallel. NATS writes and RouterOS REST calls no longer hold any lock — only file I/O on the same target path is serialized.

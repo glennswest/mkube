@@ -768,6 +768,9 @@ type FileDisk struct {
 	FileSize       string `json:"file-size,omitempty"`
 	Filesystem     string `json:"fs,omitempty"`
 	MountPoint     string `json:"mount-point,omitempty"`
+	Mounted        string `json:"mounted,omitempty"`
+	Size           string `json:"size,omitempty"`
+	Free           string `json:"free,omitempty"`
 	ISCSIExport    string `json:"iscsi-export"`
 	ISCSIServerIQN string `json:"iscsi-server-iqn,omitempty"`
 }
@@ -916,6 +919,42 @@ func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
 		}
 	}
 	return fileDisks, nil
+}
+
+// FileDiskIndex is a pre-fetched index of file-backed disks keyed by file path.
+// Used for batch PVC capacity/usage enrichment without repeated REST calls.
+type FileDiskIndex struct {
+	byPath map[string]*FileDisk
+	byID   map[string]*FileDisk
+}
+
+// FetchFileDiskIndex fetches /disk once and builds a reusable index of file-type disks.
+func (c *Client) FetchFileDiskIndex(ctx context.Context) (*FileDiskIndex, error) {
+	disks, err := c.listFileDisks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	idx := &FileDiskIndex{
+		byPath: make(map[string]*FileDisk, len(disks)),
+		byID:   make(map[string]*FileDisk, len(disks)),
+	}
+	for i := range disks {
+		d := &disks[i]
+		path := strings.TrimPrefix(d.FilePath, "/")
+		idx.byPath[path] = d
+		idx.byID[d.ID] = d
+	}
+	return idx, nil
+}
+
+// ByPath looks up a file disk by its file path (without leading /).
+func (idx *FileDiskIndex) ByPath(path string) *FileDisk {
+	return idx.byPath[strings.TrimPrefix(path, "/")]
+}
+
+// ByID looks up a file disk by its RouterOS .id.
+func (idx *FileDiskIndex) ByID(id string) *FileDisk {
+	return idx.byID[id]
 }
 
 // ─── Physical Disk Discovery ────────────────────────────────────────────────

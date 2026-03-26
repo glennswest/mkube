@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/glennswest/mkube/pkg/store"
 )
 
@@ -469,6 +472,7 @@ func pvcListToTable(pvcs []corev1.PersistentVolumeClaim) *metav1.Table {
 			{Name: "Status", Type: "string"},
 			{Name: "Volume", Type: "string"},
 			{Name: "Capacity", Type: "string"},
+			{Name: "Used", Type: "string"},
 			{Name: "Access Modes", Type: "string"},
 			{Name: "Age", Type: "string"},
 		},
@@ -489,6 +493,15 @@ func pvcListToTable(pvcs []corev1.PersistentVolumeClaim) *metav1.Table {
 			capacity = stor.String()
 		} else if stor, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
 			capacity = stor.String()
+		}
+
+		used := ""
+		if ann := pvc.GetAnnotations(); ann != nil {
+			if usedBytes := ann["vkube.io/used-bytes"]; usedBytes != "" {
+				if b, err := strconv.ParseInt(usedBytes, 10, 64); err == nil {
+					used = resource.NewQuantity(b, resource.BinarySI).String()
+				}
+			}
 		}
 
 		accessModes := formatAccessModes(pvc.Spec.AccessModes)
@@ -514,6 +527,7 @@ func pvcListToTable(pvcs []corev1.PersistentVolumeClaim) *metav1.Table {
 				status,
 				volume,
 				capacity,
+				used,
 				accessModes,
 				age,
 			},
@@ -596,6 +610,25 @@ func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context
 // enrichPVCUsage adds a vkube.io/used-bytes annotation with actual disk usage.
 // For single-PVC gets only; list handlers should use enrichPVCUsageBatch.
 func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.PersistentVolumeClaim) {
+	// iSCSI PVCs: get capacity/usage from RouterOS /disk
+	if isISCSIPVC(pvc) {
+		rc := p.getRouterOSClient()
+		if rc == nil {
+			return
+		}
+		ann := pvc.GetAnnotations()
+		if ann == nil || ann[annDiskID] == "" {
+			return
+		}
+		disk, err := rc.GetISCSIDisk(ctx, ann[annDiskID])
+		if err != nil {
+			return
+		}
+		enrichPVCFromDisk(pvc, disk)
+		return
+	}
+
+	// Directory PVCs: get usage from runtime
 	hostPath := p.pvcHostPath(pvc)
 	used, err := p.deps.Runtime.DirectoryDiskUsage(ctx, hostPath)
 	if err != nil {
@@ -608,26 +641,89 @@ func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.Pers
 }
 
 // enrichPVCUsageBatch enriches all PVCs with disk usage in a single RouterOS
-// /file fetch instead of one per PVC.
+// /file and /disk fetch instead of one per PVC.
 func (p *MicroKubeProvider) enrichPVCUsageBatch(ctx context.Context, pvcs []corev1.PersistentVolumeClaim) {
 	rc := p.getRouterOSClient()
 	if rc == nil {
 		return
 	}
+
+	// Check if any iSCSI PVCs exist to avoid unnecessary /disk fetch
+	hasISCSI := false
+	for i := range pvcs {
+		if isISCSIPVC(&pvcs[i]) {
+			hasISCSI = true
+			break
+		}
+	}
+
+	// Fetch file usage index for directory PVCs
 	idx, err := rc.FetchFileUsageIndex(ctx)
 	if err != nil {
 		p.deps.Logger.Debugw("failed to fetch file usage index for PVC enrichment", "error", err)
-		return
 	}
-	for i := range pvcs {
-		hostPath := p.pvcHostPath(&pvcs[i])
-		used := idx.DirectoryUsage(hostPath)
-		if used > 0 {
-			if pvcs[i].Annotations == nil {
-				pvcs[i].Annotations = make(map[string]string)
-			}
-			pvcs[i].Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
+
+	// Fetch disk index for iSCSI PVCs (single /disk call)
+	var diskIdx *routeros.FileDiskIndex
+	if hasISCSI {
+		diskIdx, err = rc.FetchFileDiskIndex(ctx)
+		if err != nil {
+			p.deps.Logger.Debugw("failed to fetch disk index for iSCSI PVC enrichment", "error", err)
 		}
+	}
+
+	for i := range pvcs {
+		if isISCSIPVC(&pvcs[i]) {
+			// iSCSI PVC: enrich from disk index
+			if diskIdx == nil {
+				continue
+			}
+			ann := pvcs[i].GetAnnotations()
+			if ann == nil || ann[annDiskID] == "" {
+				continue
+			}
+			if disk := diskIdx.ByID(ann[annDiskID]); disk != nil {
+				enrichPVCFromDisk(&pvcs[i], disk)
+			}
+		} else {
+			// Directory PVC: enrich from file index
+			if idx == nil {
+				continue
+			}
+			hostPath := p.pvcHostPath(&pvcs[i])
+			used := idx.DirectoryUsage(hostPath)
+			if used > 0 {
+				if pvcs[i].Annotations == nil {
+					pvcs[i].Annotations = make(map[string]string)
+				}
+				pvcs[i].Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
+			}
+		}
+	}
+}
+
+// enrichPVCFromDisk sets capacity and usage annotations from a RouterOS file disk.
+func enrichPVCFromDisk(pvc *corev1.PersistentVolumeClaim, disk *routeros.FileDisk) {
+	if pvc.Annotations == nil {
+		pvc.Annotations = make(map[string]string)
+	}
+
+	sizeBytes, _ := strconv.ParseInt(disk.Size, 10, 64)
+	freeBytes, _ := strconv.ParseInt(disk.Free, 10, 64)
+
+	if sizeBytes > 0 {
+		pvc.Annotations["vkube.io/capacity-bytes"] = disk.Size
+		usedBytes := sizeBytes - freeBytes
+		if usedBytes < 0 {
+			usedBytes = 0
+		}
+		pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", usedBytes)
+
+		// Set Status.Capacity so the table shows actual capacity
+		if pvc.Status.Capacity == nil {
+			pvc.Status.Capacity = make(corev1.ResourceList)
+		}
+		pvc.Status.Capacity[corev1.ResourceStorage] = *resource.NewQuantity(sizeBytes, resource.BinarySI)
 	}
 }
 
