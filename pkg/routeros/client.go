@@ -761,11 +761,14 @@ func (c *Client) GetLogs(ctx context.Context) ([]LogEntry, error) {
 
 // FileDisk represents a RouterOS file-backed disk entry.
 type FileDisk struct {
-	ID            string `json:".id"`
-	Slot          string `json:"slot"`
-	Type          string `json:"type"`
-	FilePath      string `json:"file-path"`
-	ISCSIExport   string `json:"iscsi-export"`
+	ID             string `json:".id"`
+	Slot           string `json:"slot"`
+	Type           string `json:"type"`
+	FilePath       string `json:"file-path"`
+	FileSize       string `json:"file-size,omitempty"`
+	Filesystem     string `json:"fs,omitempty"`
+	MountPoint     string `json:"mount-point,omitempty"`
+	ISCSIExport    string `json:"iscsi-export"`
 	ISCSIServerIQN string `json:"iscsi-server-iqn,omitempty"`
 }
 
@@ -838,6 +841,65 @@ func (c *Client) GetISCSIDisk(ctx context.Context, id string) (*FileDisk, error)
 		}
 	}
 	return nil, fmt.Errorf("disk %s not found", id)
+}
+
+// FindFileDiskByPath finds a file-backed disk by its file path.
+// Returns nil if no matching disk is found.
+func (c *Client) FindFileDiskByPath(ctx context.Context, filePath string) (*FileDisk, error) {
+	disks, err := c.listFileDisks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	normalized := strings.TrimPrefix(filePath, "/")
+	for _, d := range disks {
+		if strings.TrimPrefix(d.FilePath, "/") == normalized {
+			return &d, nil
+		}
+	}
+	return nil, nil
+}
+
+// SetISCSIExport enables or disables iSCSI export on a disk.
+func (c *Client) SetISCSIExport(ctx context.Context, id string, enabled bool) error {
+	val := "no"
+	if enabled {
+		val = "yes"
+	}
+	return c.restPOST(ctx, "/disk/set", map[string]string{
+		".id":          id,
+		"iscsi-export": val,
+	}, nil)
+}
+
+// CreateFileDisk creates a file-backed disk entry (without iSCSI export).
+// Returns the .id of the created disk.
+func (c *Client) CreateFileDisk(ctx context.Context, filePath string) (string, error) {
+	rosPath := "/" + strings.TrimPrefix(filePath, "/")
+
+	err := c.restPOST(ctx, "/disk/add", map[string]string{
+		"type":      "file",
+		"file-path": rosPath,
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating file disk for %s: %w", rosPath, err)
+	}
+
+	// Find the disk by file-path to get its .id
+	disks, err := c.listFileDisks(ctx)
+	if err != nil {
+		return "", fmt.Errorf("listing disks after create: %w", err)
+	}
+	for _, d := range disks {
+		if strings.TrimPrefix(d.FilePath, "/") == strings.TrimPrefix(rosPath, "/") {
+			return d.ID, nil
+		}
+	}
+	return "", fmt.Errorf("created file disk for %s but could not find it", rosPath)
+}
+
+// RemoveFileDisk removes a file-backed disk entry.
+func (c *Client) RemoveFileDisk(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/disk/remove", map[string]string{".id": id}, nil)
 }
 
 // listFileDisks returns all file-type disks.

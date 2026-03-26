@@ -60,6 +60,19 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 			}
 			pvc = newPVC
 		}
+
+		// iSCSI-backed PVC: uses file-backed disk with ext4, mounted by RouterOS
+		if isISCSIPVC(pvc) {
+			hostPath, err := p.resolveISCSIPVCVolume(ctx, pvc)
+			if err != nil {
+				p.deps.Logger.Errorw("failed to provision iSCSI PVC",
+					"pvc", key, "error", err)
+				return "", false
+			}
+			return hostPath, true
+		}
+
+		// Directory-backed PVC (default)
 		hostPath := p.pvcHostPath(pvc)
 		// Ensure the PVC directory exists on disk
 		if err := p.deps.Runtime.EnsureDirectory(ctx, hostPath); err != nil {
@@ -162,11 +175,14 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 
 	p.pvcs.Set(key, &pvc)
 
-	// Ensure the PVC directory exists on disk
-	hostPath := p.pvcHostPath(&pvc)
-	if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
-		p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
-			"path", hostPath, "pvc", key, "error", err)
+	// For iSCSI PVCs, the disk/format/mount is done lazily on first pod attach.
+	// For directory PVCs, ensure the directory exists now.
+	if !isISCSIPVC(&pvc) {
+		hostPath := p.pvcHostPath(&pvc)
+		if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
+			p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
+				"path", hostPath, "pvc", key, "error", err)
+		}
 	}
 
 	podWriteJSON(w, http.StatusCreated, &pvc)
@@ -333,11 +349,17 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Optionally purge the on-disk directory
+	// Optionally purge the on-disk data
 	if r.URL.Query().Get("purge") == "true" {
-		hostPath := p.pvcHostPath(pvc)
-		if err := p.deps.Runtime.RemoveFile(r.Context(), hostPath); err != nil {
-			p.deps.Logger.Warnw("failed to purge PVC directory", "path", hostPath, "error", err)
+		if isISCSIPVC(pvc) {
+			if err := p.cleanupISCSIPVC(r.Context(), pvc); err != nil {
+				p.deps.Logger.Warnw("failed to cleanup iSCSI PVC", "pvc", key, "error", err)
+			}
+		} else {
+			hostPath := p.pvcHostPath(pvc)
+			if err := p.deps.Runtime.RemoveFile(r.Context(), hostPath); err != nil {
+				p.deps.Logger.Warnw("failed to purge PVC directory", "path", hostPath, "error", err)
+			}
 		}
 	}
 
