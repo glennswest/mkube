@@ -52,6 +52,7 @@ build-agent:
 ## Build iscsi-pvc Rust tool for the target architecture
 build-iscsi-pvc:
 	cd tools/iscsi-pvc && cargo build --release --target aarch64-unknown-linux-musl
+	aarch64-linux-musl-strip tools/iscsi-pvc/target/aarch64-unknown-linux-musl/release/iscsi-pvc
 	cp tools/iscsi-pvc/target/aarch64-unknown-linux-musl/release/iscsi-pvc dist/iscsi-pvc-$(ARCH)
 
 ## Build all binaries for the target architecture
