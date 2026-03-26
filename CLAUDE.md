@@ -123,5 +123,9 @@ Known test failures (pre-existing):
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 
+### Completed (recent)
+- [x] iSCSI-backed PVC provisioning — Rust prototype (tools/iscsi-pvc) + Go integration (pkg/provider/pvc_iscsi.go)
+- [x] RouterOS client disk management methods (FindFileDiskByPath, SetISCSIExport, CreateFileDisk, RemoveFileDisk)
+
 ### In Progress
-<!-- - [ ] (started YYYY-MM-DD) Task description -->
+- [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence

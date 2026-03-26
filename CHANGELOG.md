@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-25
+- **feat:** iSCSI-backed PVC provisioning — PVCs with `storageClassName: iscsi` or annotation `vkube.io/pvc-type: iscsi` are provisioned as file-backed disks on RouterOS with ext4 filesystem. RouterOS auto-mounts the formatted disk and mkube uses the mount-point as a container bind source. Flow: create file disk → iSCSI export → ext4 format via iscsi-pvc tool → disable export → auto-mount. Includes reconciler for recovering mount-points after RouterOS reboot.
+- **feat:** New RouterOS client methods: `FindFileDiskByPath`, `SetISCSIExport`, `CreateFileDisk`, `RemoveFileDisk`. Extended `FileDisk` struct with `FileSize`, `Filesystem`, `MountPoint` fields.
 - **fix:** Replaced global `diskCloneMu sync.Mutex` with per-path locking via `sync.Map`. Disk clones to different paths now run fully in parallel. NATS writes and RouterOS REST calls no longer hold any lock — only file I/O on the same target path is serialized.
 - **feat:** I/O stats in storage UI — pool cards show live write rate (cyan) and thin provisioning savings (purple: actual vs logical bytes). iSCSI Disks table gains Actual, Thin%, and Last Active columns.
 - **fix:** `handleISCSIDiskCapacity` sparseBytes calculation — was using `fi.Size()` (logical size) instead of `syscall.Stat_t.Blocks*512` (actual on-disk allocation). Thin volume savings are now reported correctly.
