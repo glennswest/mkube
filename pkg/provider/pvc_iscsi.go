@@ -87,7 +87,11 @@ func (p *MicroKubeProvider) provisionISCSIPVC(ctx context.Context, pvc *corev1.P
 		}
 	}
 
-	log.Infow("provisioning iSCSI PVC", "filePath", filePath)
+	sizeBytes := parsePVCSize(pvc)
+	if sizeBytes <= 0 {
+		sizeBytes = 100 * 1024 * 1024 // default 100 MiB
+	}
+	log.Infow("provisioning iSCSI PVC", "filePath", filePath, "size", formatSizeForRouterOS(sizeBytes))
 
 	// Ensure the volumes directory exists
 	dirPath := strings.TrimPrefix(pool.volumesPath(), "/")
@@ -95,8 +99,8 @@ func (p *MicroKubeProvider) provisionISCSIPVC(ctx context.Context, pvc *corev1.P
 		log.Warnw("failed to ensure PVC directory", "path", dirPath, "error", err)
 	}
 
-	// Step 1: Create the file-backed disk on RouterOS
-	diskID, err := rosClient.CreateFileDisk(ctx, rosFilePath)
+	// Step 1: Create the file-backed disk on RouterOS with requested size
+	diskID, err := rosClient.CreateFileDisk(ctx, rosFilePath, sizeBytes)
 	if err != nil {
 		// Disk might already exist — try to find it
 		existing, findErr := rosClient.FindFileDiskByPath(ctx, rosFilePath)

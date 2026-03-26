@@ -875,14 +875,20 @@ func (c *Client) SetISCSIExport(ctx context.Context, id string, enabled bool) er
 }
 
 // CreateFileDisk creates a file-backed disk entry (without iSCSI export).
+// If sizeBytes > 0, the file is created with that exact size; otherwise RouterOS uses its default.
 // Returns the .id of the created disk.
-func (c *Client) CreateFileDisk(ctx context.Context, filePath string) (string, error) {
+func (c *Client) CreateFileDisk(ctx context.Context, filePath string, sizeBytes int64) (string, error) {
 	rosPath := "/" + strings.TrimPrefix(filePath, "/")
 
-	err := c.restPOST(ctx, "/disk/add", map[string]string{
+	params := map[string]string{
 		"type":      "file",
 		"file-path": rosPath,
-	}, nil)
+	}
+	if sizeBytes > 0 {
+		params["file-size"] = fmt.Sprintf("%d", sizeBytes)
+	}
+
+	err := c.restPOST(ctx, "/disk/add", params, nil)
 	if err != nil {
 		return "", fmt.Errorf("creating file disk for %s: %w", rosPath, err)
 	}
