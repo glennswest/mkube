@@ -49,8 +49,13 @@ build-mkube-boot:
 build-agent:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -o dist/mkube-agent ./cmd/mkube-agent/
 
+## Build iscsi-pvc Rust tool for the target architecture
+build-iscsi-pvc:
+	cd tools/iscsi-pvc && cargo build --release --target aarch64-unknown-linux-musl
+	cp tools/iscsi-pvc/target/aarch64-unknown-linux-musl/release/iscsi-pvc dist/iscsi-pvc-$(ARCH)
+
 ## Build all binaries for the target architecture
-build-all: build build-registry build-installer build-update build-pve-deploy build-agent
+build-all: build build-registry build-installer build-update build-pve-deploy build-agent build-iscsi-pvc
 
 ## Create RouterOS-compatible docker-save tarball (no Docker needed)
 tarball: build
@@ -61,11 +66,12 @@ tarball: build
 ## After push, waits up to 90s for mkube-update to swap in the new binary
 ## and verifies the running commit matches what was just built.
 ## Use `make deploy-config` separately when config/boot-order files change.
-deploy: build
+deploy: build build-iscsi-pvc
 	cp dist/$(BINARY)-$(ARCH) mkube
 	cp $(STORMD) stormd
+	cp dist/iscsi-pvc-$(ARCH) iscsi-pvc
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
-	rm -f mkube stormd
+	rm -f mkube stormd iscsi-pvc
 	podman push --tls-verify=false $(IMAGE)
 	@echo "Pushed $(IMAGE) — waiting for mkube-update to swap binary..."
 	@EXPECT_COMMIT=$(COMMIT); \

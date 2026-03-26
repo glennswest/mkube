@@ -1,6 +1,7 @@
 FROM scratch
 COPY stormd /stormd
 COPY mkube /mkube
+COPY iscsi-pvc /usr/local/bin/iscsi-pvc
 COPY deploy/config.yaml /etc/mkube/config.yaml
 COPY deploy/stormd-config.toml /etc/stormd/config.toml
 VOLUME ["/data"]

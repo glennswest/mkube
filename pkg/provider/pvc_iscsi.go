@@ -191,7 +191,7 @@ func (p *MicroKubeProvider) formatISCSITargetExt4(ctx context.Context, portalIP,
 
 	log.Infow("executing iscsi-pvc format", "label", label)
 
-	cmd := exec.CommandContext(ctx, "iscsi-pvc",
+	cmd := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
 		"--url", restURL,
 		"--user", user,
 		"--password", password,
