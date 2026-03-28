@@ -122,6 +122,7 @@ Known test failures (pre-existing):
 9. **configstate.gt.lo**: Git-backed config state backup for disaster recovery.
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
+12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
 
 ### Completed (recent)
 - [x] iSCSI-backed PVC provisioning — Rust prototype (tools/iscsi-pvc) + Go integration (pkg/provider/pvc_iscsi.go)
