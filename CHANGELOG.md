@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-27
+- **feat:** Stable sequential IP reservations for gt network containers. After a pod gets its first dynamic IP from IPAM, the IP is stamped back as `vkube.io/static-ip` annotation and persisted to NATS. On subsequent creates/restarts, the pod reuses the same IP. Existing pods without the annotation get stamped during reconcile. Added `ipamStart`/`ipamEnd` to gt network config (.100-.200) to avoid collision with infrastructure static IPs.
+
 ### 2026-03-25
 - **feat:** iSCSI PVC capacity and usage reporting — RouterOS reports `size` and `free` for mounted ext4 file disks. PVC enrichment now sets `vkube.io/capacity-bytes` and `vkube.io/used-bytes` annotations, and populates `Status.Capacity` for iSCSI PVCs. `mk get pvc` table now shows "Used" column. Batch enrichment fetches `/disk` once for all iSCSI PVCs (same optimization as directory PVCs use `/file`).
 - **feat:** iSCSI PVC size enforcement — `CreateFileDisk` accepts `sizeBytes` parameter, and `provisionISCSIPVC` passes the PVC's `spec.resources.requests.storage` to set the file disk size. Default 100 MiB if no size requested. Ext4 filesystem capacity equals the file size, enforcing hard capacity limits via ENOSPC.

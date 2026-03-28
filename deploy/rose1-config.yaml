@@ -21,6 +21,8 @@ networks:
     bridge: bridge-gt
     cidr: "192.168.200.0/24"
     gateway: "192.168.200.1"
+    ipamStart: "192.168.200.100"
+    ipamEnd: "192.168.200.200"
     dns:
       endpoint: "http://192.168.200.199:8080"
       zone: "gt.lo"

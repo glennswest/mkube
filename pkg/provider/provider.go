@@ -588,6 +588,9 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 	// Stamp the deployed image digest so we can detect stale images on restart.
 	p.stampImageDigest(ctx, pod)
 
+	// Stamp the allocated IP as a static reservation so the pod keeps the same IP forever.
+	p.stampAssignedIP(ctx, pod, containerIPs)
+
 	// Track the pod
 	p.pods.Set(podKey(pod), pod.DeepCopy())
 
@@ -2150,6 +2153,28 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 	}
 
+	// 4c. Stamp assigned IPs for pods that don't have static-ip yet.
+	// This covers pods that existed before the IP reservation feature.
+	podsSnap4c := p.pods.Snapshot()
+	for key, pod := range podsSnap4c {
+		if pod.Annotations[annotationStaticIP] != "" {
+			continue
+		}
+		vn := vethName(pod, 0)
+		if ip, _, ok := p.deps.NetworkMgr.GetPortInfo(vn); ok {
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			pod.Annotations[annotationStaticIP] = ip
+			p.pods.Set(key, pod.DeepCopy())
+			if p.deps.Store != nil {
+				storeKey := pod.Namespace + "." + pod.Name
+				p.deps.Store.Pods.PutJSON(ctx, storeKey, pod)
+			}
+			log.Infow("stamped existing pod with IP reservation", "pod", key, "ip", ip)
+		}
+	}
+
 	// 5. Sync ConfigMap data to disk and recreate pods whose ConfigMaps changed
 	stepStart = time.Now()
 	p.syncConfigMapsToDisk(ctx)
@@ -2468,6 +2493,36 @@ func (p *MicroKubeProvider) stampImageDigest(ctx context.Context, pod *corev1.Po
 		storeKey := pod.Namespace + "." + pod.Name
 		if _, err := p.deps.Store.Pods.PutJSON(context.Background(), storeKey, pod); err != nil {
 			p.deps.Logger.Debugw("failed to persist digest annotation", "pod", storeKey, "error", err)
+		}
+	}
+}
+
+// stampAssignedIP writes the first container's allocated IP back to
+// the pod's vkube.io/static-ip annotation and persists to NATS.
+// This makes dynamic IP assignments "sticky" — on pod recreation,
+// CreatePod reads the annotation and reuses the same IP.
+func (p *MicroKubeProvider) stampAssignedIP(ctx context.Context, pod *corev1.Pod, containerIPs map[string]string) {
+	if pod.Annotations[annotationStaticIP] != "" {
+		return // already has a static IP, don't overwrite
+	}
+	if len(pod.Spec.Containers) == 0 || len(containerIPs) == 0 {
+		return
+	}
+	ip := containerIPs[pod.Spec.Containers[0].Name]
+	if ip == "" {
+		return
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations[annotationStaticIP] = ip
+	p.deps.Logger.Infow("stamped assigned IP as static reservation",
+		"pod", podKey(pod), "ip", ip)
+	// Persist to NATS so the annotation survives restart
+	if p.deps.Store != nil {
+		storeKey := pod.Namespace + "." + pod.Name
+		if _, err := p.deps.Store.Pods.PutJSON(ctx, storeKey, pod); err != nil {
+			p.deps.Logger.Debugw("failed to persist IP reservation", "pod", storeKey, "error", err)
 		}
 	}
 }
