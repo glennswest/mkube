@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-03-28
+- **fix:** `fixOrphanedVolumeMounts` cross-pod PVC contamination — function hardcoded `{namespace}-dns-data` as the PVC claim name for ANY pod with an orphaned `data` volumeMount at `/data`. Non-DNS pods (e.g. netwatch) in the `infra` namespace got the DNS pod's database mounted at `/data`, shadowing their own data volume. Now derives PVC name from the pod: DNS pods use `{namespace}-dns-data`, all others use `{pod}-data`.
+
 ### 2026-03-27
 - **feat:** Stable sequential IP reservations for gt network containers. After a pod gets its first dynamic IP from IPAM, the IP is stamped back as `vkube.io/static-ip` annotation and persisted to NATS. On subsequent creates/restarts, the pod reuses the same IP. Existing pods without the annotation get stamped during reconcile. Added `ipamStart`/`ipamEnd` to gt network config (.100-.200) to avoid collision with infrastructure static IPs.
 

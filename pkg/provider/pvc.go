@@ -559,42 +559,33 @@ func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context
 			if volumeNames[vm.Name] {
 				continue
 			}
-			// Orphaned volumeMount — the "data" volume for DNS pods
-			// needs a PVC to persist redb across pod recreation.
-			// Also handles registry pods with data at /raid1/registry/*.
-			if vm.Name == "data" && vm.MountPath == "/data" {
-				claimName := pod.Namespace + "-dns-data"
+			// Orphaned volumeMount — no matching Volume definition in the pod spec.
+			// Derive PVC claim name from the pod, not a hardcoded pattern.
+			// DNS pods use "{namespace}-dns-data", registry pods use "{pod}-data",
+			// all others use "{pod}-{volume}" to avoid cross-pod contamination.
+			if vm.Name == "data" {
+				var claimName string
+				if strings.HasSuffix(pod.Name, "-dns") || strings.Contains(pod.Name, "microdns") {
+					claimName = pod.Namespace + "-dns-data"
+				} else if strings.HasPrefix(pod.Name, "registry-") {
+					claimName = pod.Name + "-data"
+				} else {
+					claimName = pod.Name + "-data"
+				}
 				p.deps.Logger.Infow("fixing orphaned volumeMount: adding PVC volume",
-					"pod", pod.Namespace+"/"+pod.Name,
-					"volume", vm.Name,
-					"claimName", claimName)
-				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
-					Name: "data",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: claimName,
-						},
-					},
-				})
-				volumeNames["data"] = true
-				modified = true
-			} else if vm.Name == "data" && strings.HasPrefix(pod.Name, "registry-") {
-				// Registry pod data volume — derive PVC name from pod name.
-				claimName := pod.Name + "-data"
-				p.deps.Logger.Infow("fixing orphaned volumeMount: adding PVC volume for registry",
 					"pod", pod.Namespace+"/"+pod.Name,
 					"volume", vm.Name,
 					"mountPath", vm.MountPath,
 					"claimName", claimName)
 				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
-					Name: "data",
+					Name: vm.Name,
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 							ClaimName: claimName,
 						},
 					},
 				})
-				volumeNames["data"] = true
+				volumeNames[vm.Name] = true
 				modified = true
 			} else {
 				p.deps.Logger.Warnw("orphaned volumeMount has no matching volume definition",
