@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-03-30
+- **fix:** Network CRD updates (PUT/PATCH) now sync bridge name and other fields to in-memory network manager. Previously, updating a network's bridge via API only persisted to NATS — the network manager kept using the stale cached bridge name, causing pod creation failures (e.g. `bridge-lan` not found when bridge was renamed to `bridge-g1`). Added `UpdateNetwork()` method to network manager.
+- **fix:** `gw` network config — bridge corrected from `bridge-lan` to `bridge-g1` (actual RouterOS bridge name). Removed stale `externalDNS: true` flag and updated DNS endpoint from 192.168.1.52 to 192.168.1.252 (gw DNS now runs on rose1).
+
 ### 2026-03-28
 - **fix:** `fixOrphanedVolumeMounts` cross-pod PVC contamination — function hardcoded `{namespace}-dns-data` as the PVC claim name for ANY pod with an orphaned `data` volumeMount at `/data`. Non-DNS pods (e.g. netwatch) in the `infra` namespace got the DNS pod's database mounted at `/data`, shadowing their own data volume. Now derives PVC name from the pod: DNS pods use `{namespace}-dns-data`, all others use `{pod}-data`.
 

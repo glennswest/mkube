@@ -532,6 +532,11 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 
 	p.networks.Set(name, &net)
 
+	// Sync updated definition to in-memory network manager (bridge, gateway, etc.)
+	if p.deps.NetworkMgr != nil {
+		p.deps.NetworkMgr.UpdateNetwork(networkToNetworkDef(&net))
+	}
+
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, &net)
 
@@ -577,6 +582,11 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 	}
 
 	p.networks.Set(name, merged)
+
+	// Sync updated definition to in-memory network manager (bridge, gateway, etc.)
+	if p.deps.NetworkMgr != nil {
+		p.deps.NetworkMgr.UpdateNetwork(networkToNetworkDef(merged))
+	}
 
 	// Handle managed DNS transitions
 	p.handleManagedDNSTransition(r.Context(), wasManaged, merged)

@@ -577,6 +577,40 @@ func (m *Manager) RegisterNetwork(netDef config.NetworkDef) error {
 	return nil
 }
 
+// UpdateNetwork updates an existing network's definition in the manager.
+// This is called when a Network CRD is modified via PUT/PATCH so that
+// in-memory state (bridge, gateway, CIDR, etc.) stays in sync with the
+// persisted CRD. It is a no-op if the network doesn't exist.
+func (m *Manager) UpdateNetwork(netDef config.NetworkDef) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ns, exists := m.networks[netDef.Name]
+	if !exists {
+		return
+	}
+
+	old := ns.def
+	ns.def = netDef
+
+	// Re-parse gateway if changed
+	if netDef.Gateway != old.Gateway && netDef.Gateway != "" {
+		if gw := net.ParseIP(netDef.Gateway); gw != nil {
+			ns.gateway = gw
+		}
+	}
+
+	// Update logical switch in state
+	m.state.setSwitch(&LogicalSwitch{
+		Name:    netDef.Name,
+		Bridge:  netDef.Bridge,
+		CIDR:    netDef.CIDR,
+		Gateway: ns.gateway.String(),
+	})
+
+	m.log.Infow("updated network definition", "name", netDef.Name, "bridge", netDef.Bridge, "oldBridge", old.Bridge)
+}
+
 // UnregisterNetwork removes a dynamically registered network from the manager
 // and IPAM allocator. This is the reverse of RegisterNetwork and is called
 // when a Network CRD is deleted. It is a no-op if the network doesn't exist.

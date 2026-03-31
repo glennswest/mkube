@@ -127,14 +127,13 @@ networks:
         bootFile: "pxelinux.0"
         # Reservations managed via BMH objects in NATS + microdns REST API
   - name: gw
-    bridge: bridge-lan
+    bridge: bridge-g1
     cidr: "192.168.1.0/24"
     gateway: "192.168.1.88"
-    externalDNS: true  # DNS server runs on pvex.gw.lo (CT 117), not managed by mkube
     dns:
-      endpoint: "http://192.168.1.52:8080"
+      endpoint: "http://192.168.1.252:8080"
       zone: "gw.lo"
-      server: "192.168.1.52"
+      server: "192.168.1.252"
       staticRecords:
         - name: rose1
           ip: "192.168.1.88"
