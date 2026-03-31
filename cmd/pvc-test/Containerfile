@@ -1,0 +1,8 @@
+FROM scratch
+COPY stormd /stormd
+COPY pvc-test /pvc-test
+COPY stormd-config.toml /etc/stormd/config.toml
+VOLUME ["/data"]
+EXPOSE 9080/tcp 22/tcp
+ENTRYPOINT ["/stormd"]
+CMD ["--config", "/etc/stormd/config.toml"]

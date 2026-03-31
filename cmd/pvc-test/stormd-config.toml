@@ -1,0 +1,25 @@
+[general]
+name = "pvc-test"
+log_dir = "/var/stormd/logs"
+
+[api]
+bind = "0.0.0.0:9080"
+
+[ssh]
+enabled = true
+bind = "0.0.0.0:22"
+host_key = "/var/stormd/host_key"
+password = "stormd"
+
+[stormlog.terminal]
+rows = 50
+cols = 200
+scrollback = 10000
+
+[[process]]
+name = "pvc-test"
+command = "/pvc-test"
+on_failure = "restart"
+restart_delay_secs = 5
+max_restarts = 100
+restart_window_secs = 3600
