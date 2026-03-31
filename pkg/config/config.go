@@ -339,6 +339,7 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 		Storage: StorageConfig{
 			BasePath:          "/raid1/images",
 			TarballCache:      "/raid1/cache",
+			SecretKeyPath:     "/data/mkube/secret.key",
 			GCIntervalMinutes: 30,
 			GCKeepLastN:       5,
 		},

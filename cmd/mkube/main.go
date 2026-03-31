@@ -463,6 +463,13 @@ func runSharedServices(
 			natsDeferred = true
 		} else {
 			defer kvStore.Close()
+			// Load (or generate) the AES-256-GCM encryption key for Secrets
+			if encKey, keyErr := store.LoadOrGenerateKey(cfg.Storage.SecretKeyPath); keyErr != nil {
+				log.Warnw("failed to load secret encryption key, Secrets will be unencrypted", "path", cfg.Storage.SecretKeyPath, "error", keyErr)
+			} else {
+				kvStore.SetEncryptionKey(encKey)
+				log.Infow("secret encryption key loaded", "path", cfg.Storage.SecretKeyPath)
+			}
 			if _, err := kvStore.MigrateIfEmpty(ctx, cfg.Lifecycle.BootManifestPath, log); err != nil {
 				log.Warnw("NATS migration failed", "error", err)
 			}
@@ -609,6 +616,13 @@ func runSharedServices(
 						log.Warnw("NATS store retry", "attempt", i+1, "error", err)
 					}
 					continue
+				}
+				// Load (or generate) the AES-256-GCM encryption key for Secrets
+				if encKey, keyErr := store.LoadOrGenerateKey(cfg.Storage.SecretKeyPath); keyErr != nil {
+					log.Warnw("failed to load secret encryption key, Secrets will be unencrypted", "path", cfg.Storage.SecretKeyPath, "error", keyErr)
+				} else {
+					s.SetEncryptionKey(encKey)
+					log.Infow("secret encryption key loaded (deferred)", "path", cfg.Storage.SecretKeyPath)
 				}
 				if _, err := s.MigrateIfEmpty(ctx, cfg.Lifecycle.BootManifestPath, log); err != nil {
 					log.Warnw("NATS migration failed", "error", err)
