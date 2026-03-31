@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-03-31
+- **feat:** Secret resource support — full CRUD API at `/api/v1/namespaces/{ns}/secrets` with encrypted-at-rest storage (AES-256-GCM) in NATS JetStream KV. Secrets are stored encrypted; decrypted only when read by the API or resolved into pods. List responses redact Data fields. Watch endpoint supported.
+- **feat:** Secret volume mounts — pods can mount Secrets as files (same pattern as ConfigMaps). Secret files written with 0600 permissions. Reconcile loop syncs secret files to disk and triggers pod recreation on changes.
+- **feat:** Environment variable injection — new `resolveContainerEnv()` resolves `envFrom` (SecretRef, ConfigMapRef) and `env` (Value, SecretKeyRef, ConfigMapKeyRef) in standard Kubernetes order. RouterOS env lists created via `/container/envs` API. Works for both Secrets and ConfigMaps.
+- **feat:** RouterOS env list support — new `ListEnvs`, `CreateEnv`, `RemoveEnvsByList` methods on RouterOS client. `Envlist` field added to Container and ContainerSpec. `CreateEnv`/`RemoveEnvsByList` added to ContainerRuntime interface with no-op implementations for Proxmox and StormBase.
+- **feat:** Secret cluster sync — SECRETS bucket added to `syncedBuckets` in cluster sync. Secrets replicate encrypted between peers (shared encryption key). NATS KV watcher auto-syncs secret changes to in-memory state and disk.
+- **feat:** Secret YAML export/import — `ExportYAML` decrypts secrets for export; `ImportYAML` encrypts secrets on import. Secret documents handled in `parseManifests` routing.
+- **feat:** Encryption key management — `LoadOrGenerateKey()` auto-creates AES-256 key at configured path (default `/data/mkube/secret.key`) with 0600 permissions. `Encrypt`/`Decrypt` with AES-256-GCM (12-byte nonce prefix). Full test coverage (roundtrip, tamper detection, wrong key, empty plaintext).
+
 ### 2026-03-30
 - **fix:** Network CRD updates (PUT/PATCH) now sync bridge name and other fields to in-memory network manager. Previously, updating a network's bridge via API only persisted to NATS — the network manager kept using the stale cached bridge name, causing pod creation failures (e.g. `bridge-lan` not found when bridge was renamed to `bridge-g1`). Added `UpdateNetwork()` method to network manager.
 - **fix:** `gw` network config — bridge corrected from `bridge-lan` to `bridge-g1` (actual RouterOS bridge name). Removed stale `externalDNS: true` flag and updated DNS endpoint from 192.168.1.52 to 192.168.1.252 (gw DNS now runs on rose1).

@@ -40,6 +40,10 @@ type ContainerRuntime interface {
 	CreateMount(ctx context.Context, name, src, dst string) error
 	RemoveMountsByList(ctx context.Context, listName string) error
 
+	// Environment variable operations (RouterOS-specific, no-op on other backends)
+	CreateEnv(ctx context.Context, listName, key, value string) error
+	RemoveEnvsByList(ctx context.Context, listName string) error
+
 	// Backend identification
 	Backend() string // "routeros" or "stormbase"
 
@@ -94,6 +98,7 @@ type ContainerSpec struct {
 	Logging     string
 	StartOnBoot string
 	User        string // container user, e.g. "0:0" for root (needed for privileged ports)
+	Envlist     string // RouterOS env list name
 
 	// StormBase-specific fields
 	RestartPolicy string

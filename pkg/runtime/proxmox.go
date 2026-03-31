@@ -339,6 +339,14 @@ func (p *ProxmoxRuntime) RemoveMountsByList(_ context.Context, _ string) error {
 	return nil
 }
 
+func (p *ProxmoxRuntime) CreateEnv(_ context.Context, _, _, _ string) error {
+	return nil // Proxmox LXC uses spec.Env directly
+}
+
+func (p *ProxmoxRuntime) RemoveEnvsByList(_ context.Context, _ string) error {
+	return nil // Proxmox LXC uses spec.Env directly
+}
+
 func (p *ProxmoxRuntime) Backend() string {
 	return "proxmox"
 }

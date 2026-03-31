@@ -24,6 +24,7 @@ type Store struct {
 
 	Pods           *Bucket
 	ConfigMaps     *Bucket
+	Secrets        *Bucket
 	Namespaces     *Bucket
 	NodeStatus     *Bucket
 	BareMetalHosts        *Bucket
@@ -39,12 +40,56 @@ type Store struct {
 	Jobs                   *Bucket
 	JobLogs                *Bucket
 	StoragePools           *Bucket
+
+	encryptionKey []byte // AES-256-GCM key for Secret encryption at rest
 }
 
 // SetSyncHook sets a callback invoked after every successful local Put or Delete.
 // The hook receives the bucket name, key, operation ("put" or "delete"), and value.
 func (s *Store) SetSyncHook(hook func(bucket, key, op string, value []byte)) {
 	s.syncHook = hook
+}
+
+// SetEncryptionKey sets the AES-256-GCM key used for Secret encryption at rest.
+func (s *Store) SetEncryptionKey(key []byte) {
+	s.encryptionKey = key
+}
+
+// PutSecretJSON marshals v to JSON, encrypts it, and stores the ciphertext
+// in the Secrets bucket. Requires SetEncryptionKey to have been called.
+func (s *Store) PutSecretJSON(ctx context.Context, key string, v interface{}) (uint64, error) {
+	if s.encryptionKey == nil {
+		return 0, fmt.Errorf("encryption key not set")
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0, fmt.Errorf("marshaling secret: %w", err)
+	}
+	ciphertext, err := Encrypt(s.encryptionKey, data)
+	if err != nil {
+		return 0, fmt.Errorf("encrypting secret: %w", err)
+	}
+	return s.Secrets.Put(ctx, key, ciphertext)
+}
+
+// GetSecretJSON retrieves ciphertext from the Secrets bucket, decrypts it,
+// and unmarshals the JSON into v.
+func (s *Store) GetSecretJSON(ctx context.Context, key string, v interface{}) (uint64, error) {
+	if s.encryptionKey == nil {
+		return 0, fmt.Errorf("encryption key not set")
+	}
+	ciphertext, rev, err := s.Secrets.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	plaintext, err := Decrypt(s.encryptionKey, ciphertext)
+	if err != nil {
+		return 0, fmt.Errorf("decrypting secret %s: %w", key, err)
+	}
+	if err := json.Unmarshal(plaintext, v); err != nil {
+		return 0, fmt.Errorf("unmarshaling secret %s: %w", key, err)
+	}
+	return rev, nil
 }
 
 // BucketByName returns the Bucket corresponding to the given name.
@@ -54,6 +99,8 @@ func (s *Store) BucketByName(name string) *Bucket {
 		return s.Pods
 	case "CONFIGMAPS":
 		return s.ConfigMaps
+	case "SECRETS":
+		return s.Secrets
 	case "NAMESPACES":
 		return s.Namespaces
 	case "NODE_STATUS":
@@ -174,6 +221,10 @@ func (s *Store) initAllBuckets(ctx context.Context) error {
 		return err
 	}
 	s.ConfigMaps, err = s.initBucket(ctx, "CONFIGMAPS", s.replicas, 0)
+	if err != nil {
+		return err
+	}
+	s.Secrets, err = s.initBucket(ctx, "SECRETS", s.replicas, 0)
 	if err != nil {
 		return err
 	}

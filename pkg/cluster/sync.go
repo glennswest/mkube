@@ -40,7 +40,7 @@ type SyncEntry struct {
 // syncedBuckets lists the bucket names that participate in peer sync.
 // NODE_STATUS is excluded (local heartbeat only, 60s TTL).
 var syncedBuckets = []string{
-	"PODS", "CONFIGMAPS", "NAMESPACES", "BAREMETALHOSTS",
+	"PODS", "CONFIGMAPS", "SECRETS", "NAMESPACES", "BAREMETALHOSTS",
 	"DEPLOYMENTS", "PVCS", "NETWORKS", "REGISTRIES",
 	"ISCSICDROMS", "BOOTCONFIGS",
 }

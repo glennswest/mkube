@@ -107,6 +107,8 @@ func (m *mockRuntime) ListDirectory(context.Context, string) ([]string, error)  
 func (m *mockRuntime) DirectoryDiskUsage(context.Context, string) (int64, error)   { return 0, nil }
 func (m *mockRuntime) CreateMount(context.Context, string, string, string) error   { return nil }
 func (m *mockRuntime) RemoveMountsByList(context.Context, string) error            { return nil }
+func (m *mockRuntime) CreateEnv(context.Context, string, string, string) error    { return nil }
+func (m *mockRuntime) RemoveEnvsByList(context.Context, string) error             { return nil }
 func (m *mockRuntime) Backend() string                                           { return "stormbase" }
 func (m *mockRuntime) Close() error                                              { return nil }
 

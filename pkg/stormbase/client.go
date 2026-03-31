@@ -298,6 +298,14 @@ func (c *Client) RemoveMountsByList(_ context.Context, _ string) error {
 	return nil // stormd manages volume cleanup
 }
 
+func (c *Client) CreateEnv(_ context.Context, _, _, _ string) error {
+	return nil // StormBase uses spec.Env directly via gRPC
+}
+
+func (c *Client) RemoveEnvsByList(_ context.Context, _ string) error {
+	return nil // StormBase uses spec.Env directly via gRPC
+}
+
 func (c *Client) Backend() string {
 	return "stormbase"
 }

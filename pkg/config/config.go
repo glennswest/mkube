@@ -222,6 +222,9 @@ type StorageConfig struct {
 	BasePath     string `yaml:"basePath"`     // root for container volumes
 	TarballCache string `yaml:"tarballCache"` // cache for downloaded image tarballs
 
+	// Encryption key path for Secret resources (AES-256-GCM)
+	SecretKeyPath string `yaml:"secretKeyPath"` // default: /data/mkube/secret.key
+
 	// When set, write tarballs to local disk instead of uploading via REST API.
 	// This is the mkube container's root-dir as seen by the RouterOS host,
 	// e.g. "raid1/images/kube.gt.lo". A file written inside the container at

@@ -31,6 +31,7 @@ func (r *RouterOSRuntime) CreateContainer(ctx context.Context, spec ContainerSpe
 		Hostname:    spec.Hostname,
 		DNS:         spec.DNS,
 		User:        spec.User,
+		Envlist:     spec.Envlist,
 		Logging:     spec.Logging,
 		StartOnBoot: spec.StartOnBoot,
 	})
@@ -119,6 +120,14 @@ func (r *RouterOSRuntime) CreateMount(ctx context.Context, name, src, dst string
 
 func (r *RouterOSRuntime) RemoveMountsByList(ctx context.Context, listName string) error {
 	return r.client.RemoveMountsByList(ctx, listName)
+}
+
+func (r *RouterOSRuntime) CreateEnv(ctx context.Context, listName, key, value string) error {
+	return r.client.CreateEnv(ctx, listName, key, value)
+}
+
+func (r *RouterOSRuntime) RemoveEnvsByList(ctx context.Context, listName string) error {
+	return r.client.RemoveEnvsByList(ctx, listName)
 }
 
 // ─── Filesystem Operations ──────────────────────────────────────────────────

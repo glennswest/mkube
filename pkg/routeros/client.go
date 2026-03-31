@@ -42,6 +42,7 @@ type Container struct {
 	Hostname    string `json:"hostname,omitempty"`
 	DNS         string `json:"dns,omitempty"`
 	User        string `json:"user,omitempty"`
+	Envlist     string `json:"envlist,omitempty"`
 	StartOnBoot string `json:"start-on-boot"`
 }
 
@@ -69,6 +70,7 @@ type ContainerSpec struct {
 	Hostname    string `json:"hostname,omitempty"`
 	DNS         string `json:"dns,omitempty"`
 	User        string `json:"user,omitempty"`
+	Envlist     string `json:"envlist,omitempty"`
 	Logging     string `json:"logging"`
 	StartOnBoot string `json:"start-on-boot"`
 }
@@ -188,6 +190,48 @@ func (c *Client) RemoveMountsByList(ctx context.Context, listName string) error 
 		if m.List == listName {
 			if err := c.restPOST(ctx, "/container/mounts/remove", map[string]string{".id": m.ID}, nil); err != nil {
 				return fmt.Errorf("removing mount %s: %w", m.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ─── Environment Variable Operations ────────────────────────────────────────
+
+// EnvEntry represents a RouterOS container environment variable.
+type EnvEntry struct {
+	ID    string `json:".id"`
+	List  string `json:"list"`  // env list name
+	Name  string `json:"name"`  // env var key
+	Value string `json:"value"` // env var value
+}
+
+// ListEnvs returns all container environment variable entries.
+func (c *Client) ListEnvs(ctx context.Context) ([]EnvEntry, error) {
+	var envs []EnvEntry
+	err := c.restGET(ctx, "/container/envs", &envs)
+	return envs, err
+}
+
+// CreateEnv creates a container environment variable entry.
+func (c *Client) CreateEnv(ctx context.Context, listName, key, value string) error {
+	return c.restPOST(ctx, "/container/envs/add", map[string]string{
+		"list":  listName,
+		"name":  key,
+		"value": value,
+	}, nil)
+}
+
+// RemoveEnvsByList removes all env entries with the given list name.
+func (c *Client) RemoveEnvsByList(ctx context.Context, listName string) error {
+	envs, err := c.ListEnvs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, e := range envs {
+		if e.List == listName {
+			if err := c.restPOST(ctx, "/container/envs/remove", map[string]string{".id": e.ID}, nil); err != nil {
+				return fmt.Errorf("removing env %s: %w", e.ID, err)
 			}
 		}
 	}

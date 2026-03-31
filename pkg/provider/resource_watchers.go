@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/glennswest/mkube/pkg/store"
 )
 
@@ -24,6 +26,7 @@ func (p *MicroKubeProvider) RunResourceWatchers(ctx context.Context) {
 	go p.watchNetworkBucket(ctx)
 	go p.watchJobBucket(ctx)
 	go p.watchJobRunnerBucket(ctx)
+	go p.watchSecretBucket(ctx)
 }
 
 // watchDeploymentBucket watches NATS Deployments bucket and triggers reconcile on changes.
@@ -280,6 +283,56 @@ func (p *MicroKubeProvider) runJobRunnerWatch(ctx context.Context) error {
 				_, name := parseStoreKey(evt.Key)
 				p.jobRunners.Delete(name)
 				p.triggerScheduler()
+			}
+		}
+	}
+}
+
+// watchSecretBucket watches NATS Secrets bucket and syncs to disk on changes.
+func (p *MicroKubeProvider) watchSecretBucket(ctx context.Context) {
+	log := p.deps.Logger.Named("watch-secrets")
+	for {
+		if err := p.runSecretWatch(ctx); err != nil {
+			log.Warnw("secret watch error, retrying", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func (p *MicroKubeProvider) runSecretWatch(ctx context.Context) error {
+	if p.deps.Store == nil || p.deps.Store.Secrets == nil {
+		return nil
+	}
+	events, err := p.deps.Store.Secrets.WatchAll(ctx)
+	if err != nil {
+		return err
+	}
+	p.deps.Logger.Info("secret watcher started")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case evt, ok := <-events:
+			if !ok {
+				return nil
+			}
+			switch evt.Type {
+			case store.EventPut, store.EventUpdate:
+				var secret corev1.Secret
+				if _, err := p.deps.Store.GetSecretJSON(ctx, evt.Key, &secret); err != nil {
+					continue
+				}
+				key := secret.Namespace + "/" + secret.Name
+				p.secrets.Set(key, &secret)
+				p.syncSecretsToDisk(ctx)
+			case store.EventDelete:
+				ns, name := parseStoreKey(evt.Key)
+				key := ns + "/" + name
+				p.secrets.Delete(key)
 			}
 		}
 	}

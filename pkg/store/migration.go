@@ -76,6 +76,28 @@ func (s *Store) ExportYAML(ctx context.Context) ([]byte, error) {
 		buf.WriteString("\n")
 	}
 
+	// Export Secrets (decrypted for export)
+	if s.Secrets != nil && s.encryptionKey != nil {
+		secretKeys, err := s.Secrets.Keys(ctx, "")
+		if err != nil {
+			return nil, fmt.Errorf("listing secrets: %w", err)
+		}
+		for _, key := range secretKeys {
+			var secret corev1.Secret
+			if _, err := s.GetSecretJSON(ctx, key, &secret); err != nil {
+				continue
+			}
+			secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}
+			data, err := json.MarshalIndent(&secret, "", "  ")
+			if err != nil {
+				continue
+			}
+			buf.WriteString("---\n")
+			buf.Write(data)
+			buf.WriteString("\n")
+		}
+	}
+
 	// Export Pods
 	podKeys, err := s.Pods.Keys(ctx, "")
 	if err != nil {
@@ -404,6 +426,19 @@ func (s *Store) ImportYAML(ctx context.Context, data []byte) (int, int, error) {
 		cmCount++
 	}
 
+	// Import Secrets
+	if s.Secrets != nil && s.encryptionKey != nil {
+		secrets, err := parseSecrets(data)
+		if err == nil {
+			for _, secret := range secrets {
+				key := secret.Namespace + "." + secret.Name
+				if _, err := s.PutSecretJSON(ctx, key, &secret); err != nil {
+					continue
+				}
+			}
+		}
+	}
+
 	// Import Deployments
 	if s.Deployments != nil {
 		deploys, err := parseDeployments(data)
@@ -606,6 +641,50 @@ func (s *Store) MigrateIfEmpty(ctx context.Context, manifestPath string, log *za
 	return true, nil
 }
 
+// parseSecrets extracts Secret documents from a multi-document YAML.
+func parseSecrets(data []byte) ([]corev1.Secret, error) {
+	var secrets []corev1.Secret
+
+	reader := yaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(data)))
+	for {
+		doc, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading YAML document: %w", err)
+		}
+
+		doc = bytes.TrimSpace(doc)
+		if len(doc) == 0 {
+			continue
+		}
+
+		var meta metav1.TypeMeta
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&meta); err != nil {
+			continue
+		}
+
+		if meta.Kind != "Secret" {
+			continue
+		}
+
+		var secret corev1.Secret
+		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096).Decode(&secret); err != nil {
+			return nil, fmt.Errorf("decoding secret: %w", err)
+		}
+		if secret.Name == "" {
+			continue
+		}
+		if secret.Namespace == "" {
+			secret.Namespace = "default"
+		}
+		secrets = append(secrets, secret)
+	}
+
+	return secrets, nil
+}
+
 // deploymentDoc is a lightweight Deployment representation for import/export.
 // Kept in the store package to avoid circular imports with provider.
 type deploymentDoc struct {
@@ -653,6 +732,9 @@ func parseManifests(data []byte) ([]*corev1.Pod, []*corev1.ConfigMap, error) {
 				cm.Namespace = "default"
 			}
 			configMaps = append(configMaps, &cm)
+		case "Secret":
+			// Secrets are handled separately via parseSecrets
+			continue
 		case "Deployment":
 			// Deployments are handled separately via parseDeployments
 			continue

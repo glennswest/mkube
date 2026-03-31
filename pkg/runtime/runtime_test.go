@@ -95,8 +95,10 @@ func (m *mockRuntime) ListDirectory(_ context.Context, _ string) ([]string, erro
 func (m *mockRuntime) DirectoryDiskUsage(_ context.Context, _ string) (int64, error) {
 	return 0, nil
 }
-func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error  { return nil }
-func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error { return nil }
+func (m *mockRuntime) CreateMount(_ context.Context, _, _, _ string) error      { return nil }
+func (m *mockRuntime) RemoveMountsByList(_ context.Context, _ string) error     { return nil }
+func (m *mockRuntime) CreateEnv(_ context.Context, _, _, _ string) error        { return nil }
+func (m *mockRuntime) RemoveEnvsByList(_ context.Context, _ string) error       { return nil }
 func (m *mockRuntime) Backend() string                                           { return m.backend }
 func (m *mockRuntime) Close() error                                              { return nil }
 

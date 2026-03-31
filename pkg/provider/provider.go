@@ -95,6 +95,7 @@ type MicroKubeProvider struct {
 	startTime       time.Time
 	pods            *safemap.Map[string, *corev1.Pod]                    // namespace/name -> pod
 	configMaps      *safemap.Map[string, *corev1.ConfigMap]              // namespace/name -> configmap
+	secrets         *safemap.Map[string, *corev1.Secret]               // namespace/name -> secret
 	bareMetalHosts  *safemap.Map[string, *BareMetalHost]                 // namespace/name -> BMH
 	deployments     *safemap.Map[string, *Deployment]                    // namespace/name -> deployment
 	pvcs            *safemap.Map[string, *corev1.PersistentVolumeClaim]  // namespace/name -> PVC
@@ -153,6 +154,7 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
 	p.LoadConfigMapsFromStore(context.Background())
+	p.LoadSecretsFromStore(context.Background())
 	p.ReconcileNetworkConfigMaps(context.Background())
 	p.LoadISCSICdromsFromStore(context.Background())
 	p.LoadISCSIDisksFromStore(context.Background())
@@ -200,6 +202,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		startTime:        time.Now(),
 		pods:             safemap.New[string, *corev1.Pod](),
 		configMaps:       safemap.New[string, *corev1.ConfigMap](),
+		secrets:          safemap.New[string, *corev1.Secret](),
 		bareMetalHosts:   safemap.New[string, *BareMetalHost](),
 		deployments:      safemap.New[string, *Deployment](),
 		pvcs:             safemap.New[string, *corev1.PersistentVolumeClaim](),
@@ -453,6 +456,24 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 					}
 					hostPath = p.deps.StorageMgr.HostVisiblePath(localDir)
 				}
+			} else if data := p.resolveSecretVolume(pod, vm.Name); data != nil {
+				// Secret volume: provision ephemeral host dir, then write decrypted data files
+				var err error
+				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
+				if err != nil {
+					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
+				}
+				localDir := fmt.Sprintf("/data/secrets/%s/%s", name, vm.Name)
+				if mkErr := os.MkdirAll(localDir, 0o700); mkErr != nil {
+					log.Warnw("failed to create secret dir", "path", localDir, "error", mkErr)
+				} else {
+					for filename, content := range data {
+						if wErr := os.WriteFile(localDir+"/"+filename, []byte(content), 0o600); wErr != nil {
+							log.Warnw("failed to write secret file", "path", localDir+"/"+filename, "error", wErr)
+						}
+					}
+					hostPath = p.deps.StorageMgr.HostVisiblePath(localDir)
+				}
 			} else {
 				// Ephemeral volume (default)
 				var err error
@@ -506,6 +527,18 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// either locally or via serverNetwork targeting it.
 		if p.networkHasDHCP(networkName) {
 			spec.User = "0:0"
+		}
+
+		// Resolve environment variables from Secrets, ConfigMaps, and plain values
+		_ = p.deps.Runtime.RemoveEnvsByList(ctx, name)
+		envVars := p.resolveContainerEnv(pod, &container)
+		if len(envVars) > 0 {
+			for _, env := range envVars {
+				k, v, _ := strings.Cut(env, "=")
+				_ = p.deps.Runtime.CreateEnv(ctx, name, k, v)
+			}
+			spec.Envlist = name  // RouterOS: reference the env list
+			spec.Env = envVars   // StormBase: pass via gRPC
 		}
 
 		if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
@@ -1151,6 +1184,23 @@ func (p *MicroKubeProvider) createContainerMounts(
 				for filename, content := range data {
 					if wErr := os.WriteFile(localDir+"/"+filename, []byte(content), 0o644); wErr != nil {
 						log.Warnw("failed to write configmap file", "path", localDir+"/"+filename, "error", wErr)
+					}
+				}
+				hostPath = p.deps.StorageMgr.HostVisiblePath(localDir)
+			}
+		} else if data := p.resolveSecretVolume(pod, vm.Name); data != nil {
+			var provErr error
+			hostPath, provErr = p.deps.StorageMgr.ProvisionVolume(ctx, containerName, vm.Name, vm.MountPath)
+			if provErr != nil {
+				return "", fmt.Errorf("provisioning secret volume %s: %w", vm.Name, provErr)
+			}
+			localDir := fmt.Sprintf("/data/secrets/%s/%s", containerName, vm.Name)
+			if mkErr := os.MkdirAll(localDir, 0o700); mkErr != nil {
+				log.Warnw("failed to create secret dir", "path", localDir, "error", mkErr)
+			} else {
+				for filename, content := range data {
+					if wErr := os.WriteFile(localDir+"/"+filename, []byte(content), 0o600); wErr != nil {
+						log.Warnw("failed to write secret file", "path", localDir+"/"+filename, "error", wErr)
 					}
 				}
 				hostPath = p.deps.StorageMgr.HostVisiblePath(localDir)
@@ -2179,6 +2229,11 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	stepStart = time.Now()
 	p.syncConfigMapsToDisk(ctx)
 	log.Debugw("RECONCILE: step 5 sync configmaps", "ms", time.Since(stepStart).Milliseconds())
+
+	// 5b. Sync Secret data to disk and recreate pods whose Secrets changed
+	stepStart = time.Now()
+	p.syncSecretsToDisk(ctx)
+	log.Debugw("RECONCILE: step 5b sync secrets", "ms", time.Since(stepStart).Milliseconds())
 
 	// 6. Ensure DNS zones exist and records are seeded from config
 	stepStart = time.Now()

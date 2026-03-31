@@ -44,6 +44,14 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/configmaps/{name}", p.handlePatchConfigMap)
 	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/configmaps/{name}", p.handleDeleteConfigMap)
 
+	// Secrets
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/secrets", p.handleCreateSecret)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/secrets", p.handleListSecrets)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/secrets/{name}", p.handleGetSecret)
+	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/secrets/{name}", p.handleUpdateSecret)
+	mux.HandleFunc("PATCH /api/v1/namespaces/{namespace}/secrets/{name}", p.handlePatchSecret)
+	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/secrets/{name}", p.handleDeleteSecret)
+
 	// Deployments
 	mux.HandleFunc("GET /api/v1/deployments", p.handleListAllDeployments)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/deployments", p.handleListNamespacedDeployments)
@@ -808,6 +816,12 @@ func (p *MicroKubeProvider) handleAPIResources(w http.ResponseWriter, r *http.Re
 				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
 			},
 			{
+				Name:       "secrets",
+				Namespaced: true,
+				Kind:       "Secret",
+				Verbs:      metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+			},
+			{
 				Name:       "namespaces",
 				Namespaced: false,
 				Kind:       "Namespace",
@@ -1339,6 +1353,9 @@ func (p *MicroKubeProvider) handleListNamespaces(w http.ResponseWriter, r *http.
 	}
 	for _, cm := range p.configMaps.Snapshot() {
 		nsSet[cm.Namespace] = true
+	}
+	for _, s := range p.secrets.Snapshot() {
+		nsSet[s.Namespace] = true
 	}
 	for _, bmh := range p.bareMetalHosts.Snapshot() {
 		nsSet[bmh.Namespace] = true

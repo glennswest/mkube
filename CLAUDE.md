@@ -125,6 +125,7 @@ Known test failures (pre-existing):
 12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
 
 ### Completed (recent)
+- [x] Secret resource support — full CRUD API with AES-256-GCM encrypted-at-rest storage in NATS. Volume mounts, env var injection (Secrets + ConfigMaps), cluster sync, YAML export/import.
 - [x] Fix `fixOrphanedVolumeMounts` cross-pod PVC contamination — hardcoded `{ns}-dns-data` for ALL orphaned data mounts, causing netwatch to get DNS pod's PVC. Now derives PVC name from pod name.
 - [x] iSCSI-backed PVC provisioning — Rust prototype (tools/iscsi-pvc) + Go integration (pkg/provider/pvc_iscsi.go)
 - [x] RouterOS client disk management methods (FindFileDiskByPath, SetISCSIExport, CreateFileDisk, RemoveFileDisk)
