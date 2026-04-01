@@ -601,8 +601,11 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 		// BIOS and the server boots from local disk.
 		if bmh.Spec.Image != "" {
 			if bmh.Spec.Image == "localboot" {
-				apiAddr := p.deps.Config.DefaultNetwork().Gateway + ":8082"
-				res.IPXEBootURL = fmt.Sprintf("http://%s/api/v1/ipxe/localboot", apiAddr)
+				apiBase := strings.TrimRight(p.deps.Config.Console.APIBase, "/")
+				if apiBase == "" {
+					apiBase = fmt.Sprintf("http://%s:8082", p.deps.Config.DefaultNetwork().Gateway)
+				}
+				res.IPXEBootURL = apiBase + "/api/v1/ipxe/localboot"
 			} else if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
 				if net, ok := p.networks.Get(bmh.Spec.Network); ok {
 					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
