@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"net"
 	"strings"
 	"time"
 
@@ -601,11 +602,14 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 		// to localboot) or exit for localboot. This avoids root_path in
 		// DHCP reservations entirely — iPXE fetches the script and acts on it.
 		if bmh.Spec.Image != "" && bmh.Spec.Image != "baremetalservices" {
-			apiBase := strings.TrimRight(p.deps.Config.Console.APIBase, "/")
-			if apiBase == "" {
-				apiBase = fmt.Sprintf("http://%s:8082", p.deps.Config.DefaultNetwork().Gateway)
+			// Build mkube's own API URL with a resolved IP so iPXE doesn't need DNS.
+			mkubeHost := "mkube." + p.deps.Config.DefaultNetwork().DNS.Zone
+			if ips, err := net.LookupHost(mkubeHost); err == nil && len(ips) > 0 {
+				res.IPXEBootURL = fmt.Sprintf("http://%s:8082/api/v1/ipxe/boot", ips[0])
+			} else {
+				log.Warnw("failed to resolve mkube hostname for iPXE boot URL, using hostname", "host", mkubeHost, "error", err)
+				res.IPXEBootURL = fmt.Sprintf("http://%s:8082/api/v1/ipxe/boot", mkubeHost)
 			}
-			res.IPXEBootURL = apiBase + "/api/v1/ipxe/boot"
 		}
 
 		p.upsertNetworkReservation(ctx, bmh.Spec.Network, res, bmh.Name)

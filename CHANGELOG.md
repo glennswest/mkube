@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-04-01
+- **fix:** iPXE boot URL now resolves `mkube.{zone}` to an IP at runtime instead of using Console.APIBase or the gateway IP. iPXE clients don't have DNS during early boot, so the DHCP reservation gets a numeric IP (e.g. `http://192.168.200.2:8082/api/v1/ipxe/boot`).
+
 ### 2026-03-31
 - **fix:** ext4 formatter inode scaling for small volumes — inodes per group now scales at 1 per 16 KB (matching mkfs.ext4 default) instead of constant 8192. Fixes inode table consuming most of the volume for disks < 128 MiB (e.g. 8192 inodes × 256 bytes = 2 MiB just for inodes in a 10 MiB volume). Enforces minimum 256 inodes/group for safety.
 - **fix:** 4 MiB minimum for iSCSI PVC — RouterOS requires >= 1024 ext4 blocks (4 MiB with 4K blocks) to detect and mount the filesystem. Provisioner now rounds up PVC sizes below 4 MiB automatically. iscsi-pvc tool returns clear error if volume is too small.
