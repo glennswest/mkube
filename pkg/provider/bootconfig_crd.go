@@ -497,6 +497,20 @@ func (p *MicroKubeProvider) handleBootComplete(w http.ResponseWriter, r *http.Re
 		http.Error(w, fmt.Sprintf("persisting BMH update: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	// Re-sync DHCP reservation so root_path is cleared (no iSCSI CDROM for localboot).
+	// Without this, the old root_path stays in the DHCP reservation and iPXE sanboots
+	// from the install ISO again on next reboot.
+	updatedBMH, _ := p.bareMetalHosts.Get(matchedKey)
+	if updatedBMH != nil {
+		p.syncBMHToNetwork(r.Context(), updatedBMH,
+			updatedBMH.Spec.Network,                        // oldDataNetwork (unchanged)
+			updatedBMH.Spec.BMC.Network,                    // oldIPMINetwork (unchanged)
+			updatedBMH.Name,                                // oldHostname (unchanged)
+			updatedBMH.Spec.IP,                             // oldIP (unchanged)
+		)
+	}
+
 	p.deps.Logger.Infow("boot-complete: switched to localboot", "bmh", matchedBMH.Name, "ip", sourceIP)
 
 	w.Header().Set("Content-Type", "application/json")
