@@ -596,9 +596,14 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			BootFileEFI: bmh.Spec.BootFileEFI,
 		}
 
-		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway
+		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway.
+		// If image is "localboot", set iPXE boot URL to exit script so iPXE returns to
+		// BIOS and the server boots from local disk.
 		if bmh.Spec.Image != "" {
-			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
+			if bmh.Spec.Image == "localboot" {
+				apiAddr := p.deps.Config.DefaultNetwork().Gateway + ":8082"
+				res.IPXEBootURL = fmt.Sprintf("http://%s/api/v1/ipxe/localboot", apiAddr)
+			} else if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
 				if net, ok := p.networks.Get(bmh.Spec.Network); ok {
 					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
 					log.Infow("BMH reservation root_path set", "bmh", bmh.Name, "image", bmh.Spec.Image, "root_path", res.RootPath)

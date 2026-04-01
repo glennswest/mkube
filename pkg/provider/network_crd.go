@@ -98,6 +98,7 @@ type NetworkDHCPReservation struct {
 	NextServer  string   `json:"nextServer,omitempty"`  // per-host PXE next-server
 	BootFile    string   `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
 	BootFileEFI string   `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
+	IPXEBootURL string   `json:"ipxeBootUrl,omitempty"` // iPXE script URL (overrides sanboot)
 	RootPath    string   `json:"rootPath,omitempty"`     // iSCSI root path (option 17)
 }
 

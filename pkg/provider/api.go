@@ -122,6 +122,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/bootconfigs/{name}/files/{filename}", p.handleUploadBootConfigFile)
 	mux.HandleFunc("GET /api/v1/bootconfig", p.handleBootConfigLookup)
 	mux.HandleFunc("POST /api/v1/boot-complete", p.handleBootComplete)
+	mux.HandleFunc("GET /api/v1/ipxe/localboot", handleIPXELocalboot)
 
 	// DNS/DHCP Proxy Resources (proxied to microdns, namespace = network name)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/dnsrecords", p.handleListDNSRecords)
@@ -1704,6 +1705,16 @@ func formatAge(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// handleIPXELocalboot returns an iPXE script that tells iPXE to exit,
+// returning control to the BIOS which then boots from the local disk.
+// Used when a BMH has image=localboot — iPXE fetches this script instead
+// of sanbooting an iSCSI target.
+func handleIPXELocalboot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "#!ipxe\nexit\n")
 }
 
 func podWriteJSON(w http.ResponseWriter, status int, v interface{}) {
