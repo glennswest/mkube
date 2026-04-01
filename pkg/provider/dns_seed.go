@@ -192,7 +192,7 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		NextServer:  r.NextServer,
 		BootFile:    r.BootFile,
 		BootFileEFI: r.BootFileEFI,
-		RootPath:    r.RootPath,
+		RootPath:    dns.StringPtr(r.RootPath),
 	}
 }
 

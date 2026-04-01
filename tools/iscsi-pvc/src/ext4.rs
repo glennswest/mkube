@@ -12,14 +12,12 @@ use byteorder::{LittleEndian, ByteOrder};
 const EXT4_SUPER_MAGIC: u16 = 0xEF53;
 const EXT4_BLOCK_SIZE: u32 = 4096; // 4KB blocks
 const EXT4_INODE_SIZE: u16 = 256;
-const EXT4_INODES_PER_GROUP: u32 = 8192;
 const EXT4_LOG_BLOCK_SIZE: u32 = 2; // log2(4096/1024) = 2
 
 // Feature flags
 const EXT4_FEATURE_COMPAT_EXT_ATTR: u32 = 0x0008;
 const EXT4_FEATURE_INCOMPAT_FILETYPE: u32 = 0x0002;
 const EXT4_FEATURE_INCOMPAT_EXTENTS: u32 = 0x0040;
-const EXT4_FEATURE_INCOMPAT_FLEX_BG: u32 = 0x0200;
 const EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
 const EXT4_FEATURE_RO_COMPAT_LARGE_FILE: u32 = 0x0002;
 const EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE: u32 = 0x0040;
@@ -80,9 +78,15 @@ pub async fn format_ext4(writer: &mut dyn BlockWriter, total_bytes: u64, uuid: [
     // Calculate group parameters
     let blocks_per_group: u32 = block_size * 8; // bitmap covers block_size*8 blocks
     let group_count = ((total_blocks + blocks_per_group as u64 - 1) / blocks_per_group as u64) as u32;
-    let inodes_per_group = EXT4_INODES_PER_GROUP;
+
+    // Scale inodes to volume size: 1 inode per 16 KB (like mkfs.ext4 default).
+    // Round up to multiple of (block_size / inode_size) so inode table fills whole blocks.
+    let inodes_per_block = block_size / EXT4_INODE_SIZE as u32; // 16 for 4K/256
+    let raw_inodes = (total_bytes / 16384) as u32;
+    let per_group_raw = (raw_inodes / group_count).max(inodes_per_block);
+    let inodes_per_group = ((per_group_raw + inodes_per_block - 1) / inodes_per_block) * inodes_per_block;
     let total_inodes = inodes_per_group * group_count;
-    let inode_table_blocks = (inodes_per_group * EXT4_INODE_SIZE as u32 + block_size - 1) / block_size;
+    let inode_table_blocks = (inodes_per_group * EXT4_INODE_SIZE as u32) / block_size;
     let first_data_block: u32 = if block_size == 1024 { 1 } else { 0 };
     let sb_block: u64 = first_data_block as u64;
     let gdt_blocks: u64 = 1; // 1 block for GDT (supports up to 64 groups with 64-byte descriptors)

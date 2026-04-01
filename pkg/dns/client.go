@@ -579,7 +579,17 @@ type DHCPReservation struct {
 	BootFile    string   `json:"boot_file,omitempty"`
 	BootFileEFI string   `json:"boot_file_efi,omitempty"`
 	IPXEBootURL string   `json:"ipxe_boot_url,omitempty"`
-	RootPath    string   `json:"root_path,omitempty"`
+	RootPath    *string  `json:"root_path"`
+}
+
+// StringPtr returns a pointer to s if non-empty, or nil if empty.
+// Used for fields like RootPath where nil serializes as JSON null
+// to explicitly clear the value in microdns PATCH requests.
+func StringPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // ListDHCPReservations returns all DHCP reservations from a microdns instance.

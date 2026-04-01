@@ -721,7 +721,7 @@ func (p *MicroKubeProvider) handleCreateDHCPReservation(w http.ResponseWriter, r
 		BootFile:    res.Spec.BootFile,
 		BootFileEFI: res.Spec.BootFileEFI,
 		IPXEBootURL: res.Spec.IPXEBootURL,
-		RootPath:    res.Spec.RootPath,
+		RootPath:    dns.StringPtr(res.Spec.RootPath),
 	}
 
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
@@ -754,7 +754,7 @@ func (p *MicroKubeProvider) handleUpdateDHCPReservation(w http.ResponseWriter, r
 		BootFile:    res.Spec.BootFile,
 		BootFileEFI: res.Spec.BootFileEFI,
 		IPXEBootURL: res.Spec.IPXEBootURL,
-		RootPath:    res.Spec.RootPath,
+		RootPath:    dns.StringPtr(res.Spec.RootPath),
 	}
 
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
@@ -796,7 +796,7 @@ func (p *MicroKubeProvider) handlePatchDHCPReservation(w http.ResponseWriter, r 
 		BootFile:    merged.Spec.BootFile,
 		BootFileEFI: merged.Spec.BootFileEFI,
 		IPXEBootURL: merged.Spec.IPXEBootURL,
-		RootPath:    merged.Spec.RootPath,
+		RootPath:    dns.StringPtr(merged.Spec.RootPath),
 	}
 	if err := p.deps.NetworkMgr.DNSClient().UpsertDHCPReservation(r.Context(), endpoint, reservation); err != nil {
 		http.Error(w, fmt.Sprintf("patching DHCP reservation: %v", err), http.StatusBadGateway)
@@ -829,6 +829,10 @@ func (p *MicroKubeProvider) handleDeleteDHCPReservation(w http.ResponseWriter, r
 }
 
 func dhcpReservationToResource(res dns.DHCPReservation, ns string) DHCPReservationResource {
+	var rootPath string
+	if res.RootPath != nil {
+		rootPath = *res.RootPath
+	}
 	return DHCPReservationResource{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "DHCPReservation"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -843,7 +847,7 @@ func dhcpReservationToResource(res dns.DHCPReservation, ns string) DHCPReservati
 			BootFile:    res.BootFile,
 			BootFileEFI: res.BootFileEFI,
 			IPXEBootURL: res.IPXEBootURL,
-			RootPath:    res.RootPath,
+			RootPath:    rootPath,
 		},
 	}
 }
