@@ -582,13 +582,11 @@ type DHCPReservation struct {
 	RootPath    *string  `json:"root_path"`
 }
 
-// StringPtr returns a pointer to s if non-empty, or nil if empty.
-// Used for fields like RootPath where nil serializes as JSON null
-// to explicitly clear the value in microdns PATCH requests.
+// StringPtr returns a pointer to s. Used for fields like RootPath
+// where the pointer distinguishes "set to empty" from "not present".
+// An empty string serializes as "" in JSON, which tells microdns to
+// suppress the pool default (e.g. no iSCSI root_path for localboot).
 func StringPtr(s string) *string {
-	if s == "" {
-		return nil
-	}
 	return &s
 }
 
