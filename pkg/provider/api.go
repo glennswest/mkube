@@ -122,7 +122,8 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/bootconfigs/{name}/files/{filename}", p.handleUploadBootConfigFile)
 	mux.HandleFunc("GET /api/v1/bootconfig", p.handleBootConfigLookup)
 	mux.HandleFunc("POST /api/v1/boot-complete", p.handleBootComplete)
-	mux.HandleFunc("GET /api/v1/ipxe/localboot", handleIPXELocalboot)
+	mux.HandleFunc("GET /api/v1/ipxe/boot", p.handleIPXEBoot)
+	mux.HandleFunc("GET /api/v1/ipxe/localboot", handleIPXELocalboot) // legacy
 
 	// DNS/DHCP Proxy Resources (proxied to microdns, namespace = network name)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/dnsrecords", p.handleListDNSRecords)

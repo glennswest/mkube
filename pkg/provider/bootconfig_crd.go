@@ -465,6 +465,96 @@ func (p *MicroKubeProvider) handleBootConfigLookup(w http.ResponseWriter, r *htt
 	_, _ = io.WriteString(w, content)
 }
 
+// handleIPXEBoot returns a dynamic iPXE script based on the requesting BMH's image.
+// For CDROM images: returns sanboot with the iSCSI target, then immediately switches
+// the BMH to localboot (boot-once semantic). For localboot: returns exit.
+// This eliminates the need for kickstart %post to call boot-complete.
+func (p *MicroKubeProvider) handleIPXEBoot(w http.ResponseWriter, r *http.Request) {
+	sourceIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		sourceIP = r.RemoteAddr
+	}
+
+	// Find BMH by source IP
+	var matchedBMH *BareMetalHost
+	var matchedKey string
+	for key, bmh := range p.bareMetalHosts.Snapshot() {
+		if bmh.Spec.IP == sourceIP {
+			matchedBMH = bmh
+			matchedKey = key
+			break
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+
+	if matchedBMH == nil {
+		p.deps.Logger.Warnw("iPXE boot: no BMH found for IP, returning exit", "ip", sourceIP)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "#!ipxe\nexit\n")
+		return
+	}
+
+	image := matchedBMH.Spec.Image
+	p.deps.Logger.Infow("iPXE boot request", "bmh", matchedBMH.Name, "ip", sourceIP, "image", image)
+
+	if image == "localboot" || image == "" {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "#!ipxe\nexit\n")
+		return
+	}
+
+	// Look up CDROM iSCSI target
+	cdrom, ok := p.iscsiCdroms.Get(image)
+	if !ok || cdrom.Status.TargetIQN == "" {
+		p.deps.Logger.Warnw("iPXE boot: CDROM not found or no IQN, returning exit",
+			"bmh", matchedBMH.Name, "image", image)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "#!ipxe\nexit\n")
+		return
+	}
+
+	// Get iSCSI portal IP from the BMH's network gateway
+	portalIP := ""
+	if net, ok := p.networks.Get(matchedBMH.Spec.Network); ok {
+		portalIP = net.Spec.Gateway
+	}
+	if portalIP == "" {
+		portalIP = p.deps.Config.DefaultNetwork().Gateway
+	}
+
+	iscsiTarget := fmt.Sprintf("iscsi:%s::::%s", portalIP, cdrom.Status.TargetIQN)
+	p.deps.Logger.Infow("iPXE boot: serving sanboot (boot-once)",
+		"bmh", matchedBMH.Name, "target", iscsiTarget)
+
+	// Serve the sanboot script
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "#!ipxe\nsanboot %s\n", iscsiTarget)
+
+	// Immediately switch BMH to localboot (boot-once: next boot goes to disk)
+	go func() {
+		ctx := context.Background()
+		if err := p.updateBMHFields(ctx, matchedKey, func(b *BareMetalHost) {
+			b.Spec.Image = "localboot"
+		}); err != nil {
+			p.deps.Logger.Errorw("iPXE boot: failed to switch to localboot",
+				"bmh", matchedBMH.Name, "error", err)
+			return
+		}
+		// Re-sync DHCP so next boot gets the exit script
+		updatedBMH, _ := p.bareMetalHosts.Get(matchedKey)
+		if updatedBMH != nil {
+			p.syncBMHToNetwork(ctx, updatedBMH,
+				updatedBMH.Spec.Network,
+				updatedBMH.Spec.BMC.Network,
+				updatedBMH.Name,
+				updatedBMH.Spec.IP,
+			)
+		}
+		p.deps.Logger.Infow("iPXE boot: auto-switched to localboot", "bmh", matchedBMH.Name)
+	}()
+}
+
 // handleBootComplete is called by a booting server after install completes.
 // Resolves source IP → BMH, sets spec.image to "localboot" so next reboot goes to disk.
 // Usage: curl -X POST http://192.168.200.2:8082/api/v1/boot-complete

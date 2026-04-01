@@ -596,22 +596,16 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			BootFileEFI: bmh.Spec.BootFileEFI,
 		}
 
-		// If BMH has a specific image, resolve iSCSI root_path from CDROM + network gateway.
-		// If image is "localboot", set iPXE boot URL to exit script so iPXE returns to
-		// BIOS and the server boots from local disk.
-		if bmh.Spec.Image != "" {
-			if bmh.Spec.Image == "localboot" {
-				apiBase := strings.TrimRight(p.deps.Config.Console.APIBase, "/")
-				if apiBase == "" {
-					apiBase = fmt.Sprintf("http://%s:8082", p.deps.Config.DefaultNetwork().Gateway)
-				}
-				res.IPXEBootURL = apiBase + "/api/v1/ipxe/localboot"
-			} else if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
-				if net, ok := p.networks.Get(bmh.Spec.Network); ok {
-					res.RootPath = fmt.Sprintf("iscsi:%s::::%s", net.Spec.Gateway, cdrom.Status.TargetIQN)
-					log.Infow("BMH reservation root_path set", "bmh", bmh.Name, "image", bmh.Spec.Image, "root_path", res.RootPath)
-				}
+		// All BMH images use a dynamic iPXE boot script endpoint.
+		// The endpoint returns sanboot for CDROM images (and auto-switches
+		// to localboot) or exit for localboot. This avoids root_path in
+		// DHCP reservations entirely — iPXE fetches the script and acts on it.
+		if bmh.Spec.Image != "" && bmh.Spec.Image != "baremetalservices" {
+			apiBase := strings.TrimRight(p.deps.Config.Console.APIBase, "/")
+			if apiBase == "" {
+				apiBase = fmt.Sprintf("http://%s:8082", p.deps.Config.DefaultNetwork().Gateway)
 			}
+			res.IPXEBootURL = apiBase + "/api/v1/ipxe/boot"
 		}
 
 		p.upsertNetworkReservation(ctx, bmh.Spec.Network, res, bmh.Name)
