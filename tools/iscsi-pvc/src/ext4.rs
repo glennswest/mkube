@@ -75,6 +75,13 @@ pub async fn format_ext4(writer: &mut dyn BlockWriter, total_bytes: u64, uuid: [
     let block_size = writer.block_size();
     let total_blocks = total_bytes / block_size as u64;
 
+    // RouterOS requires >= 1024 blocks (4 MiB with 4K blocks) for ext4.
+    anyhow::ensure!(
+        total_blocks >= 1024,
+        "volume too small for ext4: {} blocks ({} bytes), minimum 1024 blocks (4 MiB)",
+        total_blocks, total_bytes
+    );
+
     // Calculate group parameters
     let blocks_per_group: u32 = block_size * 8; // bitmap covers block_size*8 blocks
     let group_count = ((total_blocks + blocks_per_group as u64 - 1) / blocks_per_group as u64) as u32;
@@ -84,7 +91,9 @@ pub async fn format_ext4(writer: &mut dyn BlockWriter, total_bytes: u64, uuid: [
     let inodes_per_block = block_size / EXT4_INODE_SIZE as u32; // 16 for 4K/256
     let raw_inodes = (total_bytes / 16384) as u32;
     let per_group_raw = (raw_inodes / group_count).max(inodes_per_block);
-    let inodes_per_group = ((per_group_raw + inodes_per_block - 1) / inodes_per_block) * inodes_per_block;
+    // Enforce minimum 256 inodes/group — RouterOS needs sufficient inode table density.
+    let per_group_clamped = per_group_raw.max(256);
+    let inodes_per_group = ((per_group_clamped + inodes_per_block - 1) / inodes_per_block) * inodes_per_block;
     let total_inodes = inodes_per_group * group_count;
     let inode_table_blocks = (inodes_per_group * EXT4_INODE_SIZE as u32) / block_size;
     let first_data_block: u32 = if block_size == 1024 { 1 } else { 0 };

@@ -91,6 +91,12 @@ func (p *MicroKubeProvider) provisionISCSIPVC(ctx context.Context, pvc *corev1.P
 	if sizeBytes <= 0 {
 		sizeBytes = 100 * 1024 * 1024 // default 100 MiB
 	}
+	// RouterOS requires >= 4 MiB for ext4 with 4K blocks (1024 block minimum).
+	const minISCSIPVCSize int64 = 4 * 1024 * 1024
+	if sizeBytes < minISCSIPVCSize {
+		log.Infow("PVC size below 4 MiB minimum, rounding up", "requested", sizeBytes, "minimum", minISCSIPVCSize)
+		sizeBytes = minISCSIPVCSize
+	}
 	log.Infow("provisioning iSCSI PVC", "filePath", filePath, "size", formatSizeForRouterOS(sizeBytes))
 
 	// Ensure the volumes directory exists

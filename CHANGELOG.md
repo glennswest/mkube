@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-03-31
+- **fix:** ext4 formatter inode scaling for small volumes — inodes per group now scales at 1 per 16 KB (matching mkfs.ext4 default) instead of constant 8192. Fixes inode table consuming most of the volume for disks < 128 MiB (e.g. 8192 inodes × 256 bytes = 2 MiB just for inodes in a 10 MiB volume). Enforces minimum 256 inodes/group for safety.
+- **fix:** 4 MiB minimum for iSCSI PVC — RouterOS requires >= 1024 ext4 blocks (4 MiB with 4K blocks) to detect and mount the filesystem. Provisioner now rounds up PVC sizes below 4 MiB automatically. iscsi-pvc tool returns clear error if volume is too small.
 - **fix:** Wire Secret encryption key loading into startup — `LoadOrGenerateKey()` was implemented but never called during mkube boot. Both immediate and deferred NATS boot paths now load/generate the AES-256 key. Set default `SecretKeyPath` to `/data/mkube/secret.key` in config. Without this fix, all Secret operations returned "encryption key not set".
 - **feat:** Secret resource support — full CRUD API at `/api/v1/namespaces/{ns}/secrets` with encrypted-at-rest storage (AES-256-GCM) in NATS JetStream KV. Secrets are stored encrypted; decrypted only when read by the API or resolved into pods. List responses redact Data fields. Watch endpoint supported.
 - **feat:** Secret volume mounts — pods can mount Secrets as files (same pattern as ConfigMaps). Secret files written with 0600 permissions. Reconcile loop syncs secret files to disk and triggers pod recreation on changes.
