@@ -645,26 +645,39 @@ func (c *Client) UpsertDHCPReservation(ctx context.Context, endpoint string, res
 	}
 
 	if resp.StatusCode == http.StatusConflict {
-		// MAC exists, PATCH instead
+		// MAC exists — DELETE then re-POST for a full replace.
+		// PATCH can't clear nullable fields (serde Option<Option<T>> ignores JSON null).
 		mac := strings.ToLower(res.MAC)
-		patchReq, err := http.NewRequestWithContext(ctx, http.MethodPatch,
-			endpoint+"/api/v1/dhcp/reservations/"+mac, bytes.NewReader(payload))
+		delReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+			endpoint+"/api/v1/dhcp/reservations/"+mac, nil)
 		if err != nil {
-			return fmt.Errorf("building reservation patch request: %w", err)
+			return fmt.Errorf("building reservation delete request: %w", err)
 		}
-		patchReq.Header.Set("Content-Type", "application/json")
-
-		patchResp, err := c.http.Do(patchReq)
+		delResp, err := c.http.Do(delReq)
 		if err != nil {
-			return fmt.Errorf("patching DHCP reservation %s: %w", mac, err)
+			return fmt.Errorf("deleting DHCP reservation %s for re-create: %w", mac, err)
 		}
-		defer patchResp.Body.Close()
-		body, _ := io.ReadAll(patchResp.Body)
+		delResp.Body.Close()
 
-		if patchResp.StatusCode != http.StatusOK {
-			return fmt.Errorf("patching DHCP reservation: HTTP %d: %s", patchResp.StatusCode, string(body))
+		// Re-POST with full reservation
+		createReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			endpoint+"/api/v1/dhcp/reservations", bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("building reservation re-create request: %w", err)
 		}
-		c.log.Debugw("DHCP reservation updated", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
+		createReq.Header.Set("Content-Type", "application/json")
+
+		createResp, err := c.http.Do(createReq)
+		if err != nil {
+			return fmt.Errorf("re-creating DHCP reservation %s: %w", mac, err)
+		}
+		defer createResp.Body.Close()
+		body, _ := io.ReadAll(createResp.Body)
+
+		if createResp.StatusCode != http.StatusCreated && createResp.StatusCode != http.StatusOK {
+			return fmt.Errorf("re-creating DHCP reservation: HTTP %d: %s", createResp.StatusCode, string(body))
+		}
+		c.log.Debugw("DHCP reservation replaced", "mac", res.MAC, "ip", res.IP, "endpoint", endpoint)
 		return nil
 	}
 
