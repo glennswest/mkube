@@ -621,9 +621,9 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			}
 		}
 
-		// For install images, set root_path directly in the DHCP reservation
-		// so the iSCSI target is available even if iPXE doesn't fetch the boot script.
-		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" && bmh.Spec.Image != "baremetalservices" {
+		// For any iSCSI-booted image, set root_path directly in the DHCP reservation.
+		// This covers both install images (fedora43, etc.) and runtime images (baremetalservices).
+		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" {
 			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
 				portalIP := ""
 				if n, ok := p.networks.Get(bmh.Spec.Network); ok {
