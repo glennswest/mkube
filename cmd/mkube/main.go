@@ -553,6 +553,7 @@ func runSharedServices(
 	go p.RunDHCPWatcher(ctx)
 	go p.RunJobScheduler(ctx)
 	go p.RunResourceWatchers(ctx)
+	go p.RunBMCController(ctx)
 	p.StartInfraHealthWatchers(ctx)
 	p.StartISOScanner(ctx, 30*time.Second)
 

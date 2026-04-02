@@ -227,6 +227,8 @@ func (p *MicroKubeProvider) schedulePendingJobs(ctx context.Context, log interfa
 						// Clear manual-power annotation — scheduler takes power control
 						delete(b.Annotations, "bmh.mkube.io/manual-power")
 					})
+					// Enqueue IPMI power-on for install/provisioning
+					p.enqueueBMCPowerEvent(bmh, false, true)
 				}
 				break
 			}
@@ -445,6 +447,7 @@ func (p *MicroKubeProvider) checkIdleRunners(ctx context.Context, log interface{
 						offline := false
 						b.Spec.Online = &offline
 					})
+					p.enqueueBMCPowerEvent(bmh, true, false)
 					log.Infow("powering off idle host",
 						"bmh", bmh.Name,
 						"pool", pool,
@@ -480,6 +483,7 @@ func (p *MicroKubeProvider) ensureScheduledHostsOnline(ctx context.Context, log 
 						online := true
 						b.Spec.Online = &online
 					})
+					p.enqueueBMCPowerEvent(bmh, false, true)
 					log.Infow("powering on host for scheduled work hours",
 						"bmh", bmh.Name,
 						"pool", pool,

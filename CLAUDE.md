@@ -47,6 +47,7 @@ go test ./...                                    # Run tests
 | `pkg/cluster/` | Multi-node clustering (peer health, push sync, full resync) |
 | `pkg/diskimg/` | Pure Go disk image converters (VMDK, QCOW2, VHD → raw) |
 | `pkg/podman/` | Pure Go Podman REST API client via Unix socket |
+| `pkg/bmc/` | IPMI BMC client for power control and boot device management |
 
 ### Backends
 | Backend | Config key | Runtime adapter | Network driver |
@@ -111,7 +112,7 @@ Known test failures (pre-existing):
 ### Current Version: `v6.0.0`
 
 ### TODO (priority order)
-1. **BareMetalHost Operator (BMO)**: Full host state machine, IPMI power control, serial proxy, Redfish, ownership model. Separate project repo.
+1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
 3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
 4. **Track external microdns instances**: gw DNS on pvex needs proper sync.
@@ -125,6 +126,7 @@ Known test failures (pre-existing):
 12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
 
 ### Completed (recent)
+- [x] IPMI boot device control — `pkg/bmc/` package with pure-Go IPMI client. Install images auto-set PXE boot, then switch to disk after DHCP lease detected. Prevents infinite reinstall loop.
 - [x] Secret resource support — full CRUD API with AES-256-GCM encrypted-at-rest storage in NATS. Volume mounts, env var injection (Secrets + ConfigMaps), cluster sync, YAML export/import.
 - [x] Fix `fixOrphanedVolumeMounts` cross-pod PVC contamination — hardcoded `{ns}-dns-data` for ALL orphaned data mounts, causing netwatch to get DNS pod's PVC. Now derives PVC name from pod name.
 - [x] iSCSI-backed PVC provisioning — Rust prototype (tools/iscsi-pvc) + Go integration (pkg/provider/pvc_iscsi.go)

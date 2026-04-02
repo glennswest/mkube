@@ -25,6 +25,7 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/glennswest/mkube/pkg/bmc"
 	"github.com/glennswest/mkube/pkg/cluster"
 	"github.com/glennswest/mkube/pkg/config"
 	"github.com/glennswest/mkube/pkg/lifecycle"
@@ -127,6 +128,7 @@ type MicroKubeProvider struct {
 	consistencyCacheAt time.Time                             // when the cache was last refreshed
 	reseedRunning      atomic.Bool                           // guards triggerNetworkReseed against goroutine leaks
 	clusterMgr         *cluster.Manager                      // nil if clustering is disabled
+	bmcController      *bmc.Controller                       // nil if no BMHs have BMC addresses
 	kickReconcile      chan struct{}                          // event-driven reconcile trigger (buffered 1)
 	kickScheduler      chan struct{}                          // event-driven scheduler trigger (buffered 1)
 }
@@ -165,6 +167,9 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadStoragePoolsFromStore(context.Background())
 	p.DiscoverStoragePools(context.Background())
 	p.startDHCPSubscription(context.Background())
+	if p.bmcController != nil {
+		p.bmcController.SetStore(s)
+	}
 	go p.RunResourceWatchers(context.Background())
 	// Seed consistency cache after startup settles — delay 30s so the initial
 	// heavy checks (pod liveness, microdns services) don't block API endpoints
@@ -226,6 +231,9 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		kickReconcile:    make(chan struct{}, 1),
 		kickScheduler:    make(chan struct{}, 1),
 	}
+
+	// Initialize BMC controller for IPMI power management
+	p.bmcController = p.initBMCController(deps.Store)
 
 	// Load built-in default ConfigMaps derived from mkube config
 	for _, cm := range generateDefaultConfigMaps(deps.Config) {

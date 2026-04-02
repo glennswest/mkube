@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-04-02
+- **feat:** IPMI boot device control for BMH — new `pkg/bmc/` package with pure-Go IPMI client (`bougou/go-ipmi`). When a BMH with `spec.bmc.address` is powered on with an install image (e.g. `spec.image: fedora43`), mkube sets IPMI boot device to PXE, powers on, watches for DHCP lease on the boot MAC, then sets boot device to Disk and switches image to `localboot`. Prevents infinite PXE reinstall loop. Normal power on/off (localboot, baremetalservices) skips boot device override. Job scheduler and manual API power transitions both enqueue BMC events. 8 unit tests.
+
 ### 2026-04-01
 - **fix:** iPXE boot URL now resolves `mkube.{zone}` to an IP at runtime instead of using Console.APIBase or the gateway IP. iPXE clients don't have DNS during early boot, so the DHCP reservation gets a numeric IP (e.g. `http://192.168.200.2:8082/api/v1/ipxe/boot`).
 

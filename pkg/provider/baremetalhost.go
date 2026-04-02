@@ -340,6 +340,11 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 
 	p.bareMetalHosts.Set(key, &bmh)
 
+	// Enqueue BMC power event on power transitions
+	if isOnline != wasOnline {
+		p.enqueueBMCPowerEvent(&bmh, wasOnline, isOnline)
+	}
+
 	// Clean up DHCP reservations for NICs that were removed
 	p.cleanRemovedNICs(r.Context(), existing, &bmh)
 
@@ -419,6 +424,11 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	}
 
 	p.bareMetalHosts.Set(key, merged)
+
+	// Enqueue BMC power event on power transitions
+	if isOnline != wasOnline {
+		p.enqueueBMCPowerEvent(merged, wasOnline, isOnline)
+	}
 
 	// Clean up DHCP reservations for NICs that were removed
 	p.cleanRemovedNICs(r.Context(), existing, merged)
