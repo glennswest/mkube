@@ -159,12 +159,16 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 		}
 		p.networks.Set(net.Name, &net)
 
-		// Register with IPAM if not already known (CRD-only networks like
-		// g8/g9 are not in config.yaml and need dynamic registration)
+		// Register new networks with IPAM (CRD-only networks like g8/g9
+		// are not in config.yaml and need dynamic registration), and update
+		// existing networks so NATS-persisted changes (bridge, gateway, etc.)
+		// override the static config.
 		if p.deps.NetworkMgr != nil {
-			if err := p.deps.NetworkMgr.RegisterNetwork(networkToNetworkDef(&net)); err != nil {
+			nd := networkToNetworkDef(&net)
+			if err := p.deps.NetworkMgr.RegisterNetwork(nd); err != nil {
 				p.deps.Logger.Warnw("failed to register network with IPAM on load", "network", net.Name, "error", err)
 			}
+			p.deps.NetworkMgr.UpdateNetwork(nd)
 		}
 	}
 
