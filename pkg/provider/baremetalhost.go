@@ -607,10 +607,11 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			BootFileEFI: bmh.Spec.BootFileEFI,
 		}
 
-		// Set iPXE boot URL for non-baremetalservices images.
-		// The endpoint returns sanboot for CDROM images (and auto-switches
-		// to localboot) or exit for localboot.
-		if bmh.Spec.Image != "" && bmh.Spec.Image != "baremetalservices" {
+		// Set iPXE boot URL for all non-empty images. The iPXE endpoint returns:
+		// - sanboot for CDROM/install images (auto-switches to localboot)
+		// - sanboot for baremetalservices (persistent, no auto-switch)
+		// - exit for localboot (boots from disk)
+		if bmh.Spec.Image != "" {
 			// Build mkube's own API URL with a resolved IP so iPXE doesn't need DNS.
 			mkubeHost := "mkube." + p.deps.Config.DefaultNetwork().DNS.Zone
 			if ips, err := net.LookupHost(mkubeHost); err == nil && len(ips) > 0 {
@@ -621,9 +622,11 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			}
 		}
 
-		// For any iSCSI-booted image, set root_path directly in the DHCP reservation.
-		// This covers both install images (fedora43, etc.) and runtime images (baremetalservices).
-		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" {
+		// For install images only, set root_path directly in the DHCP reservation.
+		// Do NOT set root_path for baremetalservices — Intel iBFT tries to iSCSI-boot
+		// from root_path before chain-loading iPXE, causing PXE-E79 on legacy PXE NICs.
+		// baremetalservices boots via iPXE chain-load → ipxe_boot_url → sanboot script.
+		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" && bmh.Spec.Image != "baremetalservices" {
 			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
 				portalIP := ""
 				if n, ok := p.networks.Get(bmh.Spec.Network); ok {

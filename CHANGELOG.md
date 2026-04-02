@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### 2026-04-02
-- **fix:** BMH DHCP reservations now set `root_path` with iSCSI target URI for all iSCSI-booted images (install images AND baremetalservices). Previously only `IPXEBootURL` was set for install images, and baremetalservices hosts got empty root_path which suppressed the pool default. Now looks up ISCSICdrom store for any non-localboot image and sets `root_path = iscsi:{gateway}::::{iqn}`.
+- **fix:** baremetalservices PXE-E79 boot failure — Intel iBFT tries to iSCSI-boot from `root_path` before chain-loading iPXE, causing "NBP is too big" on legacy PXE NICs. Fix: baremetalservices hosts now get `ipxe_boot_url` (iPXE chain-loads sanboot script) instead of `root_path`. Install images keep both. iPXE boot endpoint no longer switches baremetalservices to localboot (persistent runtime image, not one-shot install).
 - **feat:** IPMI boot device control for BMH — new `pkg/bmc/` package with pure-Go IPMI client (`bougou/go-ipmi`). When a BMH with `spec.bmc.address` is powered on with an install image (e.g. `spec.image: fedora43`), mkube sets IPMI boot device to PXE, powers on, watches for DHCP lease on the boot MAC, then sets boot device to Disk and switches image to `localboot`. Prevents infinite PXE reinstall loop. Normal power on/off (localboot, baremetalservices) skips boot device override. Job scheduler and manual API power transitions both enqueue BMC events. 8 unit tests.
 
 ### 2026-04-01
