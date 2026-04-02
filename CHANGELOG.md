@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-04-02
+- **fix:** BMH CDROM images now set `root_path` in DHCP reservation with the iSCSI target URI (`iscsi:{gateway}::::{iqn}`). Previously only `IPXEBootURL` was set, but iPXE ignores HTTP URLs in the DHCP boot file field, so CDROM installs failed without manual DHCP patching. The iSCSI root_path is looked up from the ISCSICdrom store at DHCP reservation sync time.
 - **feat:** IPMI boot device control for BMH — new `pkg/bmc/` package with pure-Go IPMI client (`bougou/go-ipmi`). When a BMH with `spec.bmc.address` is powered on with an install image (e.g. `spec.image: fedora43`), mkube sets IPMI boot device to PXE, powers on, watches for DHCP lease on the boot MAC, then sets boot device to Disk and switches image to `localboot`. Prevents infinite PXE reinstall loop. Normal power on/off (localboot, baremetalservices) skips boot device override. Job scheduler and manual API power transitions both enqueue BMC events. 8 unit tests.
 
 ### 2026-04-01
