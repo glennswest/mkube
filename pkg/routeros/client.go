@@ -285,28 +285,95 @@ func (c *Client) RemoveVeth(ctx context.Context, name string) error {
 
 // AddBridgePort adds a veth to a bridge.
 // Idempotent: if the interface is already on the correct bridge, returns nil.
-// If on a different bridge, removes and re-adds.
+// If on a different bridge, removes and re-adds. If the existing port is
+// dynamic (auto-created by RouterOS when a container starts without a static
+// port), it cannot be removed directly — the veth is deleted and recreated
+// to clear the dynamic assignment.
 func (c *Client) AddBridgePort(ctx context.Context, bridge, iface string) error {
-	ports, err := c.ListBridgePorts(ctx)
-	if err != nil {
-		return fmt.Errorf("listing bridge ports for idempotent add %q: %w", iface, err)
+	// Use filtered query instead of listing all ports (can be 8000+).
+	var ports []BridgePort
+	if err := c.restGET(ctx, "/interface/bridge/port?interface="+iface, &ports); err != nil {
+		return fmt.Errorf("querying bridge port for %q: %w", iface, err)
 	}
 	for _, p := range ports {
-		if p.Interface == iface {
-			if p.Bridge == bridge {
-				return nil // already on correct bridge
-			}
-			// on wrong bridge — remove first
-			if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
-				return fmt.Errorf("removing %q from bridge %q: %w", iface, p.Bridge, err)
-			}
-			break
+		if p.Bridge == bridge {
+			return nil // already on correct bridge
 		}
+		// on wrong bridge — try to remove the static port
+		if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
+			if strings.Contains(err.Error(), "dynamic port") {
+				// Dynamic ports can't be removed/changed. Delete the veth
+				// and recreate it so the caller can add a clean static port.
+				if recreateErr := c.recreateVethForBridge(ctx, iface); recreateErr != nil {
+					return fmt.Errorf("clearing dynamic bridge port for %q: %w", iface, recreateErr)
+				}
+				break // veth recreated — fall through to add static port
+			}
+			return fmt.Errorf("removing %q from bridge %q: %w", iface, p.Bridge, err)
+		}
+		break
 	}
 	return c.restPOST(ctx, "/interface/bridge/port/add", map[string]string{
 		"bridge":    bridge,
 		"interface": iface,
 	}, nil)
+}
+
+// recreateVethForBridge deletes a veth and recreates it with the same config,
+// clearing any dynamic bridge port assignment that RouterOS auto-created.
+func (c *Client) recreateVethForBridge(ctx context.Context, name string) error {
+	// Capture the veth's current config before deleting it.
+	veths, err := c.ListVeths(ctx)
+	if err != nil {
+		return fmt.Errorf("listing veths: %w", err)
+	}
+	var address, gateway, id string
+	for _, v := range veths {
+		if v.Name == name {
+			address = v.Address
+			gateway = v.Gateway
+			id = v.ID
+			break
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("veth %q not found", name)
+	}
+
+	// Remove any ghost containers still referencing this veth.
+	c.removeContainersUsingVeth(ctx, name)
+
+	// Delete the veth — this also removes the dynamic bridge port.
+	if err := c.restPOST(ctx, "/interface/veth/remove", map[string]string{".id": id}, nil); err != nil {
+		return fmt.Errorf("removing veth %q: %w", name, err)
+	}
+
+	// Recreate with identical config.
+	if err := c.restPOST(ctx, "/interface/veth/add", map[string]string{
+		"name":    name,
+		"address": address,
+		"gateway": gateway,
+	}, nil); err != nil {
+		return fmt.Errorf("recreating veth %q: %w", name, err)
+	}
+	return nil
+}
+
+// removeContainersUsingVeth stops and removes any RouterOS containers that
+// reference the named veth interface. This clears stale "in use by container"
+// references that prevent veth deletion.
+func (c *Client) removeContainersUsingVeth(ctx context.Context, vethName string) {
+	var containers []Container
+	if err := c.restGET(ctx, "/container", &containers); err != nil {
+		return
+	}
+	for _, ct := range containers {
+		if ct.Interface == vethName {
+			_ = c.restPOST(ctx, "/container/stop", map[string]string{".id": ct.ID}, nil)
+			time.Sleep(2 * time.Second) // allow stop to complete
+			_ = c.restPOST(ctx, "/container/remove", map[string]string{".id": ct.ID}, nil)
+		}
+	}
 }
 
 // ListVeths returns all veth interfaces.

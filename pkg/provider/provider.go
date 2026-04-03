@@ -395,6 +395,18 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 					p.cleanupStagingResources(ctx, stagingInfo{stgName: stgName, stgVeth: stgVeth})
 				}
 
+				// If the IP is held by a differently-named veth (e.g. renamed
+				// stale veth), extract that name and release it too.
+				if strings.Contains(errMsg, "already allocated to") {
+					if staleVeth := extractAllocHolder(errMsg); staleVeth != "" && staleVeth != vethName {
+						log.Warnw("releasing stale veth holding IP", "staleVeth", staleVeth)
+						if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, staleVeth); releaseErr != nil {
+							log.Warnw("stale veth release failed, force-releasing", "staleVeth", staleVeth, "error", releaseErr)
+							p.forceReleaseVeth(ctx, staleVeth)
+						}
+					}
+				}
+
 				if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); releaseErr != nil {
 					// ReleaseInterface may fail if a container still holds the veth.
 					// Find and forcibly remove the container holding it.
@@ -3363,6 +3375,17 @@ func truncate(s string, max int) string {
 		return s[:max]
 	}
 	return s
+}
+
+// extractAllocHolder parses the veth name from an IPAM error like
+// "IP 192.168.1.252 already allocated to veth_gw_dns_STALE".
+func extractAllocHolder(errMsg string) string {
+	const marker = "already allocated to "
+	idx := strings.Index(errMsg, marker)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(errMsg[idx+len(marker):])
 }
 
 func boolToConditionStatus(b bool) corev1.ConditionStatus {
