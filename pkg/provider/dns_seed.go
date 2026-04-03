@@ -182,7 +182,7 @@ func (p *MicroKubeProvider) seedDHCPReservations(ctx context.Context, client *dn
 
 // networkReservationToDNS converts a Network CRD reservation to a DNS client reservation.
 func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
-	return dns.DHCPReservation{
+	res := dns.DHCPReservation{
 		MAC:         r.MAC,
 		IP:          r.IP,
 		Hostname:    r.Hostname,
@@ -193,8 +193,14 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		BootFile:    r.BootFile,
 		BootFileEFI: r.BootFileEFI,
 		IPXEBootURL: r.IPXEBootURL,
-		RootPath:    dns.StringPtr(r.RootPath),
 	}
+	// Only set root_path when explicitly provided. A nil pointer marshals as
+	// JSON null, telling microdns to inherit the pool default (e.g. the
+	// baremetalservices iSCSI target). An empty string would suppress it.
+	if r.RootPath != "" {
+		res.RootPath = dns.StringPtr(r.RootPath)
+	}
+	return res
 }
 
 // seedReservationDNSRecords creates DNS A records for all DHCP reservations
