@@ -194,11 +194,16 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		BootFileEFI: r.BootFileEFI,
 		IPXEBootURL: r.IPXEBootURL,
 	}
-	// Only set root_path when explicitly provided. A nil pointer marshals as
-	// JSON null, telling microdns to inherit the pool default (e.g. the
-	// baremetalservices iSCSI target). An empty string would suppress it.
+	// root_path handling:
+	//   non-empty → per-BMH override (install ISO iSCSI target)
+	//   nil       → inherit pool default (baremetalservices)
+	//   ""        → suppress pool default (localboot — no iSCSI, boot from disk)
 	if r.RootPath != "" {
 		res.RootPath = dns.StringPtr(r.RootPath)
+	} else if r.IPXEBootURL != "" {
+		// Hosts with iPXE boot URL (localboot, install) need explicit empty
+		// root_path to prevent inheriting pool default (baremetalservices).
+		res.RootPath = dns.StringPtr("")
 	}
 	return res
 }
