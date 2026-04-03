@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"time"
 
@@ -120,13 +121,19 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		NTPServers:    ntpServers,
 	}
 
-	// For data networks: set default iSCSI root_path to baremetalservices.
+	// For data networks: set pool-level ipxe_boot_url so iPXE chain-loaded clients
+	// fetch the dynamic boot script from mkube. Do NOT set pool-level root_path —
+	// Intel iBFT on legacy PXE NICs tries to iSCSI-boot from root_path before
+	// chain-loading iPXE, causing PXE-E79. Per-host iSCSI targets are served
+	// via the iPXE boot script endpoint instead.
 	if source.Spec.Type == NetworkTypeData {
-		cdrom, ok := p.iscsiCdroms.Get("baremetalservices")
-		if ok && cdrom.Status.TargetIQN != "" {
-			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
-			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
+		mkubeHost := "mkube." + p.deps.Config.DefaultNetwork().DNS.Zone
+		if ips, err := net.LookupHost(mkubeHost); err == nil && len(ips) > 0 {
+			pool.IPXEBootURL = fmt.Sprintf("http://%s:8082/api/v1/ipxe/boot", ips[0])
+		} else {
+			pool.IPXEBootURL = fmt.Sprintf("http://%s:8082/api/v1/ipxe/boot", mkubeHost)
 		}
+		log.Infow("pool ipxe_boot_url set", "network", source.Name, "url", pool.IPXEBootURL)
 	}
 
 	// Check if pool already exists — update if so, create if not
