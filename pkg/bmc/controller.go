@@ -17,6 +17,12 @@ const (
 	// dhcpLeaseTimeout is how long to wait for a DHCP lease event
 	// before falling back to setting bootdev disk anyway.
 	dhcpLeaseTimeout = 3 * time.Minute
+
+	// localbootDelay is how long to wait after setting bootdev disk
+	// before switching the image to localboot. This gives iPXE time to
+	// complete its second DHCP (which needs the install root_path) and
+	// start the sanboot before the reservation changes.
+	localbootDelay = 30 * time.Second
 )
 
 // PowerEvent is sent to the controller to request a power state change.
@@ -308,10 +314,19 @@ func (c *Controller) waitForLeaseAndSetDisk(ctx context.Context, evt PowerEvent,
 	}
 	log.Infow("IPMI boot device set to Disk (post-install)")
 
-	// Do NOT switch image to localboot here. The DHCP lease fires during
-	// PXE boot (before the installer loads), so switching now would change
-	// the DHCP reservation and cause iPXE's second DHCP to get the wrong
-	// root_path. The image stays as the install image; the switch to
-	// localboot happens via boot-complete POST from the installer's
-	// kickstart/ignition %post, or via the iPXE boot endpoint.
+	// Wait before switching to localboot. The first DHCP lease fires from
+	// Intel PXE, then iPXE does a second DHCP ~5-10s later that still needs
+	// the install root_path. We delay to ensure iPXE has completed its
+	// second DHCP and started sanboot before changing the reservation.
+	log.Infow("waiting before switching to localboot", "delay", localbootDelay)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(localbootDelay):
+	}
+
+	// Now safe to switch image to localboot for next reboot
+	if c.callbacks.OnInstallBooted != nil {
+		c.callbacks.OnInstallBooted(ctx, evt.BMHKey)
+	}
 }
