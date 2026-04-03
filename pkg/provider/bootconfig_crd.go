@@ -524,39 +524,35 @@ func (p *MicroKubeProvider) handleIPXEBoot(w http.ResponseWriter, r *http.Reques
 	}
 
 	iscsiTarget := fmt.Sprintf("iscsi:%s::::%s", portalIP, cdrom.Status.TargetIQN)
-	p.deps.Logger.Infow("iPXE boot: serving sanboot",
-		"bmh", matchedBMH.Name, "image", image, "target", iscsiTarget)
+	p.deps.Logger.Infow("iPXE boot: serving sanboot (boot-once)",
+		"bmh", matchedBMH.Name, "target", iscsiTarget)
 
 	// Serve the sanboot script
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "#!ipxe\nsanboot %s\n", iscsiTarget)
 
-	// For install images (not baremetalservices), switch to localboot after serving
-	// the sanboot script (boot-once semantics). baremetalservices is a persistent
-	// runtime image — it must keep booting from iSCSI on every reboot.
-	if image != "baremetalservices" {
-		go func() {
-			ctx := context.Background()
-			if err := p.updateBMHFields(ctx, matchedKey, func(b *BareMetalHost) {
-				b.Spec.Image = "localboot"
-			}); err != nil {
-				p.deps.Logger.Errorw("iPXE boot: failed to switch to localboot",
-					"bmh", matchedBMH.Name, "error", err)
-				return
-			}
-			// Re-sync DHCP so next boot gets the exit script
-			updatedBMH, _ := p.bareMetalHosts.Get(matchedKey)
-			if updatedBMH != nil {
-				p.syncBMHToNetwork(ctx, updatedBMH,
-					updatedBMH.Spec.Network,
-					updatedBMH.Spec.BMC.Network,
-					updatedBMH.Name,
-					updatedBMH.Spec.IP,
-				)
-			}
-			p.deps.Logger.Infow("iPXE boot: auto-switched to localboot", "bmh", matchedBMH.Name)
-		}()
-	}
+	// Immediately switch BMH to localboot (boot-once: next boot goes to disk)
+	go func() {
+		ctx := context.Background()
+		if err := p.updateBMHFields(ctx, matchedKey, func(b *BareMetalHost) {
+			b.Spec.Image = "localboot"
+		}); err != nil {
+			p.deps.Logger.Errorw("iPXE boot: failed to switch to localboot",
+				"bmh", matchedBMH.Name, "error", err)
+			return
+		}
+		// Re-sync DHCP so next boot gets the exit script
+		updatedBMH, _ := p.bareMetalHosts.Get(matchedKey)
+		if updatedBMH != nil {
+			p.syncBMHToNetwork(ctx, updatedBMH,
+				updatedBMH.Spec.Network,
+				updatedBMH.Spec.BMC.Network,
+				updatedBMH.Name,
+				updatedBMH.Spec.IP,
+			)
+		}
+		p.deps.Logger.Infow("iPXE boot: auto-switched to localboot", "bmh", matchedBMH.Name)
+	}()
 }
 
 // handleBootComplete is called by a booting server after install completes.

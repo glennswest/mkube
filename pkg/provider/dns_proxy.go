@@ -499,7 +499,7 @@ func (p *MicroKubeProvider) handleCreateDHCPPool(w http.ResponseWriter, r *http.
 		BootFile:      res.Spec.BootFile,
 		BootFileEFI:   res.Spec.BootFileEFI,
 		IPXEBootURL:   res.Spec.IPXEBootURL,
-		RootPath:      dns.StringPtr(res.Spec.RootPath),
+		RootPath:      res.Spec.RootPath,
 	}
 
 	created, err := p.deps.NetworkMgr.DNSClient().CreateDHCPPool(r.Context(), endpoint, pool)
@@ -540,7 +540,7 @@ func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.
 		BootFile:      res.Spec.BootFile,
 		BootFileEFI:   res.Spec.BootFileEFI,
 		IPXEBootURL:   res.Spec.IPXEBootURL,
-		RootPath:      dns.StringPtr(res.Spec.RootPath),
+		RootPath:      res.Spec.RootPath,
 	}
 
 	updated, err := p.deps.NetworkMgr.DNSClient().UpdateDHCPPool(r.Context(), endpoint, name, pool)
@@ -587,7 +587,7 @@ func (p *MicroKubeProvider) handlePatchDHCPPool(w http.ResponseWriter, r *http.R
 		BootFile:      merged.Spec.BootFile,
 		BootFileEFI:   merged.Spec.BootFileEFI,
 		IPXEBootURL:   merged.Spec.IPXEBootURL,
-		RootPath:      dns.StringPtr(merged.Spec.RootPath),
+		RootPath:      merged.Spec.RootPath,
 	}
 
 	updated, err := p.deps.NetworkMgr.DNSClient().UpdateDHCPPool(r.Context(), endpoint, name, pool)
@@ -621,7 +621,7 @@ func (p *MicroKubeProvider) handleDeleteDHCPPool(w http.ResponseWriter, r *http.
 }
 
 func dhcpPoolToResource(pool dns.DHCPPool, ns string) DHCPPoolResource {
-	res := DHCPPoolResource{
+	return DHCPPoolResource{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "DHCPPool"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pool.ID,
@@ -641,12 +641,9 @@ func dhcpPoolToResource(pool dns.DHCPPool, ns string) DHCPPoolResource {
 			BootFile:      pool.BootFile,
 			BootFileEFI:   pool.BootFileEFI,
 			IPXEBootURL:   pool.IPXEBootURL,
+			RootPath:      pool.RootPath,
 		},
 	}
-	if pool.RootPath != nil {
-		res.Spec.RootPath = *pool.RootPath
-	}
-	return res
 }
 
 // ─── DHCP Reservation Handlers ─────────────────────────────────────────────

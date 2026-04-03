@@ -482,7 +482,7 @@ type DHCPPool struct {
 	BootFile      string   `json:"boot_file,omitempty"`
 	BootFileEFI   string   `json:"boot_file_efi,omitempty"`
 	IPXEBootURL   string   `json:"ipxe_boot_url,omitempty"`
-	RootPath      *string  `json:"root_path"`
+	RootPath      string   `json:"root_path,omitempty"`
 	NTPServers    []string `json:"ntp_servers,omitempty"`
 }
 

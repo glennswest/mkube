@@ -3,7 +3,6 @@
 ## [Unreleased]
 
 ### 2026-04-02
-- **fix:** PXE-E79 boot failure on legacy NICs — `dns_seed.go` was setting pool-level `root_path` to baremetalservices iSCSI target, causing Intel iBFT to try iSCSI-boot before chain-loading iPXE ("NBP is too big"). Root cause: pool root_path re-seeded on every sync. Fix: replaced pool `root_path` with pool `ipxe_boot_url` pointing to mkube's boot script endpoint. Per-host iSCSI targets now served exclusively via iPXE chain-load → sanboot script. iPXE boot endpoint no longer switches baremetalservices to localboot (persistent runtime image).
 - **feat:** IPMI boot device control for BMH — new `pkg/bmc/` package with pure-Go IPMI client (`bougou/go-ipmi`). When a BMH with `spec.bmc.address` is powered on with an install image (e.g. `spec.image: fedora43`), mkube sets IPMI boot device to PXE, powers on, watches for DHCP lease on the boot MAC, then sets boot device to Disk and switches image to `localboot`. Prevents infinite PXE reinstall loop. Normal power on/off (localboot, baremetalservices) skips boot device override. Job scheduler and manual API power transitions both enqueue BMC events. 8 unit tests.
 
 ### 2026-04-01

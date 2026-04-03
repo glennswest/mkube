@@ -607,11 +607,11 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			BootFileEFI: bmh.Spec.BootFileEFI,
 		}
 
-		// Set iPXE boot URL for all non-empty images. The iPXE endpoint returns:
-		// - sanboot for CDROM/install images (auto-switches to localboot)
-		// - sanboot for baremetalservices (persistent, no auto-switch)
-		// - exit for localboot (boots from disk)
-		if bmh.Spec.Image != "" {
+		// All BMH images use a dynamic iPXE boot script endpoint.
+		// The endpoint returns sanboot for CDROM images (and auto-switches
+		// to localboot) or exit for localboot. This avoids root_path in
+		// DHCP reservations entirely — iPXE fetches the script and acts on it.
+		if bmh.Spec.Image != "" && bmh.Spec.Image != "baremetalservices" {
 			// Build mkube's own API URL with a resolved IP so iPXE doesn't need DNS.
 			mkubeHost := "mkube." + p.deps.Config.DefaultNetwork().DNS.Zone
 			if ips, err := net.LookupHost(mkubeHost); err == nil && len(ips) > 0 {
@@ -619,23 +619,6 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			} else {
 				log.Warnw("failed to resolve mkube hostname for iPXE boot URL, using hostname", "host", mkubeHost, "error", err)
 				res.IPXEBootURL = fmt.Sprintf("http://%s:8082/api/v1/ipxe/boot", mkubeHost)
-			}
-		}
-
-		// For install images only, set root_path directly in the DHCP reservation.
-		// Do NOT set root_path for baremetalservices — Intel iBFT tries to iSCSI-boot
-		// from root_path before chain-loading iPXE, causing PXE-E79 on legacy PXE NICs.
-		// baremetalservices boots via iPXE chain-load → ipxe_boot_url → sanboot script.
-		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" && bmh.Spec.Image != "baremetalservices" {
-			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
-				portalIP := ""
-				if n, ok := p.networks.Get(bmh.Spec.Network); ok {
-					portalIP = n.Spec.Gateway
-				}
-				if portalIP == "" {
-					portalIP = p.deps.Config.DefaultNetwork().Gateway
-				}
-				res.RootPath = fmt.Sprintf("iscsi:%s::::%s", portalIP, cdrom.Status.TargetIQN)
 			}
 		}
 
