@@ -308,8 +308,10 @@ func (c *Controller) waitForLeaseAndSetDisk(ctx context.Context, evt PowerEvent,
 	}
 	log.Infow("IPMI boot device set to Disk (post-install)")
 
-	// Notify provider to switch image to localboot
-	if c.callbacks.OnInstallBooted != nil {
-		c.callbacks.OnInstallBooted(ctx, evt.BMHKey)
-	}
+	// Do NOT switch image to localboot here. The DHCP lease fires during
+	// PXE boot (before the installer loads), so switching now would change
+	// the DHCP reservation and cause iPXE's second DHCP to get the wrong
+	// root_path. The image stays as the install image; the switch to
+	// localboot happens via boot-complete POST from the installer's
+	// kickstart/ignition %post, or via the iPXE boot endpoint.
 }
