@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/glennswest/mkube/pkg/bmc"
 	"github.com/glennswest/mkube/pkg/store"
 )
 
@@ -345,6 +346,14 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 		p.enqueueBMCPowerEvent(&bmh, wasOnline, isOnline)
 	}
 
+	// If image changed to an install image while already online, enqueue a BMC
+	// power event to trigger SetBootDevice(PXE) + lease watcher + power reset.
+	// Without this, the server PXE boots the install ISO but never switches
+	// back to disk boot, causing an infinite reinstall loop (issue #4).
+	if isOnline && wasOnline && bmh.Spec.Image != existing.Spec.Image && bmc.IsInstallImage(bmh.Spec.Image) {
+		p.enqueueBMCPowerEvent(&bmh, true, true)
+	}
+
 	// Clean up DHCP reservations for NICs that were removed
 	p.cleanRemovedNICs(r.Context(), existing, &bmh)
 
@@ -428,6 +437,14 @@ func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Reques
 	// Enqueue BMC power event on power transitions
 	if isOnline != wasOnline {
 		p.enqueueBMCPowerEvent(merged, wasOnline, isOnline)
+	}
+
+	// If image changed to an install image while already online, enqueue a BMC
+	// power event to trigger SetBootDevice(PXE) + lease watcher + power reset.
+	// Without this, the server PXE boots the install ISO but never switches
+	// back to disk boot, causing an infinite reinstall loop (issue #4).
+	if isOnline && wasOnline && merged.Spec.Image != existing.Spec.Image && bmc.IsInstallImage(merged.Spec.Image) {
+		p.enqueueBMCPowerEvent(merged, true, true)
 	}
 
 	// Clean up DHCP reservations for NICs that were removed
