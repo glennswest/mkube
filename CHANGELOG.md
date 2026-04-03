@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-04-03
+- **revert:** Undid 5 root_path/iPXE commits that broke baremetalservices PXE boot. Pool-level root_path for baremetalservices is the correct mechanism — removing it caused iPXE "Booting from iSCSI: Error 0x3f122003" because `ipxe_boot_url` is not delivered as a DHCP option.
+- **fix:** `networkReservationToDNS` unconditionally called `dns.StringPtr()` on empty RootPath, sending `"root_path": ""` to microdns. Empty string suppressed pool default root_path for baremetalservices hosts. Now only sets root_path when explicitly non-empty; nil pointer marshals as JSON null so pool default applies.
+
 ### 2026-04-02
 - **feat:** IPMI boot device control for BMH — new `pkg/bmc/` package with pure-Go IPMI client (`bougou/go-ipmi`). When a BMH with `spec.bmc.address` is powered on with an install image (e.g. `spec.image: fedora43`), mkube sets IPMI boot device to PXE, powers on, watches for DHCP lease on the boot MAC, then sets boot device to Disk and switches image to `localboot`. Prevents infinite PXE reinstall loop. Normal power on/off (localboot, baremetalservices) skips boot device override. Job scheduler and manual API power transitions both enqueue BMC events. 8 unit tests.
 
