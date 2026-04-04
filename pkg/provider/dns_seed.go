@@ -69,6 +69,9 @@ func (p *MicroKubeProvider) seedDNSConfig(ctx context.Context, net *Network) {
 
 	log.Debugw("DNS config seeded successfully", "endpoint", endpoint)
 
+	// Notify git-backed DNS snapshot
+	p.notifyDNSSnapshot(net.Name, endpoint, net.Spec.DNS.Zone)
+
 	// Run smoke test inline — seedDNSConfig is already called from a goroutine.
 	// Using a background context so seed timeout doesn't kill the smoke test.
 	smokeCtx, smokeCancel := context.WithTimeout(context.Background(), 30*time.Second)

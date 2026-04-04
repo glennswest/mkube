@@ -28,6 +28,7 @@ import (
 	"github.com/glennswest/mkube/pkg/bmc"
 	"github.com/glennswest/mkube/pkg/cluster"
 	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/gitbackup"
 	"github.com/glennswest/mkube/pkg/lifecycle"
 	"github.com/glennswest/mkube/pkg/namespace"
 	"github.com/glennswest/mkube/pkg/network"
@@ -129,6 +130,7 @@ type MicroKubeProvider struct {
 	reseedRunning      atomic.Bool                           // guards triggerNetworkReseed against goroutine leaks
 	clusterMgr         *cluster.Manager                      // nil if clustering is disabled
 	bmcController      *bmc.Controller                       // nil if no BMHs have BMC addresses
+	dnsSnapshotter     *gitbackup.DNSSnapshotter             // nil if DNS snapshots are disabled
 	kickReconcile      chan struct{}                          // event-driven reconcile trigger (buffered 1)
 	kickScheduler      chan struct{}                          // event-driven scheduler trigger (buffered 1)
 }
@@ -235,6 +237,15 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 	// Initialize BMC controller for IPMI power management
 	p.bmcController = p.initBMCController(deps.Store)
 
+	// Initialize DNS snapshotter for git-backed microdns config backup
+	if deps.Config.GitBackup.DNSSnapshot && deps.Config.GitBackup.RepoURL != "" {
+		p.dnsSnapshotter = gitbackup.NewDNSSnapshotter(
+			deps.Config.GitBackup,
+			deps.NetworkMgr.DNSClient(),
+			deps.Logger,
+		)
+	}
+
 	// Load built-in default ConfigMaps derived from mkube config
 	for _, cm := range generateDefaultConfigMaps(deps.Config) {
 		p.configMaps.Set(cm.Namespace+"/"+cm.Name, cm)
@@ -292,6 +303,13 @@ func (p *MicroKubeProvider) triggerScheduler() {
 	select {
 	case p.kickScheduler <- struct{}{}:
 	default:
+	}
+}
+
+// notifyDNSSnapshot fires a debounced DNS config snapshot for the given network.
+func (p *MicroKubeProvider) notifyDNSSnapshot(networkName, endpoint, zone string) {
+	if p.dnsSnapshotter != nil {
+		p.dnsSnapshotter.NotifyChange(networkName, endpoint, zone)
 	}
 }
 

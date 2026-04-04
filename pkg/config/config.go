@@ -31,6 +31,7 @@ type Config struct {
 	Cluster    ClusterConfig   `yaml:"cluster"`
 	BMH        BMHConfig       `yaml:"bmh"`
 	Console    ConsoleConfig   `yaml:"console"`
+	GitBackup  GitBackupConfig `yaml:"gitBackup"`
 
 	// Deprecated: single-network config for backward compatibility.
 	// If present and Networks is empty, it is migrated into Networks.
@@ -89,6 +90,28 @@ type ConsoleConfig struct {
 	Enabled    bool   `yaml:"enabled"`    // enable console UI at /ui/ (default true)
 	APIBase    string `yaml:"apiBase"`    // mkube API base URL for JS fetches (e.g. "http://192.168.200.2:8082")
 	CloudidURL string `yaml:"cloudidURL"` // cloudid API URL (e.g. "http://192.168.200.20:8090")
+}
+
+// GitBackupConfig configures automatic git-backed config state backup via rust4git.
+type GitBackupConfig struct {
+	Enabled         bool   `yaml:"enabled"`          // master toggle
+	RepoURL         string `yaml:"repoURL"`          // rust4git base URL, e.g. "http://git.gt.lo:3000"
+	RepoName        string `yaml:"repoName"`         // owner/repo, e.g. "mkube/configstate"
+	Branch          string `yaml:"branch"`            // git branch (default "main")
+	IntervalSeconds int    `yaml:"intervalSeconds"`   // periodic backup interval (default 300)
+	DebounceSeconds int    `yaml:"debounceSeconds"`   // debounce window after store change (default 30)
+	Username        string `yaml:"username"`          // rust4git username for basic auth
+	Password        string `yaml:"password"`          // rust4git password for basic auth
+	PasswordFile    string `yaml:"passwordFile"`      // alternative: read password from file
+	InsecureTLS     bool   `yaml:"insecureTLS"`       // skip TLS verification
+	CommitAuthor    string `yaml:"commitAuthor"`      // git commit author (default "mkube")
+	CommitEmail     string `yaml:"commitEmail"`       // git commit email (default "mkube@gt.lo")
+
+	// MicroDNS snapshot settings — push DNS/DHCP state on every change
+	DNSSnapshot         bool   `yaml:"dnsSnapshot"`         // enable microdns config snapshots
+	DNSSnapshotPrefix   string `yaml:"dnsSnapshotPrefix"`   // repo prefix, default "microdns-"
+	DNSSnapshotOwner    string `yaml:"dnsSnapshotOwner"`    // repo owner, default "mkube"
+	DNSSnapshotDebounce int    `yaml:"dnsSnapshotDebounce"` // debounce seconds, default 5
 }
 
 // BMHConfig configures BareMetalHost management.

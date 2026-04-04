@@ -19,6 +19,7 @@ import (
 
 	"github.com/glennswest/mkube/pkg/cluster"
 	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/gitbackup"
 	"github.com/glennswest/mkube/pkg/console"
 	"github.com/glennswest/mkube/pkg/discovery"
 	"github.com/glennswest/mkube/pkg/dns"
@@ -570,6 +571,19 @@ func runSharedServices(
 		p.SetClusterManager(clusterMgr)
 		clusterMgr.RegisterRoutes(mux)
 		log.Infow("BOOT: cluster manager started", "peers", len(cfg.Cluster.Peers), "arch", arch)
+	}
+
+	// ── Git Backup (optional) ────────────────────────────────────────
+	if cfg.GitBackup.Enabled && kvStore != nil {
+		gbMgr, err := gitbackup.New(cfg.GitBackup, kvStore, log)
+		if err != nil {
+			log.Warnw("git backup init failed, continuing without backup", "error", err)
+		} else {
+			kvStore.AddSyncHook(gbMgr.OnStoreChange)
+			gbMgr.RegisterRoutes(mux)
+			go gbMgr.Run(ctx)
+			log.Infow("BOOT: git backup started", "repo", cfg.GitBackup.RepoName)
+		}
 	}
 
 	// ── Register routes and start HTTP server ───────────────────────

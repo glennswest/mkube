@@ -20,7 +20,7 @@ type Store struct {
 	js       jetstream.JetStream
 	log      *zap.SugaredLogger
 	replicas int
-	syncHook func(bucket, key, op string, value []byte)
+	syncHooks []func(bucket, key, op string, value []byte)
 
 	Pods           *Bucket
 	ConfigMaps     *Bucket
@@ -46,8 +46,14 @@ type Store struct {
 
 // SetSyncHook sets a callback invoked after every successful local Put or Delete.
 // The hook receives the bucket name, key, operation ("put" or "delete"), and value.
+// For backward compatibility, this replaces all existing hooks with the given one.
 func (s *Store) SetSyncHook(hook func(bucket, key, op string, value []byte)) {
-	s.syncHook = hook
+	s.syncHooks = []func(bucket, key, op string, value []byte){hook}
+}
+
+// AddSyncHook appends a callback invoked after every successful local Put or Delete.
+func (s *Store) AddSyncHook(hook func(bucket, key, op string, value []byte)) {
+	s.syncHooks = append(s.syncHooks, hook)
 }
 
 // SetEncryptionKey sets the AES-256-GCM key used for Secret encryption at rest.
@@ -365,8 +371,8 @@ func (b *Bucket) Put(ctx context.Context, key string, value []byte) (uint64, err
 	if err != nil {
 		return 0, err
 	}
-	if b.store != nil && b.store.syncHook != nil {
-		b.store.syncHook(b.name, key, "put", value)
+	for _, hook := range b.store.syncHooks {
+		hook(b.name, key, "put", value)
 	}
 	return rev, nil
 }
@@ -388,8 +394,8 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if b.store != nil && b.store.syncHook != nil {
-		b.store.syncHook(b.name, key, "delete", nil)
+	for _, hook := range b.store.syncHooks {
+		hook(b.name, key, "delete", nil)
 	}
 	return nil
 }

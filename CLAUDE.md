@@ -48,6 +48,7 @@ go test ./...                                    # Run tests
 | `pkg/diskimg/` | Pure Go disk image converters (VMDK, QCOW2, VHD → raw) |
 | `pkg/podman/` | Pure Go Podman REST API client via Unix socket |
 | `pkg/bmc/` | IPMI BMC client for power control and boot device management |
+| `pkg/gitbackup/` | Git-backed config state backup via rust4git State API |
 
 ### Backends
 | Backend | Config key | Runtime adapter | Network driver |
@@ -120,7 +121,7 @@ Known test failures (pre-existing):
 6. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
 7. **microdns resilience**: DNS containers must survive mkube failures independently.
 8. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
-9. **configstate.gt.lo**: Git-backed config state backup for disaster recovery.
+9. ~~**configstate.gt.lo**: Git-backed config state backup for disaster recovery.~~ **DONE** — `pkg/gitbackup/` via rust4git State API.
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
@@ -134,3 +135,6 @@ Known test failures (pre-existing):
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
+
+### Recently Completed
+- [x] Git-backed config state backup (`pkg/gitbackup/`) — rust4git State API, incremental pushes, debounce, store multi-hook, status/trigger API
