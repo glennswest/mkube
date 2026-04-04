@@ -716,6 +716,17 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			Hostname: firstNonEmpty(bmh.Spec.BMC.Hostname, bmh.Name+"-ipmi"),
 		}, bmh.Name)
 	}
+
+	// Notify git-backed DNS snapshot for affected networks
+	for _, netName := range []string{bmh.Spec.Network, bmh.Spec.BMC.Network} {
+		if netName == "" {
+			continue
+		}
+		if n, ok := p.networks.Get(netName); ok {
+			ep := p.networkDNSEndpoint(n)
+			p.notifyDNSSnapshot(netName, ep, n.Spec.DNS.Zone)
+		}
+	}
 }
 
 // cleanRemovedNICs removes DHCP reservations and DNS records for secondary NICs
@@ -869,6 +880,9 @@ func (p *MicroKubeProvider) removeBMHFromNetwork(ctx context.Context, mac, netwo
 	}
 
 	log.Infow("removed BMH DHCP reservation from network", "network", net.Name, "mac", mac)
+
+	// Notify git-backed DNS snapshot
+	p.notifyDNSSnapshot(net.Name, endpoint, net.Spec.DNS.Zone)
 }
 
 // networkDNSEndpoint returns the microdns REST API endpoint for a network,

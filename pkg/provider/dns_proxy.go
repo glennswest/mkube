@@ -296,6 +296,7 @@ func (p *MicroKubeProvider) handleCreateDNSRecord(w http.ResponseWriter, r *http
 
 	result := fullRecordToResource(*rec, ns)
 	podWriteJSON(w, http.StatusCreated, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleUpdateDNSRecord(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +333,7 @@ func (p *MicroKubeProvider) handleUpdateDNSRecord(w http.ResponseWriter, r *http
 
 	result := fullRecordToResource(*rec, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handlePatchDNSRecord(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +378,7 @@ func (p *MicroKubeProvider) handlePatchDNSRecord(w http.ResponseWriter, r *http.
 
 	result := fullRecordToResource(*rec, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleDeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
@@ -400,6 +403,7 @@ func (p *MicroKubeProvider) handleDeleteDNSRecord(w http.ResponseWriter, r *http
 		Status:   "Success",
 		Message:  fmt.Sprintf("dnsrecord %q deleted", name),
 	})
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func fullRecordToResource(rec dns.FullRecord, ns string) DNSRecord {
@@ -474,7 +478,7 @@ func (p *MicroKubeProvider) handleGetDHCPPool(w http.ResponseWriter, r *http.Req
 
 func (p *MicroKubeProvider) handleCreateDHCPPool(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -510,12 +514,13 @@ func (p *MicroKubeProvider) handleCreateDHCPPool(w http.ResponseWriter, r *http.
 
 	result := dhcpPoolToResource(*created, ns)
 	podWriteJSON(w, http.StatusCreated, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -551,12 +556,13 @@ func (p *MicroKubeProvider) handleUpdateDHCPPool(w http.ResponseWriter, r *http.
 
 	result := dhcpPoolToResource(*updated, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handlePatchDHCPPool(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -598,12 +604,13 @@ func (p *MicroKubeProvider) handlePatchDHCPPool(w http.ResponseWriter, r *http.R
 
 	result := dhcpPoolToResource(*updated, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleDeleteDHCPPool(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -618,6 +625,7 @@ func (p *MicroKubeProvider) handleDeleteDHCPPool(w http.ResponseWriter, r *http.
 		Status:   "Success",
 		Message:  fmt.Sprintf("dhcppool %q deleted", name),
 	})
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func dhcpPoolToResource(pool dns.DHCPPool, ns string) DHCPPoolResource {
@@ -702,7 +710,7 @@ func (p *MicroKubeProvider) handleGetDHCPReservation(w http.ResponseWriter, r *h
 
 func (p *MicroKubeProvider) handleCreateDHCPReservation(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -731,11 +739,12 @@ func (p *MicroKubeProvider) handleCreateDHCPReservation(w http.ResponseWriter, r
 
 	result := dhcpReservationToResource(reservation, ns)
 	podWriteJSON(w, http.StatusCreated, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleUpdateDHCPReservation(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -764,12 +773,13 @@ func (p *MicroKubeProvider) handleUpdateDHCPReservation(w http.ResponseWriter, r
 
 	result := dhcpReservationToResource(reservation, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handlePatchDHCPReservation(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -805,12 +815,13 @@ func (p *MicroKubeProvider) handlePatchDHCPReservation(w http.ResponseWriter, r 
 
 	result := dhcpReservationToResource(reservation, ns)
 	podWriteJSON(w, http.StatusOK, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleDeleteDHCPReservation(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -826,6 +837,7 @@ func (p *MicroKubeProvider) handleDeleteDHCPReservation(w http.ResponseWriter, r
 		Status:   "Success",
 		Message:  fmt.Sprintf("dhcpreservation %q deleted", name),
 	})
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func dhcpReservationToResource(res dns.DHCPReservation, ns string) DHCPReservationResource {
@@ -967,7 +979,7 @@ func (p *MicroKubeProvider) handleGetDNSForwarder(w http.ResponseWriter, r *http
 
 func (p *MicroKubeProvider) handleCreateDNSForwarder(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -990,12 +1002,13 @@ func (p *MicroKubeProvider) handleCreateDNSForwarder(w http.ResponseWriter, r *h
 
 	result := dnsForwarderToResource(fwd, ns)
 	podWriteJSON(w, http.StatusCreated, result)
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func (p *MicroKubeProvider) handleDeleteDNSForwarder(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
-	endpoint, _, ok := p.resolveDNSEndpoint(w, ns)
+	endpoint, net, ok := p.resolveDNSEndpoint(w, ns)
 	if !ok {
 		return
 	}
@@ -1010,6 +1023,7 @@ func (p *MicroKubeProvider) handleDeleteDNSForwarder(w http.ResponseWriter, r *h
 		Status:   "Success",
 		Message:  fmt.Sprintf("dnsforwarder %q deleted", name),
 	})
+	p.notifyDNSSnapshot(ns, endpoint, net.Spec.DNS.Zone)
 }
 
 func dnsForwarderToResource(fwd dns.DNSForwarder, ns string) DNSForwarderResource {

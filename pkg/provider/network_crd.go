@@ -550,6 +550,10 @@ func (p *MicroKubeProvider) handleUpdateNetwork(w http.ResponseWriter, r *http.R
 	p.triggerNetworkReseed(name)
 	p.triggerReconcile()
 
+	// Notify git-backed DNS snapshot
+	endpoint := p.networkDNSEndpoint(&net)
+	p.notifyDNSSnapshot(name, endpoint, net.Spec.DNS.Zone)
+
 	podWriteJSON(w, http.StatusOK, &net)
 }
 
@@ -600,6 +604,10 @@ func (p *MicroKubeProvider) handlePatchNetwork(w http.ResponseWriter, r *http.Re
 	p.rebuildDHCPIndex()
 	p.triggerNetworkReseed(name)
 	p.triggerReconcile()
+
+	// Notify git-backed DNS snapshot
+	patchEndpoint := p.networkDNSEndpoint(merged)
+	p.notifyDNSSnapshot(name, patchEndpoint, merged.Spec.DNS.Zone)
 
 	podWriteJSON(w, http.StatusOK, merged)
 }
