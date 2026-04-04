@@ -138,3 +138,4 @@ Known test failures (pre-existing):
 
 ### Recently Completed
 - [x] Git-backed config state backup (`pkg/gitbackup/`) — rust4git State API, incremental pushes, debounce, store multi-hook, status/trigger API
+- [x] DNS config snapshotter — debounced per-network microdns snapshots to git on every mutation (DHCP pools/reservations, DNS records/forwarders, network updates, BMH changes)
