@@ -1695,9 +1695,6 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	// 0. Reconcile deployments — ensure each deployment has the correct replica pods
 	p.reconcileDeployments(ctx)
 
-	// 0b. Auto-switch install images to localboot after grace period
-	p.reconcileInstallImages(ctx)
-
 	// 1. Load desired pods and configmaps — from NATS store if available, else from YAML manifest
 	var desiredPods []*corev1.Pod
 	var manifestCMs []*corev1.ConfigMap
