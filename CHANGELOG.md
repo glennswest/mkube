@@ -7,6 +7,7 @@
 - **feat:** Store multi-hook support — `AddSyncHook()` method allows multiple consumers (cluster sync + git backup) to react to store changes without conflicting.
 - **feat:** GitBackupConfig in config.yaml with rust4git connection settings, auth, debounce/interval tuning.
 - **feat:** DNS config snapshotter — debounced per-network snapshots of microdns state (DHCP pools, reservations, DNS records, forwarders) to individual git repos via rust4git. Triggered on DNS seed, all DNS/DHCP proxy CRUD handlers, network update/patch, and BMH reservation changes. Per-network debounce (default 5s) with inflight protection. Deterministic output via sort before JSON serialization.
+- **chore:** Added gitBackup config to rose1-config.yaml — NATS state backup + DNS snapshots enabled, auth via `/data/mkube/git-token` file.
 
 ### 2026-04-03
 - **fix:** BMH PUT handler wiped unspecified fields to zero values. `handleUpdateBMH` created a new empty struct and decoded the body into it — any field not in the request body became empty (BMC address, MAC, network, IP, image all lost). Server1/2/3 specs were wiped this way. Fixed to start from `existing.DeepCopy()` and overlay, matching PATCH handler behavior. Added regression test.

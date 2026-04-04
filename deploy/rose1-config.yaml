@@ -199,6 +199,19 @@ bmh:
   dhcpLeaseURL: "http://192.168.11.252:8080"
   watchInterval: 30
 
+gitBackup:
+  enabled: true
+  repoURL: "http://git.gt.lo:3000"
+  repoName: "mkube/configstate"
+  branch: "main"
+  username: "mkube"
+  passwordFile: "/data/mkube/git-token"
+  intervalSeconds: 300
+  debounceSeconds: 30
+  commitAuthor: "mkube"
+  commitEmail: "mkube@gt.lo"
+  dnsSnapshot: true
+
 # Registry runs as a standalone container (mkube-registry) at 192.168.200.3:5000.
 # mkube no longer runs the embedded registry — it receives push notifications
 # via the webhook endpoint POST /api/v1/registry/push-notify.
