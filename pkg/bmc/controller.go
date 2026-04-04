@@ -110,6 +110,31 @@ func (c *Controller) SetStore(s *store.Store) {
 	c.store = s
 }
 
+// SetPersistentDiskBoot connects to the BMC and sets boot device to disk
+// with persist=true, so the server always boots from disk regardless of
+// BIOS boot order. This is called by the reconcile loop when switching
+// to localboot.
+func (c *Controller) SetPersistentDiskBoot(ctx context.Context, creds Credentials, bmhName string) {
+	if creds.Address == "" {
+		return
+	}
+	client, err := c.newClient(creds)
+	if err != nil {
+		c.log.Errorw("failed to connect to BMC for persistent disk boot",
+			"bmh", bmhName, "error", err)
+		return
+	}
+	defer client.Close()
+
+	if err := client.SetBootDevice(ctx, BootDeviceDisk, true); err != nil {
+		c.log.Errorw("IPMI set persistent disk boot failed",
+			"bmh", bmhName, "error", err)
+		return
+	}
+	c.log.Infow("IPMI boot device set to Disk (persistent)",
+		"bmh", bmhName)
+}
+
 func (c *Controller) handleEvent(ctx context.Context, evt PowerEvent) {
 	log := c.log.With("bmh", evt.BMHName, "action", evt.Action, "image", evt.Image)
 

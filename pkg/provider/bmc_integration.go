@@ -102,6 +102,17 @@ func (p *MicroKubeProvider) reconcileInstallImages(ctx context.Context) {
 			continue
 		}
 
+		// Set IPMI boot device to disk (persistent) so the server boots
+		// from disk on every reboot, not just the next one.
+		if p.bmcController != nil && bmh.Spec.BMC.Address != "" {
+			creds := bmc.Credentials{
+				Address:  bmh.Spec.BMC.Address,
+				Username: bmh.Spec.BMC.Username,
+				Password: bmh.Spec.BMC.Password,
+			}
+			p.bmcController.SetPersistentDiskBoot(ctx, creds, bmh.Name)
+		}
+
 		// Re-sync DHCP so next boot gets localboot config
 		updated, ok := p.bareMetalHosts.Get(key)
 		if ok {
