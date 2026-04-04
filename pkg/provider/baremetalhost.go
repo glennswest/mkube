@@ -297,17 +297,16 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 	oldIP := existing.Spec.IP
 	oldBootConfigRef := existing.Spec.BootConfigRef
 
-	var bmh BareMetalHost
-	if err := json.NewDecoder(r.Body).Decode(&bmh); err != nil {
+	// Start from existing state and overlay the update body.
+	// This prevents partial PUTs from wiping unspecified fields to zero values.
+	bmh := existing.DeepCopy()
+	if err := json.NewDecoder(r.Body).Decode(bmh); err != nil {
 		http.Error(w, fmt.Sprintf("invalid BareMetalHost JSON: %v", err), http.StatusBadRequest)
 		return
 	}
 	bmh.Namespace = ns
 	bmh.Name = name
 	bmh.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "BareMetalHost"}
-	if bmh.CreationTimestamp.IsZero() {
-		bmh.CreationTimestamp = existing.CreationTimestamp
-	}
 	// Preserve existing credentials if not provided in the update
 	if bmh.Spec.BMC.Username == "" && existing.Spec.BMC.Username != "" {
 		bmh.Spec.BMC.Username = existing.Spec.BMC.Username
@@ -333,17 +332,17 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 
 	if p.deps.Store != nil && p.deps.Store.BareMetalHosts != nil {
 		storeKey := ns + "." + name
-		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, &bmh); err != nil {
+		if _, err := p.deps.Store.BareMetalHosts.PutJSON(r.Context(), storeKey, bmh); err != nil {
 			http.Error(w, fmt.Sprintf("persisting BMH update: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	p.bareMetalHosts.Set(key, &bmh)
+	p.bareMetalHosts.Set(key, bmh)
 
 	// Enqueue BMC power event on power transitions
 	if isOnline != wasOnline {
-		p.enqueueBMCPowerEvent(&bmh, wasOnline, isOnline)
+		p.enqueueBMCPowerEvent(bmh, wasOnline, isOnline)
 	}
 
 	// If image changed to an install image while already online, enqueue a BMC
@@ -351,20 +350,20 @@ func (p *MicroKubeProvider) handleUpdateBMH(w http.ResponseWriter, r *http.Reque
 	// Without this, the server PXE boots the install ISO but never switches
 	// back to disk boot, causing an infinite reinstall loop (issue #4).
 	if isOnline && wasOnline && bmh.Spec.Image != existing.Spec.Image && bmc.IsInstallImage(bmh.Spec.Image) {
-		p.enqueueBMCPowerEvent(&bmh, true, true)
+		p.enqueueBMCPowerEvent(bmh, true, true)
 	}
 
 	// Clean up DHCP reservations for NICs that were removed
-	p.cleanRemovedNICs(r.Context(), existing, &bmh)
+	p.cleanRemovedNICs(r.Context(), existing, bmh)
 
 	// Sync DHCP reservations + DNS to Network CRDs (data + IPMI + NICs)
-	p.syncBMHToNetwork(r.Context(), &bmh, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
+	p.syncBMHToNetwork(r.Context(), bmh, oldDataNetwork, oldIPMINetwork, oldHostname, oldIP)
 
 	// Sync BootConfig assignedTo
 	p.syncBootConfigRef(r.Context(), bmh.Name, oldBootConfigRef, bmh.Spec.BootConfigRef)
 	p.triggerScheduler()
 
-	podWriteJSON(w, http.StatusOK, &bmh)
+	podWriteJSON(w, http.StatusOK, bmh)
 }
 
 func (p *MicroKubeProvider) handlePatchBMH(w http.ResponseWriter, r *http.Request) {

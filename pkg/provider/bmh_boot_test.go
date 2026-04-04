@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -277,5 +279,72 @@ func TestBMHBootInstallOverridesPool(t *testing.T) {
 	want := "iscsi:192.168.10.1::::iqn.2000-02.com.mikrotik:rawhide"
 	if res.RootPath != want {
 		t.Errorf("root_path = %q, want %q", res.RootPath, want)
+	}
+}
+
+// TestBMHPutPreservesFields verifies that a partial PUT request does not
+// wipe unspecified fields to zero values. This is the regression test for
+// the bug that wiped server1/2/3 BMH specs.
+func TestBMHPutPreservesFields(t *testing.T) {
+	p, _ := newTestProvider(t)
+
+	// Pre-populate a fully-specified BMH
+	key := "default/server1"
+	online := true
+	p.bareMetalHosts.Set(key, &BareMetalHost{
+		ObjectMeta: metav1.ObjectMeta{Name: "server1", Namespace: "default"},
+		Spec: BMHSpec{
+			BMC: BMCDetails{
+				Address:  "192.168.11.101",
+				Username: "admin",
+				Password: "secret",
+				Network:  "g11",
+			},
+			BootMACAddress: "AC:1F:6B:8A:A7:9C",
+			Online:         &online,
+			Image:          "baremetalservices",
+			Network:        "g10",
+			IP:             "192.168.10.10",
+			Hostname:       "server1",
+		},
+	})
+
+	// Simulate a partial PUT that only sets spec.online (the wipe scenario)
+	body := `{"spec":{"online":false}}`
+	req, _ := http.NewRequest("PUT",
+		"/api/v1/namespaces/default/baremetalhosts/server1",
+		strings.NewReader(body))
+	req.SetPathValue("namespace", "default")
+	req.SetPathValue("name", "server1")
+	w := httptest.NewRecorder()
+	p.handleUpdateBMH(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the BMH still has all its fields
+	updated, ok := p.bareMetalHosts.Get(key)
+	if !ok {
+		t.Fatal("BMH not found after PUT")
+	}
+	if updated.Spec.BMC.Address != "192.168.11.101" {
+		t.Errorf("BMC address wiped: got %q, want %q", updated.Spec.BMC.Address, "192.168.11.101")
+	}
+	if updated.Spec.BootMACAddress != "AC:1F:6B:8A:A7:9C" {
+		t.Errorf("BootMACAddress wiped: got %q, want %q", updated.Spec.BootMACAddress, "AC:1F:6B:8A:A7:9C")
+	}
+	if updated.Spec.Network != "g10" {
+		t.Errorf("Network wiped: got %q, want %q", updated.Spec.Network, "g10")
+	}
+	if updated.Spec.IP != "192.168.10.10" {
+		t.Errorf("IP wiped: got %q, want %q", updated.Spec.IP, "192.168.10.10")
+	}
+	if updated.Spec.Image != "baremetalservices" {
+		t.Errorf("Image wiped: got %q, want %q", updated.Spec.Image, "baremetalservices")
+	}
+	// online should have changed to false
+	if updated.Spec.Online == nil || *updated.Spec.Online != false {
+		t.Errorf("Online not updated: got %v", updated.Spec.Online)
 	}
 }
