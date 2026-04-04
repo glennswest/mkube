@@ -874,6 +874,169 @@ mk patch bmh server1 --type=merge -p '{"spec":{"online":false}}'
 mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
 ```
 
+## Boot Configurations
+
+Boot configurations control how bare metal hosts boot via PXE/iPXE. Each BMH has two key fields:
+
+- **`spec.image`** — Which iSCSI CDROM ISO to boot (or `localboot` for disk boot)
+- **`spec.bootConfigRef`** — Which BootConfig to serve during boot (ignition, kickstart, etc.)
+
+### How PXE Boot Works
+
+1. Server PXE boots and requests iPXE script from mkube (`GET /api/v1/ipxe`)
+2. mkube looks up the BMH by source IP and reads `spec.image`
+3. If `image` is an iSCSI CDROM name: returns `sanboot iscsi:<target>` and auto-switches BMH to `localboot` (boot-once semantic)
+4. If `image` is `localboot` or empty: returns `exit` (boot from local disk)
+5. During ISO boot, the OS fetches its config from `GET /api/v1/bootconfig` (source IP → BMH → `bootConfigRef` → BootConfig data)
+
+### Local Boot (`localboot`)
+
+Boot from the server's local disk (no PXE/iSCSI). The iPXE script returns `exit`, causing the BIOS to fall through to the next boot device (typically the local disk).
+
+**Important:** Both `spec.image` and `spec.bootConfigRef` on the BMH affect boot behavior. To boot from local disk:
+
+```bash
+# Set a BMH to local boot
+mk patch bmh server2 --type=merge -p '{"spec":{"image":"localboot","bootConfigRef":"local"}}'
+```
+
+Setting `image: localboot` tells the iPXE handler to return `exit`. The `bootConfigRef` can be any value (or empty) since no config is fetched during local disk boot — the installed OS has its own configuration already on disk.
+
+### Available Boot Configs
+
+#### `coreos-agent` — mkube-agent CI Runner
+
+The primary config for CI/CD job execution hosts. Boots Fedora CoreOS with the mkube-agent running in a container.
+
+| Field | Value |
+|-------|-------|
+| Format | ignition |
+| Assigned to | server1, server4-7, server9 |
+| Used with | `baremetalservices` iSCSI CDROM |
+
+What it configures:
+- SSH access for `core` user
+- Auto-detects and mounts the largest non-boot disk at `/var/data` (XFS)
+- Symlinks `/data` → `/var/data`
+- Runs `mkube-agent` as a podman container (`registry.gt.lo:5000/mkube-agent:edge`)
+- Container storage redirected to data disk (`/var/data/agent-storage`)
+- Loads kernel modules: fuse, ublk_drv, iscsi_tcp
+- Configures local registry as insecure (`registry.gt.lo:5000`)
+- Serial console on ttyS0 and ttyS1
+- Masks auto-update services (zincati, rpm-ostreed-automatic)
+
+```bash
+# Boot a server as a CI runner (one-time PXE from FCOS ISO + agent config)
+mk patch bmh server1 --type=merge -p '{"spec":{"image":"baremetalservices","bootConfigRef":"coreos-agent"}}'
+mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
+```
+
+After the first boot, `image` is automatically switched to `localboot` (boot-once). Subsequent reboots boot from disk with the installed agent config.
+
+#### `coreos-agent-install` — Agent Disk Installer
+
+Installs CoreOS to `/dev/sda` with the `coreos-agent` config baked in, then reboots to local disk. Used for initial provisioning of CI runner hosts.
+
+| Field | Value |
+|-------|-------|
+| Format | ignition |
+| Purpose | One-time disk install |
+
+Flow: PXE boot live ISO → `coreos-installer install /dev/sda` with `coreos-agent` ignition → signals boot-complete → reboots to disk.
+
+#### `coreos-simple` — Minimal CoreOS
+
+Minimal Fedora CoreOS with SSH and serial console only. No agent, no extra services.
+
+| Field | Value |
+|-------|-------|
+| Format | ignition |
+| Assigned to | server1, server8 |
+
+Configures: SSH for `core` user, serial consoles, hostname, masks auto-updates.
+
+#### `coreos-simple-install` — Minimal CoreOS Installer
+
+Installs `coreos-simple` to disk, signals boot-complete, and reboots.
+
+#### `coreos-nfs` — NFS Server
+
+Fedora CoreOS configured as a kernel NFS server.
+
+| Field | Value |
+|-------|-------|
+| Format | ignition |
+| Purpose | Dedicated NFS server |
+
+Configures: NFS exports (`/var/nfs-data`), firewall rules, auto-formats/mounts data disk (`/dev/sdb`), serial consoles.
+
+#### `coreos-nfs-install` — NFS Server Installer
+
+Installs `coreos-nfs` to disk using `coreos-installer`, patches the BMH to `localboot` + `coreos-nfs`, and reboots.
+
+#### `coreos-builder` / `builder-target` — Builder Pair
+
+Two-phase config for development/build servers:
+
+1. **`coreos-builder`** (live phase) — Boots from ISO, runs `coreos-installer` to write `coreos-base` to disk, calls boot-complete, reboots
+2. **`builder-target`** (installed phase) — Installed OS config with podman socket, buildah, skopeo, cockpit on port 80, firewall rules
+
+#### `fedora-rawhide-install` / `fedora-43-install` — Fedora Installer (kexec)
+
+Boot CoreOS live, then kexec into Fedora Anaconda installer with a kickstart URL. Used for installing full Fedora Server on bare metal.
+
+| Field | Value |
+|-------|-------|
+| Format | ignition |
+| Purpose | Fedora installation via kexec |
+
+Flow: PXE → CoreOS live → downloads Fedora vmlinuz/initrd → `kexec` into Anaconda with kickstart from CloudID.
+
+#### `live` / `install` — StormBase Modes
+
+Minimal ignition configs that set `/etc/stormbase/mode` to `live` or `install`. Used with the `baremetalservices` ISO for StormBase-aware deployments.
+
+#### `bms-test` — Test Config
+
+Simple shell script for testing boot config delivery. Prints hostname and IP addresses.
+
+### Managing Boot Configs
+
+```bash
+# List all boot configs
+mk get bc
+
+# View a specific config
+mk get bc coreos-agent -o yaml
+
+# Create from YAML
+mk apply -f my-bootconfig.yaml
+
+# Delete (fails if BMHs reference it)
+mk delete bc my-bootconfig
+```
+
+### BootConfig YAML Format
+
+```yaml
+apiVersion: v1
+kind: BootConfig
+metadata:
+  name: my-config
+spec:
+  format: ignition     # ignition, cloud-init, kickstart, or custom
+  description: "Human-readable description"
+  data:
+    config.ign: |       # key = filename, value = content
+      {"ignition": {"version": "3.4.0"}, ...}
+```
+
+Supported formats determine the `Content-Type` header when serving:
+- `ignition` → `application/vnd.coreos.ignition+json`
+- `cloud-init` → `text/yaml`
+- `kickstart` → `text/plain`
+- `custom` → `application/octet-stream`
+
 ## Custom Annotations
 
 | Annotation | Description |
