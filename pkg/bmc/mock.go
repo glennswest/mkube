@@ -40,8 +40,8 @@ func (m *MockBMC) record(method string, args ...interface{}) error {
 	return nil
 }
 
-func (m *MockBMC) SetBootDevice(ctx context.Context, dev BootDevice) error {
-	if err := m.record("SetBootDevice", dev); err != nil {
+func (m *MockBMC) SetBootDevice(ctx context.Context, dev BootDevice, persist bool) error {
+	if err := m.record("SetBootDevice", dev, persist); err != nil {
 		return err
 	}
 	m.mu.Lock()

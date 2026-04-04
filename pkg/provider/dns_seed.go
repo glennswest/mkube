@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -120,14 +119,9 @@ func (p *MicroKubeProvider) seedDHCPPool(ctx context.Context, client *dns.Client
 		NTPServers:    ntpServers,
 	}
 
-	// For data networks: set default iSCSI root_path to baremetalservices.
-	if source.Spec.Type == NetworkTypeData {
-		cdrom, ok := p.iscsiCdroms.Get("baremetalservices")
-		if ok && cdrom.Status.TargetIQN != "" {
-			pool.RootPath = fmt.Sprintf("iscsi:%s::::%s", source.Spec.Gateway, cdrom.Status.TargetIQN)
-			log.Infow("pool default root_path set", "network", source.Name, "root_path", pool.RootPath)
-		}
-	}
+	// No pool-level root_path. Each BMH gets per-reservation root_path
+	// based on its image (baremetalservices, install, or localboot=none).
+	// This prevents localboot hosts from inheriting baremetalservices.
 
 	// Check if pool already exists — update if so, create if not
 	existing, err := client.ListDHCPPools(ctx, endpoint)
@@ -194,16 +188,10 @@ func networkReservationToDNS(r NetworkDHCPReservation) dns.DHCPReservation {
 		BootFileEFI: r.BootFileEFI,
 		IPXEBootURL: r.IPXEBootURL,
 	}
-	// root_path handling:
-	//   non-empty → per-BMH override (install ISO iSCSI target)
-	//   nil       → inherit pool default (baremetalservices)
-	//   ""        → suppress pool default (localboot — no iSCSI, boot from disk)
+	// Per-BMH root_path: set when non-empty (baremetalservices or install ISO).
+	// Localboot hosts have empty root_path — no pool default to inherit.
 	if r.RootPath != "" {
 		res.RootPath = dns.StringPtr(r.RootPath)
-	} else if r.IPXEBootURL != "" {
-		// Hosts with iPXE boot URL (localboot, install) need explicit empty
-		// root_path to prevent inheriting pool default (baremetalservices).
-		res.RootPath = dns.StringPtr("")
 	}
 	return res
 }

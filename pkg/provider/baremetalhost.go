@@ -635,11 +635,11 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 			}
 		}
 
-		// For install images, set per-BMH root_path to the specific CDROM iSCSI
-		// target. This overrides the pool default (baremetalservices) so the server
-		// boots the correct install ISO. baremetalservices inherits pool root_path
-		// (nil in reservation). localboot doesn't need root_path (boots from disk).
-		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" && bmh.Spec.Image != "baremetalservices" {
+		// Set per-BMH root_path based on image:
+		//   baremetalservices → iSCSI target for baremetalservices CDROM
+		//   install images    → iSCSI target for the specific install ISO
+		//   localboot/empty   → no root_path (iPXE exits, BIOS boots from disk)
+		if bmh.Spec.Image != "" && bmh.Spec.Image != "localboot" {
 			if cdrom, ok := p.iscsiCdroms.Get(bmh.Spec.Image); ok && cdrom.Status.TargetIQN != "" {
 				portalIP := ""
 				if n, ok := p.networks.Get(bmh.Spec.Network); ok {

@@ -178,7 +178,7 @@ func (c *Controller) handleNormalPowerOn(ctx context.Context, client BMC, evt Po
 // to switch to disk boot after the installer has started.
 func (c *Controller) handleInstallBoot(ctx context.Context, client BMC, evt PowerEvent, log *zap.SugaredLogger) {
 	// Step 1: Set boot device to PXE
-	if err := client.SetBootDevice(ctx, BootDevicePXE); err != nil {
+	if err := client.SetBootDevice(ctx, BootDevicePXE, false); err != nil {
 		log.Errorw("IPMI set boot device PXE failed", "error", err)
 		return
 	}
@@ -302,7 +302,7 @@ func (c *Controller) waitForLeaseAndSetDisk(ctx context.Context, evt PowerEvent,
 	}
 	defer client.Close()
 
-	if err := client.SetBootDevice(ctx, BootDeviceDisk); err != nil {
+	if err := client.SetBootDevice(ctx, BootDeviceDisk, true); err != nil {
 		log.Errorw("IPMI set boot device disk failed", "error", err)
 		return
 	}

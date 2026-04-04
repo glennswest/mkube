@@ -69,9 +69,9 @@ func TestBMHBootRootPath(t *testing.T) {
 		wantIPXEBootURL  bool   // true = should be set, false = should be empty
 	}{
 		{
-			name:            "baremetalservices inherits pool default",
+			name:            "baremetalservices gets per-BMH root_path",
 			image:           "baremetalservices",
-			wantRootPath:    "",
+			wantRootPath:    "iscsi:192.168.10.1::::iqn.2000-02.com.mikrotik:file1",
 			wantIPXEBootURL: false,
 		},
 		{
@@ -163,10 +163,9 @@ func TestBMHBootRootPath(t *testing.T) {
 	}
 }
 
-// TestBMHBootDefaultToBaremetalservices verifies that when no per-BMH root_path
-// is set (baremetalservices, localboot), the reservation's root_path is empty
-// so microdns uses the pool default (baremetalservices iSCSI target).
-func TestBMHBootDefaultToBaremetalservices(t *testing.T) {
+// TestBMHBootLocalbootNoRootPath verifies that localboot has no root_path
+// so iPXE exits and BIOS falls through to disk boot.
+func TestBMHBootLocalbootNoRootPath(t *testing.T) {
 	p, _ := newTestProvider(t)
 
 	testNet := &Network{
@@ -176,7 +175,6 @@ func TestBMHBootDefaultToBaremetalservices(t *testing.T) {
 			Gateway: "192.168.10.1",
 			DNS: NetworkDNSSpec{
 				Zone: "g10.lo",
-				// Server intentionally empty — no microdns in unit tests
 			},
 		},
 	}
@@ -190,16 +188,24 @@ func TestBMHBootDefaultToBaremetalservices(t *testing.T) {
 		},
 	})
 
-	// Both baremetalservices and localboot should have empty root_path
-	// so they inherit the pool default (baremetalservices).
-	for _, image := range []string{"baremetalservices", "localboot"} {
+	// localboot should have empty root_path (boots from disk).
+	// baremetalservices should have its own root_path (per-BMH, not pool).
+	tests := []struct {
+		image        string
+		wantRootPath string
+	}{
+		{"localboot", ""},
+		{"baremetalservices", "iscsi:192.168.10.1::::iqn.2000-02.com.mikrotik:file1"},
+	}
+
+	for _, tt := range tests {
 		bmh := &BareMetalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-" + image, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "test-" + tt.image, Namespace: "default"},
 			Spec: BMHSpec{
 				Network:        "g10",
 				BootMACAddress: "AA:BB:CC:DD:EE:01",
 				IP:             "192.168.10.50",
-				Image:          image,
+				Image:          tt.image,
 			},
 		}
 
@@ -207,12 +213,12 @@ func TestBMHBootDefaultToBaremetalservices(t *testing.T) {
 		p.syncBMHToNetwork(context.Background(), bmh, "", "", "", "")
 
 		if len(testNet.Spec.DHCP.Reservations) == 0 {
-			t.Fatalf("image=%s: no reservation created", image)
+			t.Fatalf("image=%s: no reservation created", tt.image)
 		}
 
 		res := testNet.Spec.DHCP.Reservations[0]
-		if res.RootPath != "" {
-			t.Errorf("image=%s: root_path should be empty (inherit pool default), got %q", image, res.RootPath)
+		if res.RootPath != tt.wantRootPath {
+			t.Errorf("image=%s: root_path = %q, want %q", tt.image, res.RootPath, tt.wantRootPath)
 		}
 	}
 }

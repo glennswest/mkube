@@ -33,7 +33,7 @@ func NewClient(creds Credentials) (BMC, error) {
 	return &ipmiClient{client: c, creds: creds}, nil
 }
 
-func (ic *ipmiClient) SetBootDevice(ctx context.Context, dev BootDevice) error {
+func (ic *ipmiClient) SetBootDevice(ctx context.Context, dev BootDevice, persist bool) error {
 	var selector ipmi.BootDeviceSelector
 	switch dev {
 	case BootDevicePXE:
@@ -44,12 +44,9 @@ func (ic *ipmiClient) SetBootDevice(ctx context.Context, dev BootDevice) error {
 		return fmt.Errorf("unsupported boot device: %v", dev)
 	}
 
-	// One-time boot override (persist=false, legacy BIOS boot type).
-	// The BIOS will use this device for the next boot only, then revert
-	// to the normal boot order.
-	err := ic.client.SetBootDevice(ctx, selector, ipmi.BIOSBootTypeLegacy, false)
+	err := ic.client.SetBootDevice(ctx, selector, ipmi.BIOSBootTypeLegacy, persist)
 	if err != nil {
-		return fmt.Errorf("set boot device %s on %s: %w", dev, ic.creds.Address, err)
+		return fmt.Errorf("set boot device %s (persist=%v) on %s: %w", dev, persist, ic.creds.Address, err)
 	}
 	return nil
 }

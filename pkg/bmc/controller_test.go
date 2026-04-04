@@ -75,7 +75,7 @@ func TestMockBMC(t *testing.T) {
 	}
 
 	// Set boot device
-	if err := m.SetBootDevice(ctx, BootDevicePXE); err != nil {
+	if err := m.SetBootDevice(ctx, BootDevicePXE, false); err != nil {
 		t.Fatal(err)
 	}
 	if m.LastBootDevice() != BootDevicePXE {

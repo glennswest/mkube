@@ -56,8 +56,10 @@ type Credentials struct {
 
 // BMC is the interface for out-of-band server management via IPMI.
 type BMC interface {
-	// SetBootDevice sets the next boot device (one-time override, non-persistent).
-	SetBootDevice(ctx context.Context, dev BootDevice) error
+	// SetBootDevice sets the boot device. If persist is true, the setting
+	// survives reboots (permanent BIOS override). If false, it applies to
+	// the next boot only.
+	SetBootDevice(ctx context.Context, dev BootDevice, persist bool) error
 
 	// Power sends a chassis power control command.
 	Power(ctx context.Context, action PowerAction) error
