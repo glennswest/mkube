@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-04-03
+- **fix:** BMH PUT handler wiped unspecified fields to zero values. `handleUpdateBMH` created a new empty struct and decoded the body into it — any field not in the request body became empty (BMC address, MAC, network, IP, image all lost). Server1/2/3 specs were wiped this way. Fixed to start from `existing.DeepCopy()` and overlay, matching PATCH handler behavior. Added regression test.
 - **revert:** Undid 5 root_path/iPXE commits that broke baremetalservices PXE boot. Pool-level root_path for baremetalservices is the correct mechanism — removing it caused iPXE "Booting from iSCSI: Error 0x3f122003" because `ipxe_boot_url` is not delivered as a DHCP option.
 - **fix:** `networkReservationToDNS` unconditionally called `dns.StringPtr()` on empty RootPath, sending `"root_path": ""` to microdns. Empty string suppressed pool default root_path for baremetalservices hosts. Now only sets root_path when explicitly non-empty; nil pointer marshals as JSON null so pool default applies.
 - **fix:** Per-BMH root_path for install images (e.g. rawhideinstall, fedora43) overrides pool default baremetalservices target. Without this, all PXE-booting servers got baremetalservices regardless of their BMH `spec.image`.
