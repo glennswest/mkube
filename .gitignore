@@ -17,4 +17,3 @@ dist/
 Dockerfile.agent
 Dockerfile.scratch.nostormd
 deploy/agent-stormd.toml
-deploy/.active-config.yaml
