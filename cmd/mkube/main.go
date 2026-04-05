@@ -575,6 +575,12 @@ func runSharedServices(
 
 	// ── Git Backup (optional) ────────────────────────────────────────
 	log.Infow("BOOT: gitbackup check", "enabled", cfg.GitBackup.Enabled, "kvStore", kvStore != nil, "repoURL", cfg.GitBackup.RepoURL)
+	// Diagnostic endpoint
+	mux.HandleFunc("/api/v1/gitbackup/diag", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"enabled":%v,"kvStore":%v,"repoURL":%q,"natsDeferred":%v}`,
+			cfg.GitBackup.Enabled, kvStore != nil, cfg.GitBackup.RepoURL, natsDeferred)
+	})
 	if cfg.GitBackup.Enabled && kvStore != nil {
 		gbMgr, err := gitbackup.New(cfg.GitBackup, kvStore, log)
 		if err != nil {
