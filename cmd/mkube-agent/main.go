@@ -127,14 +127,16 @@ func main() {
 		}
 	}
 
-	// Clean up stale containers and images from previous agent lifecycle
+	// Clean up stale containers and images from previous agent lifecycle.
+	// Only prune containers older than 24h so recent job containers are
+	// preserved for debugging/inspection.
 	{
 		bgCtx := context.Background()
-		if n, err := podmanClient.PruneContainers(bgCtx); err == nil && n > 0 {
-			log.Printf("[startup] pruned %d stopped containers", n)
+		if n, err := podmanClient.PruneContainers(bgCtx, "24h"); err == nil && n > 0 {
+			log.Printf("[startup] pruned %d stopped containers (older than 24h)", n)
 		}
-		if n, err := podmanClient.PruneImages(bgCtx, false, ""); err == nil && n > 0 {
-			log.Printf("[startup] pruned %d dangling images", n)
+		if n, err := podmanClient.PruneImages(bgCtx, false, "24h"); err == nil && n > 0 {
+			log.Printf("[startup] pruned %d dangling images (older than 24h)", n)
 		}
 	}
 
@@ -718,7 +720,8 @@ func cleanJobOutputDir(job *agentJob) {
 }
 
 // cleanupOrphanedContainers removes stopped build containers whose jobs
-// no longer exist in mkube. This frees disk after jobs are deleted.
+// no longer exist in mkube AND that are older than 24 hours.
+// This preserves recent job containers for debugging/inspection.
 func cleanupOrphanedContainers(apiURL string) {
 	bgCtx := context.Background()
 	containers, err := podmanClient.ListContainers(bgCtx)
@@ -726,10 +729,16 @@ func cleanupOrphanedContainers(apiURL string) {
 		return
 	}
 
-	// Collect stopped build containers: name → container ID
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	// Collect stopped build containers older than 24h: name → container ID
 	buildContainers := make(map[string]string) // "namespace/jobname" → container ID
 	for _, c := range containers {
 		if c.State == "running" {
+			continue
+		}
+		// Skip containers younger than 24 hours
+		if c.Created > 0 && time.Unix(c.Created, 0).After(cutoff) {
 			continue
 		}
 		for _, name := range c.Names {
@@ -766,7 +775,7 @@ func cleanupOrphanedContainers(apiURL string) {
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusNotFound {
-			log.Printf("[cleanup] removing container for deleted job %s", jobKey)
+			log.Printf("[cleanup] removing container for deleted job %s (older than 24h)", jobKey)
 			_ = podmanClient.RemoveContainer(bgCtx, containerID, true)
 		}
 	}

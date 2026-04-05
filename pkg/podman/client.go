@@ -443,9 +443,10 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) err
 
 // ContainerInfo describes a container returned by the list API.
 type ContainerInfo struct {
-	ID    string
-	Names []string
-	State string // running, exited, etc.
+	ID      string
+	Names   []string
+	State   string // running, exited, etc.
+	Created int64  // unix timestamp
 }
 
 // ListContainers returns all containers (including stopped).
@@ -460,9 +461,10 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 	defer body.Close()
 
 	var raw []struct {
-		ID    string   `json:"Id"`
-		Names []string `json:"Names"`
-		State string   `json:"State"`
+		ID      string   `json:"Id"`
+		Names   []string `json:"Names"`
+		State   string   `json:"State"`
+		Created int64    `json:"Created"`
 	}
 	if err := json.NewDecoder(body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("list containers decode: %w", err)
@@ -470,17 +472,23 @@ func (c *Client) ListContainers(ctx context.Context) ([]ContainerInfo, error) {
 
 	out := make([]ContainerInfo, len(raw))
 	for i, r := range raw {
-		out[i] = ContainerInfo{ID: r.ID, Names: r.Names, State: r.State}
+		out[i] = ContainerInfo{ID: r.ID, Names: r.Names, State: r.State, Created: r.Created}
 	}
 	return out, nil
 }
 
-// PruneContainers removes all stopped containers.
-func (c *Client) PruneContainers(ctx context.Context) (int, error) {
+// PruneContainers removes stopped containers. If filter is non-empty it is
+// passed as an "until" filter (e.g. "24h" to only prune containers older than 24 hours).
+func (c *Client) PruneContainers(ctx context.Context, filters ...string) (int, error) {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	body, err := c.post(ctx2, "/containers/prune", nil)
+	path := "/containers/prune"
+	if len(filters) > 0 && filters[0] != "" {
+		path += "?filters=" + url.QueryEscape(fmt.Sprintf(`{"until":["%s"]}`, filters[0]))
+	}
+
+	body, err := c.post(ctx2, path, nil)
 	if err != nil {
 		return 0, err
 	}

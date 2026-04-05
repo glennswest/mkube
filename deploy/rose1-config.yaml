@@ -201,7 +201,7 @@ bmh:
 
 gitBackup:
   enabled: true
-  repoURL: "http://git.gt.lo:3000"
+  repoURL: "http://git.gt.lo"
   repoName: "mkube/configstate"
   branch: "main"
   username: "mkube"

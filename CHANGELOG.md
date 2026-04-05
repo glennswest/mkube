@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-04-05
+- **feat:** Agent container cleanup now uses 24h retention — stopped build containers and dangling images are preserved for a day before pruning. Both startup prune and orphaned container cleanup respect the 24h grace period. Supports debugging/inspection of recent job runs.
+- **feat:** Podman client `PruneContainers` now accepts optional `until` filter (e.g. "24h") matching `PruneImages` API. `ContainerInfo` now includes `Created` timestamp.
+- **chore:** Include rose1-config.yaml gitBackup URL fix in commit.
+
 ### 2026-04-04
 - **feat:** Git-backed config state backup via rust4git State API. New `pkg/gitbackup/` package periodically exports all NATS KV resources as individual YAML files and pushes changed files to a private rust4git repo. Features: content-hash-based incremental pushes (only changed files pushed), debounced change detection via store sync hooks, periodic full snapshots, manifest tracking for DR, status/trigger REST endpoints. Secrets and ephemeral buckets (NODE_STATUS, JOBLOGS) excluded from backup.
 - **feat:** Store multi-hook support — `AddSyncHook()` method allows multiple consumers (cluster sync + git backup) to react to store changes without conflicting.
