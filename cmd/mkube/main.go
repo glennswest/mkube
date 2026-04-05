@@ -574,13 +574,6 @@ func runSharedServices(
 	}
 
 	// ── Git Backup (optional) ────────────────────────────────────────
-	log.Infow("BOOT: gitbackup check", "enabled", cfg.GitBackup.Enabled, "kvStore", kvStore != nil, "repoURL", cfg.GitBackup.RepoURL)
-	// Diagnostic endpoint
-	mux.HandleFunc("/api/v1/gitbackup/diag", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"enabled":%v,"kvStore":%v,"repoURL":%q,"natsDeferred":%v}`,
-			cfg.GitBackup.Enabled, kvStore != nil, cfg.GitBackup.RepoURL, natsDeferred)
-	})
 	if cfg.GitBackup.Enabled && kvStore != nil {
 		gbMgr, err := gitbackup.New(cfg.GitBackup, kvStore, log)
 		if err != nil {
@@ -591,10 +584,8 @@ func runSharedServices(
 			go gbMgr.Run(ctx)
 			log.Infow("BOOT: git backup started", "repo", cfg.GitBackup.RepoName)
 		}
-	} else if !cfg.GitBackup.Enabled {
-		log.Infow("BOOT: git backup disabled in config")
-	} else if kvStore == nil {
-		log.Infow("BOOT: git backup skipped (kvStore nil, will init on deferred NATS connect)")
+	} else if kvStore == nil && cfg.GitBackup.Enabled {
+		log.Infow("BOOT: git backup deferred (kvStore nil, will init on NATS connect)")
 	}
 
 	// ── Register routes and start HTTP server ───────────────────────
