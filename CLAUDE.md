@@ -137,5 +137,8 @@ Known test failures (pre-existing):
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
 
 ### Recently Completed
+- [x] Agent 24h container cleanup retention — stopped build containers and dangling images preserved for a day before pruning. Supports debugging/inspection.
+- [x] Fix gitbackup on deferred NATS boot — deferred NATS path now initializes gitbackup after store connects
+- [x] Fix deploy to bake device-specific config + deploy-config for volume-mounted config (`/etc/mkube/` is volume-mounted from device, overriding image-baked config)
 - [x] Git-backed config state backup (`pkg/gitbackup/`) — rust4git State API, incremental pushes, debounce, store multi-hook, status/trigger API
 - [x] DNS config snapshotter — debounced per-network microdns snapshots to git on every mutation (DHCP pools/reservations, DNS records/forwarders, network updates, BMH changes)
