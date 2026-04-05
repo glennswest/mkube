@@ -71,8 +71,12 @@ deploy: build build-iscsi-pvc
 	cp dist/$(BINARY)-$(ARCH) mkube
 	cp $(STORMD) stormd
 	cp dist/iscsi-pvc-$(ARCH) iscsi-pvc
+	@CONFIG="deploy/config.yaml"; \
+	if [ -f "deploy/rose1-config.yaml" ]; then CONFIG="deploy/rose1-config.yaml"; fi; \
+	echo "Using config: $$CONFIG"; \
+	cp "$$CONFIG" deploy/.active-config.yaml
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
-	rm -f mkube stormd iscsi-pvc
+	rm -f mkube stormd iscsi-pvc deploy/.active-config.yaml
 	podman push --tls-verify=false $(IMAGE)
 	@echo "Pushed $(IMAGE) — waiting for mkube-update to swap binary..."
 	@EXPECT_COMMIT=$(COMMIT); \
