@@ -5,6 +5,7 @@
 ### 2026-04-05
 - **feat:** Agent container cleanup now uses 24h retention — stopped build containers and dangling images are preserved for a day before pruning. Both startup prune and orphaned container cleanup respect the 24h grace period. Supports debugging/inspection of recent job runs.
 - **feat:** Podman client `PruneContainers` now accepts optional `until` filter (e.g. "24h") matching `PruneImages` API. `ContainerInfo` now includes `Created` timestamp.
+- **fix:** Git backup not starting on deferred NATS boot — when mkube boots before NATS (the normal case), `kvStore` is nil at gitbackup init time. The deferred NATS reconnect path now initializes gitbackup after store connects.
 - **chore:** Include rose1-config.yaml gitBackup URL fix in commit.
 
 ### 2026-04-04

@@ -646,6 +646,18 @@ func runSharedServices(
 				if nsMgr != nil {
 					nsMgr.SetStore(s)
 				}
+				// Initialize git backup on deferred NATS connect
+				if cfg.GitBackup.Enabled {
+					gbMgr, gbErr := gitbackup.New(cfg.GitBackup, s, log)
+					if gbErr != nil {
+						log.Warnw("git backup init failed (deferred)", "error", gbErr)
+					} else {
+						s.AddSyncHook(gbMgr.OnStoreChange)
+						gbMgr.RegisterRoutes(mux)
+						go gbMgr.Run(ctx)
+						log.Infow("BOOT: git backup started (deferred)", "repo", cfg.GitBackup.RepoName)
+					}
+				}
 				log.Infow("NATS store connected (deferred)", "attempt", i+1)
 				return
 			}
