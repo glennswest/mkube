@@ -30,12 +30,14 @@ type Manager struct {
 	hashes map[string]string // path → sha256 of last pushed content
 
 	// Status
-	statusMu       sync.RWMutex
-	lastBackup     time.Time
-	lastCommitHash string
-	lastError      string
-	pendingChanges int64
-	totalPushed    int64
+	statusMu        sync.RWMutex
+	lastBackup      time.Time
+	lastCommitHash  string
+	lastError       string
+	lastExportCount int
+	lastPushErr     string
+	pendingChanges  int64
+	totalPushed     int64
 }
 
 // New creates a new git backup manager.
@@ -157,6 +159,7 @@ func (m *Manager) Run(ctx context.Context) {
 
 // doSnapshot exports all resources and pushes changed files.
 func (m *Manager) doSnapshot(ctx context.Context) {
+	m.log.Debugw("snapshot starting")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -166,6 +169,12 @@ func (m *Manager) doSnapshot(ctx context.Context) {
 		m.log.Warnw("git backup export failed", "error", err)
 		return
 	}
+
+	m.statusMu.Lock()
+	m.lastExportCount = len(files)
+	m.statusMu.Unlock()
+
+	m.log.Infow("snapshot exported", "files", len(files), "manifest", len(manifest))
 
 	// Determine which files changed
 	var changed []exportedFile
@@ -237,18 +246,22 @@ func (m *Manager) Status() map[string]interface{} {
 	defer m.statusMu.RUnlock()
 
 	status := map[string]interface{}{
-		"enabled":        m.cfg.Enabled,
-		"repoURL":        m.cfg.RepoURL,
-		"repoName":       m.cfg.RepoName,
-		"branch":         m.cfg.Branch,
-		"pendingChanges": atomic.LoadInt64(&m.pendingChanges),
-		"totalPushed":    atomic.LoadInt64(&m.totalPushed),
+		"enabled":         m.cfg.Enabled,
+		"repoURL":         m.cfg.RepoURL,
+		"repoName":        m.cfg.RepoName,
+		"branch":          m.cfg.Branch,
+		"pendingChanges":  atomic.LoadInt64(&m.pendingChanges),
+		"totalPushed":     atomic.LoadInt64(&m.totalPushed),
+		"lastExportCount": m.lastExportCount,
 	}
 	if !m.lastBackup.IsZero() {
 		status["lastBackup"] = m.lastBackup.Format(time.RFC3339)
 	}
 	if m.lastError != "" {
 		status["lastError"] = m.lastError
+	}
+	if m.lastPushErr != "" {
+		status["lastPushErr"] = m.lastPushErr
 	}
 	return status
 }

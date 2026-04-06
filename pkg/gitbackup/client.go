@@ -166,8 +166,9 @@ func (c *rust4gitClient) ensureRepo() error {
 	if resp.StatusCode == http.StatusSeeOther {
 		return fmt.Errorf("auth failed (303 redirect to login) — check token")
 	}
-	// 201 = created, 409 or 200 = already exists
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+	// 201 = created, 409/400/200 = already exists
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusConflict && resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("create repo: status %d: %s", resp.StatusCode, string(body))
 	}
