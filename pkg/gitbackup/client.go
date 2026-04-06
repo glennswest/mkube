@@ -2,27 +2,33 @@ package gitbackup
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 // rust4gitClient pushes files to a rust4git instance via the State API.
+// Uses Bearer token authentication with automatic renewal.
 type rust4gitClient struct {
-	baseURL  string // e.g. "http://git.gt.lo:3000"
+	baseURL  string // e.g. "http://git.gt.lo"
 	repoName string // e.g. "mkube/configstate"
 	branch   string
 	author   string
 	email    string
-	username string
-	password string
-	client   *http.Client
+
+	tokenMu      sync.RWMutex
+	token        string
+	tokenFile    string // path to persist renewed tokens
+	client       *http.Client
 }
 
-func newClient(baseURL, repoName, branch, author, email, username, password string, insecureTLS bool) *rust4gitClient {
+func newClient(baseURL, repoName, branch, author, email, username, password string, passwordFile string, insecureTLS bool) *rust4gitClient {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecureTLS},
 	}
@@ -32,13 +38,76 @@ func newClient(baseURL, repoName, branch, author, email, username, password stri
 		branch:   branch,
 		author:   author,
 		email:    email,
-		username: username,
-		password: password,
+		token:    password,
+		tokenFile: passwordFile,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
+			// Don't follow redirects — 303 means auth failure
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
+}
+
+// setAuth adds Bearer token auth to a request.
+func (c *rust4gitClient) setAuth(req *http.Request) {
+	c.tokenMu.RLock()
+	tok := c.token
+	c.tokenMu.RUnlock()
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+// RenewToken calls POST /api/auth/renew to get a fresh token.
+// On success, updates the in-memory token and persists to tokenFile.
+func (c *rust4gitClient) RenewToken() error {
+	u := c.baseURL + "/api/auth/renew"
+
+	req, err := http.NewRequest("POST", u, nil)
+	if err != nil {
+		return fmt.Errorf("creating renew request: %w", err)
+	}
+	c.setAuth(req)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("renewing token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("token renewal rejected (status %d) — token may be expired", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("token renewal: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("parsing renewal response: %w", err)
+	}
+	if result.Token == "" {
+		return fmt.Errorf("renewal returned empty token")
+	}
+
+	c.tokenMu.Lock()
+	c.token = result.Token
+	c.tokenMu.Unlock()
+
+	// Persist to file so it survives restarts
+	if c.tokenFile != "" {
+		if err := os.WriteFile(c.tokenFile, []byte(result.Token+"\n"), 0600); err != nil {
+			return fmt.Errorf("persisting renewed token: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // pushFile pushes a single file to the repo via the State API.
@@ -57,9 +126,7 @@ func (c *rust4gitClient) pushFile(path, message string, content []byte) (string,
 		return "", fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
-	if c.username != "" {
-		req.SetBasicAuth(c.username, c.password)
-	}
+	c.setAuth(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -67,6 +134,9 @@ func (c *rust4gitClient) pushFile(path, message string, content []byte) (string,
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusSeeOther {
+		return "", fmt.Errorf("push %s: auth failed (303 redirect to login)", path)
+	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("push %s: status %d: %s", path, resp.StatusCode, string(body))
@@ -85,9 +155,7 @@ func (c *rust4gitClient) ensureRepo() error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.username != "" {
-		req.SetBasicAuth(c.username, c.password)
-	}
+	c.setAuth(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -95,6 +163,9 @@ func (c *rust4gitClient) ensureRepo() error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusSeeOther {
+		return fmt.Errorf("auth failed (303 redirect to login) — check token")
+	}
 	// 201 = created, 409 or 200 = already exists
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
 		body, _ := io.ReadAll(resp.Body)
@@ -111,9 +182,7 @@ func (c *rust4gitClient) getFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.username != "" {
-		req.SetBasicAuth(c.username, c.password)
-	}
+	c.setAuth(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -123,6 +192,9 @@ func (c *rust4gitClient) getFile(path string) ([]byte, error) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
+	}
+	if resp.StatusCode == http.StatusSeeOther {
+		return nil, fmt.Errorf("auth failed (303 redirect to login)")
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("get %s: status %d", path, resp.StatusCode)

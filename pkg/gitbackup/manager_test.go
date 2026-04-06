@@ -208,7 +208,7 @@ func TestClientPushFile(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := newClient(ts.URL, "test/repo", "main", "mkube", "mkube@test", "", "", false)
+	c := newClient(ts.URL, "test/repo", "main", "mkube", "mkube@test", "", "", "", false)
 
 	_, err := c.pushFile("pods/test.yaml", "test commit", []byte("content"))
 	if err != nil {
@@ -241,7 +241,7 @@ func TestClientEnsureRepo(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := newClient(ts.URL, "test/repo", "main", "mkube", "mkube@test", "user", "pass", false)
+	c := newClient(ts.URL, "test/repo", "main", "mkube", "mkube@test", "user", "pass", "", false)
 	err := c.ensureRepo()
 	if err != nil {
 		t.Fatalf("ensureRepo failed: %v", err)

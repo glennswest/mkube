@@ -62,7 +62,7 @@ func New(cfg config.GitBackupConfig, s *store.Store, log *zap.SugaredLogger) (*M
 	client := newClient(
 		cfg.RepoURL, cfg.RepoName, cfg.Branch,
 		cfg.CommitAuthor, cfg.CommitEmail,
-		cfg.Username, password,
+		cfg.Username, password, cfg.PasswordFile,
 		cfg.InsecureTLS,
 	)
 
@@ -107,6 +107,10 @@ func (m *Manager) Run(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Token renewal every 30 days
+	renewTicker := time.NewTicker(30 * 24 * time.Hour)
+	defer renewTicker.Stop()
+
 	var debounceTimer *time.Timer
 
 	m.log.Infow("git backup started",
@@ -128,6 +132,13 @@ func (m *Manager) Run(ctx context.Context) {
 			}
 			m.log.Info("git backup stopped")
 			return
+
+		case <-renewTicker.C:
+			if err := m.client.RenewToken(); err != nil {
+				m.log.Warnw("token renewal failed", "error", err)
+			} else {
+				m.log.Infow("token renewed successfully")
+			}
 
 		case <-ticker.C:
 			m.doSnapshot(ctx)

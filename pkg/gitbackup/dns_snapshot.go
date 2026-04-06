@@ -46,7 +46,7 @@ func NewDNSSnapshotter(cfg config.GitBackupConfig, dnsClient *dns.Client, log *z
 	client := newClient(
 		cfg.RepoURL, "", cfg.Branch,
 		cfg.CommitAuthor, cfg.CommitEmail,
-		cfg.Username, password,
+		cfg.Username, password, cfg.PasswordFile,
 		cfg.InsecureTLS,
 	)
 
