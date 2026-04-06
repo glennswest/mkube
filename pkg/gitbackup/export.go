@@ -3,6 +3,7 @@ package gitbackup
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 
 	"github.com/glennswest/mkube/pkg/store"
@@ -46,10 +47,14 @@ type exportedFile struct {
 }
 
 // exportAll exports all store buckets as individual YAML files.
-// Returns a slice of files and a manifest of current resource keys.
+// Returns a slice of files, a manifest of current resource keys, and diagnostics.
 func exportAll(ctx context.Context, s *store.Store) ([]exportedFile, []string, error) {
 	var files []exportedFile
 	var manifest []string
+
+	if s == nil {
+		return nil, nil, fmt.Errorf("store is nil")
+	}
 
 	for _, be := range bucketExports {
 		if be.skip {
