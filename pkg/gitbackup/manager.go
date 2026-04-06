@@ -158,10 +158,13 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 // doSnapshot exports all resources and pushes changed files.
-func (m *Manager) doSnapshot(ctx context.Context) {
+func (m *Manager) doSnapshot(_ context.Context) {
 	m.log.Debugw("snapshot starting")
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
 	files, manifest, err := exportAll(ctx, m.store)
 	if err != nil {
