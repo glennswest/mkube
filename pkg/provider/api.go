@@ -206,6 +206,8 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/storagepools/{name}", p.handlePatchStoragePool)
 	mux.HandleFunc("DELETE /api/v1/storagepools/{name}", p.handleDeleteStoragePool)
 	mux.HandleFunc("POST /api/v1/storagepools/{name}/migrate", p.handleMigrateStoragePool)
+	mux.HandleFunc("GET /api/v1/storagepools/migrations/current", p.handleMigrationStatus)
+	mux.HandleFunc("GET /api/v1/storagepools/migrations/{id}/progress", p.handleMigrationProgress)
 
 	// Agent endpoints (source-IP authenticated)
 	mux.HandleFunc("GET /api/v1/agent/work", p.handleAgentWork)
@@ -577,18 +579,15 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
-	// Try micrologs first if configured
-	if p.deps.Config.Logging.Enabled && p.deps.Config.Logging.URL != "" {
+	// Try micrologs first if configured (with circuit breaker)
+	if p.deps.Config.Logging.Enabled && p.deps.Config.Logging.URL != "" && !p.micrologsBreaker.isOpen() {
 		logsURL := strings.TrimRight(p.deps.Config.Logging.URL, "/") +
 			fmt.Sprintf("/api/v1/logs/%s/%s/%s", ns, name, containerName)
 		req, err := http.NewRequestWithContext(r.Context(), "GET", logsURL, nil)
 		if err == nil {
-			logsClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-				MaxConnsPerHost:   1,
-				DisableKeepAlives: true,
-			}}
-			resp, err := logsClient.Do(req)
+			resp, err := p.micrologsClient.Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
+				p.micrologsBreaker.recordSuccess()
 				defer resp.Body.Close()
 				_, _ = io.Copy(w, resp.Body)
 				return
@@ -596,6 +595,7 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 			if resp != nil {
 				resp.Body.Close()
 			}
+			p.micrologsBreaker.recordFailure()
 		}
 	}
 

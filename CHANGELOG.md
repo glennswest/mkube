@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-04-06
+- **fix:** Micrologs circuit breaker — when micrologs service is down, first 3 log requests take 2s each (down from 10s), then all subsequent requests skip micrologs for 30s cooldown. Persistent HTTP client with 2s timeout replaces per-request 10s client.
+- **feat:** Async PVC migration with SSE progress streaming. `POST .../migrate?async=true` returns 202 immediately and runs migration in background. New SSE endpoint streams phase transitions and byte-level copy progress. Phases: stopping_pods → copying_data → updating_metadata → purging_source → restarting_pods → complete. MigrationTracker singleton with atomic guard prevents concurrent migrations.
+- **feat:** Console storage UI progress bar for PVC moves — modal shows real-time progress bar (Dracula theme: cyan during copy, green on complete, red on failure) with phase labels and byte counters via EventSource SSE. Sync API preserved for backward compat.
+
 ### 2026-04-05
 - **feat:** Agent container cleanup now uses 24h retention — stopped build containers and dangling images are preserved for a day before pruning. Both startup prune and orphaned container cleanup respect the 24h grace period. Supports debugging/inspection of recent job runs.
 - **feat:** Podman client `PruneContainers` now accepts optional `until` filter (e.g. "24h") matching `PruneImages` API. `ContainerInfo` now includes `Created` timestamp.

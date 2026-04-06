@@ -27,13 +27,22 @@ func (c *Console) handleStorage(w http.ResponseWriter, r *http.Request) {
 <div id="move-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
   <div class="card" style="min-width:320px;max-width:400px">
     <h3 id="move-title">Move PVC</h3>
-    <div style="margin:12px 0">
-      <label style="font-size:12px;color:var(--comment)">Target Pool</label>
-      <select id="move-target" style="width:100%;padding:6px;margin-top:4px;background:var(--bg);color:var(--fg);border:1px solid var(--selection);border-radius:4px"></select>
+    <div id="move-form">
+      <div style="margin:12px 0">
+        <label style="font-size:12px;color:var(--comment)">Target Pool</label>
+        <select id="move-target" style="width:100%;padding:6px;margin-top:4px;background:var(--bg);color:var(--fg);border:1px solid var(--selection);border-radius:4px"></select>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="closeMove()">Cancel</button>
+        <button class="btn btn-primary" onclick="doMove()">Move</button>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn" onclick="closeMove()">Cancel</button>
-      <button class="btn btn-primary" onclick="doMove()">Move</button>
+    <div id="move-progress" style="display:none">
+      <div id="move-phase" style="font-size:12px;color:var(--comment);margin:8px 0"></div>
+      <div style="background:var(--selection);border-radius:4px;height:18px;overflow:hidden;margin:8px 0">
+        <div id="move-bar" style="width:0%;height:100%;background:var(--cyan);border-radius:4px;transition:width 0.3s"></div>
+      </div>
+      <div id="move-bytes" style="font-size:11px;color:var(--comment)"></div>
     </div>
     <div id="move-status" style="font-size:12px;margin-top:8px"></div>
   </div>
@@ -406,27 +415,78 @@ function openMove(resource,currentPool){
   document.getElementById('move-modal').style.display='flex';
 }
 function closeMove(){
+  if(_moveEventSource){_moveEventSource.close();_moveEventSource=null;}
   document.getElementById('move-modal').style.display='none';
+  document.getElementById('move-form').style.display='';
+  document.getElementById('move-progress').style.display='none';
 }
+var _moveEventSource=null;
+var _phaseLabels={
+  starting:'Starting migration...',
+  stopping_pods:'Stopping pods...',
+  copying_data:'Copying data...',
+  updating_metadata:'Updating metadata...',
+  purging_source:'Removing source files...',
+  restarting_pods:'Restarting pods...',
+  complete:'Complete',
+  failed:'Failed'
+};
 async function doMove(){
   var target=document.getElementById('move-target').value;
   if(!target) return;
   var st=document.getElementById('move-status');
-  st.textContent='Moving...';
-  st.style.color='var(--comment)';
-  var res=await fetch(API+'/api/v1/storagepools/'+encodeURIComponent(target)+'/migrate',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({resourceType:'pvc',resourceName:_moveResource,targetPool:target,purgeSource:true})
-  }).then(function(r){return r.json();}).catch(function(e){return {status:'error',message:String(e)};});
-  if(res.status==='success'){
-    st.textContent='Moved successfully ('+fmtBytes(res.bytesCopied||0)+')';
-    st.style.color='var(--green)';
-    setTimeout(function(){closeMove();load();},1500);
-  } else {
-    st.textContent='Error: '+(res.message||'unknown');
-    st.style.color='var(--red)';
-  }
+  st.textContent='';
+  try{
+    var res=await fetch(API+'/api/v1/storagepools/'+encodeURIComponent(target)+'/migrate?async=true',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({resourceType:'pvc',resourceName:_moveResource,targetPool:target,purgeSource:true})
+    });
+    if(res.status===409){st.textContent='A migration is already running';st.style.color='var(--orange)';return;}
+    if(!res.ok){var txt=await res.text();st.textContent='Error: '+txt;st.style.color='var(--red)';return;}
+    var data=await res.json();
+    // Switch to progress view
+    document.getElementById('move-form').style.display='none';
+    document.getElementById('move-progress').style.display='block';
+    document.getElementById('move-phase').textContent=_phaseLabels.starting||'Starting...';
+    document.getElementById('move-bar').style.width='0%';
+    document.getElementById('move-bar').style.background='var(--cyan)';
+    document.getElementById('move-bytes').textContent='';
+    // Connect SSE
+    if(_moveEventSource){_moveEventSource.close();_moveEventSource=null;}
+    _moveEventSource=new EventSource(API+data.progressUrl);
+    _moveEventSource.onmessage=function(e){
+      var p=JSON.parse(e.data);
+      document.getElementById('move-phase').textContent=_phaseLabels[p.phase]||p.phase;
+      if(p.totalBytes>0){
+        var pct=Math.min(100,Math.round((p.bytesCopied/p.totalBytes)*100));
+        document.getElementById('move-bar').style.width=pct+'%';
+        document.getElementById('move-bytes').textContent=fmtPoolBytes(p.bytesCopied)+' / '+fmtPoolBytes(p.totalBytes)+' ('+pct+'%)';
+      } else if(p.phase==='stopping_pods'||p.phase==='restarting_pods'){
+        document.getElementById('move-bar').style.width='100%';
+        document.getElementById('move-bar').style.background='var(--purple)';
+      }
+      if(p.phase==='complete'){
+        document.getElementById('move-bar').style.width='100%';
+        document.getElementById('move-bar').style.background='var(--green)';
+        st.textContent='Migration complete ('+fmtPoolBytes(p.bytesCopied)+')';
+        st.style.color='var(--green)';
+        _moveEventSource.close();_moveEventSource=null;
+        setTimeout(function(){closeMove();load();},2000);
+      }
+      if(p.phase==='failed'){
+        document.getElementById('move-bar').style.background='var(--red)';
+        st.textContent='Error: '+(p.error||'unknown');
+        st.style.color='var(--red)';
+        _moveEventSource.close();_moveEventSource=null;
+      }
+    };
+    _moveEventSource.onerror=function(){
+      if(_moveEventSource){_moveEventSource.close();_moveEventSource=null;}
+      st.textContent='Lost connection to progress stream';
+      st.style.color='var(--orange)';
+    };
+  }catch(e){st.textContent='Error: '+e;st.style.color='var(--red)';}
 }
 
 load(); _uiInterval(load,30000);

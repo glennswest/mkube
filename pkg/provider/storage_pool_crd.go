@@ -590,6 +590,39 @@ func (p *MicroKubeProvider) handleMigrateStoragePool(w http.ResponseWriter, r *h
 		return
 	}
 
+	// Async mode: return 202 immediately and run migration in background
+	if r.URL.Query().Get("async") == "true" {
+		migrationID := fmt.Sprintf("mig-%d", time.Now().UnixMilli())
+		if !p.migrationTracker.TryStart(migrationID, req.ResourceType, req.ResourceName, req.TargetPool) {
+			http.Error(w, "a migration is already in progress", http.StatusConflict)
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			switch req.ResourceType {
+			case "pvc":
+				p.migratePVCAsync(ctx, req, targetPool)
+			case "disk":
+				result := p.migrateISCSIDisk(ctx, req, targetPool)
+				if result.Status == "error" {
+					p.migrationTracker.Complete(result.Message)
+				} else {
+					p.migrationTracker.Update("complete", result.BytesCopied, result.BytesCopied)
+					p.migrationTracker.Complete("")
+				}
+			default:
+				p.migrationTracker.Complete(fmt.Sprintf("unsupported resource type %q", req.ResourceType))
+			}
+		}()
+		podWriteJSON(w, http.StatusAccepted, map[string]string{
+			"migrationId": migrationID,
+			"progressUrl": fmt.Sprintf("/api/v1/storagepools/migrations/%s/progress", migrationID),
+		})
+		return
+	}
+
+	// Sync mode (backward compat)
 	switch req.ResourceType {
 	case "pvc":
 		result := p.migratePVC(r.Context(), req, targetPool)
@@ -599,6 +632,67 @@ func (p *MicroKubeProvider) handleMigrateStoragePool(w http.ResponseWriter, r *h
 		podWriteJSON(w, http.StatusOK, result)
 	default:
 		http.Error(w, fmt.Sprintf("unsupported resource type %q (use 'pvc' or 'disk')", req.ResourceType), http.StatusBadRequest)
+	}
+}
+
+// handleMigrationStatus returns the current migration progress (or 404 if none).
+func (p *MicroKubeProvider) handleMigrationStatus(w http.ResponseWriter, r *http.Request) {
+	cur := p.migrationTracker.Current()
+	if cur == nil {
+		http.Error(w, "no migration in progress", http.StatusNotFound)
+		return
+	}
+	podWriteJSON(w, http.StatusOK, cur)
+}
+
+// handleMigrationProgress streams SSE progress events for a migration.
+func (p *MicroKubeProvider) handleMigrationProgress(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	cur := p.migrationTracker.Current()
+	if cur == nil {
+		http.Error(w, "no migration in progress", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	// Send current state immediately
+	data, _ := json.Marshal(cur)
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
+
+	// If already done, close immediately
+	if cur.Phase == "complete" || cur.Phase == "failed" {
+		return
+	}
+
+	subID, ch := p.migrationTracker.Subscribe()
+	defer p.migrationTracker.Unsubscribe(subID)
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case progress, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(&progress)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+			if progress.Phase == "complete" || progress.Phase == "failed" {
+				return
+			}
+		}
 	}
 }
 
@@ -679,6 +773,152 @@ func (p *MicroKubeProvider) migratePVC(ctx context.Context, req MigrateRequest, 
 		BytesCopied: bytesCopied,
 		DurationMs:  duration.Milliseconds(),
 	}
+}
+
+// migratePVCAsync runs the PVC migration with progress tracking for SSE streaming.
+func (p *MicroKubeProvider) migratePVCAsync(ctx context.Context, req MigrateRequest, targetPool *StoragePool) {
+	parts := strings.SplitN(req.ResourceName, "/", 2)
+	if len(parts) != 2 {
+		p.migrationTracker.Complete("resourceName must be namespace/name for PVC")
+		return
+	}
+	ns, name := parts[0], parts[1]
+	key := ns + "/" + name
+
+	pvc, ok := p.pvcs.Get(key)
+	if !ok {
+		p.migrationTracker.Complete(fmt.Sprintf("PVC %q not found", key))
+		return
+	}
+
+	srcPath := p.pvcHostPath(pvc)
+	dstPath := fmt.Sprintf("%s/%s_%s", targetPool.volumesPath(), ns, name)
+
+	if srcPath == dstPath {
+		p.migrationTracker.Complete("source and target paths are identical")
+		return
+	}
+
+	// Phase 1: estimate total size
+	totalBytes := dirSize(srcPath)
+	p.migrationTracker.Update("stopping_pods", 0, totalBytes)
+
+	// Phase 2: stop affected pods
+	affectedPods := p.findPodsUsingPVC(ns, name)
+	for _, pod := range affectedPods {
+		p.deps.Logger.Infow("stopping pod for PVC migration", "pod", pod.Namespace+"/"+pod.Name)
+		if err := p.stopPodContainers(ctx, pod); err != nil {
+			p.deps.Logger.Warnw("failed to stop pod for migration", "pod", pod.Namespace+"/"+pod.Name, "error", err)
+		}
+	}
+
+	// Phase 3: copy data with progress
+	p.migrationTracker.Update("copying_data", 0, totalBytes)
+
+	if err := os.MkdirAll(dstPath, 0755); err != nil {
+		p.migrationTracker.Complete(fmt.Sprintf("creating target directory: %v", err))
+		return
+	}
+
+	var bytesCopied int64
+	bytesCopied, err := copyDirectoryWithProgress(srcPath, dstPath, func(copied int64) {
+		p.migrationTracker.Update("copying_data", copied, totalBytes)
+	})
+	if err != nil {
+		p.migrationTracker.Complete(fmt.Sprintf("copying data: %v", err))
+		return
+	}
+
+	// Phase 4: update metadata
+	p.migrationTracker.Update("updating_metadata", bytesCopied, totalBytes)
+
+	if pvc.Annotations == nil {
+		pvc.Annotations = make(map[string]string)
+	}
+	pvc.Annotations["vkube.io/storage-pool"] = req.TargetPool
+
+	if p.deps.Store != nil && p.deps.Store.PersistentVolumeClaims != nil {
+		storeKey := ns + "." + name
+		if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, storeKey, pvc); err != nil {
+			p.deps.Logger.Warnw("failed to persist PVC after migration", "key", storeKey, "error", err)
+		}
+	}
+
+	// Phase 5: purge source
+	if req.PurgeSource {
+		p.migrationTracker.Update("purging_source", bytesCopied, totalBytes)
+		if err := os.RemoveAll(srcPath); err != nil {
+			p.deps.Logger.Warnw("failed to purge source after PVC migration", "path", srcPath, "error", err)
+		}
+	}
+
+	// Phase 6: restart pods
+	p.migrationTracker.Update("restarting_pods", bytesCopied, totalBytes)
+	p.triggerReconcile()
+
+	p.deps.Logger.Infow("PVC migrated (async)", "pvc", key, "target", req.TargetPool, "bytes", bytesCopied)
+	p.migrationTracker.Update("complete", bytesCopied, totalBytes)
+	p.migrationTracker.Complete("")
+}
+
+// dirSize returns the total size in bytes of all files under a directory.
+func dirSize(path string) int64 {
+	var total int64
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		fp := filepath.Join(path, entry.Name())
+		if entry.IsDir() {
+			total += dirSize(fp)
+		} else {
+			info, err := entry.Info()
+			if err == nil {
+				total += info.Size()
+			}
+		}
+	}
+	return total
+}
+
+// copyDirectoryWithProgress recursively copies src to dst, calling progress after each file.
+func copyDirectoryWithProgress(src, dst string, progress func(bytesSoFar int64)) (int64, error) {
+	var totalBytes int64
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return totalBytes, err
+			}
+			n, err := copyDirectoryWithProgress(srcPath, dstPath, func(sub int64) {
+				progress(totalBytes + sub)
+			})
+			totalBytes += n
+			if err != nil {
+				return totalBytes, err
+			}
+		} else {
+			n, err := copyFile(srcPath, dstPath)
+			totalBytes += n
+			if err != nil {
+				return totalBytes, err
+			}
+			progress(totalBytes)
+		}
+	}
+	return totalBytes, nil
 }
 
 func (p *MicroKubeProvider) migrateISCSIDisk(ctx context.Context, req MigrateRequest, targetPool *StoragePool) MigrateResult {

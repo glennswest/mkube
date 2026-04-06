@@ -133,6 +133,9 @@ type MicroKubeProvider struct {
 	dnsSnapshotter     *gitbackup.DNSSnapshotter             // nil if DNS snapshots are disabled
 	kickReconcile      chan struct{}                          // event-driven reconcile trigger (buffered 1)
 	kickScheduler      chan struct{}                          // event-driven scheduler trigger (buffered 1)
+	micrologsBreaker   micrologsCircuitBreaker               // circuit breaker for micrologs service
+	micrologsClient    *http.Client                          // persistent HTTP client for micrologs (2s timeout)
+	migrationTracker   *MigrationTracker                     // tracks in-flight PVC/disk migrations
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.
@@ -141,6 +144,173 @@ type containerRestartState struct {
 	lastAttempt time.Time
 	lastRunning time.Time
 	backoff     time.Duration
+}
+
+// micrologsCircuitBreaker skips micrologs requests after consecutive failures.
+// After 3 failures, it opens for 30 seconds. After cooldown, allows one probe.
+type micrologsCircuitBreaker struct {
+	mu          sync.Mutex
+	failures    int
+	openUntil   time.Time
+}
+
+func (cb *micrologsCircuitBreaker) isOpen() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.failures < 3 {
+		return false
+	}
+	if time.Now().After(cb.openUntil) {
+		// Allow one probe attempt
+		cb.failures = 2
+		return false
+	}
+	return true
+}
+
+func (cb *micrologsCircuitBreaker) recordSuccess() {
+	cb.mu.Lock()
+	cb.failures = 0
+	cb.mu.Unlock()
+}
+
+func (cb *micrologsCircuitBreaker) recordFailure() {
+	cb.mu.Lock()
+	cb.failures++
+	if cb.failures >= 3 {
+		cb.openUntil = time.Now().Add(30 * time.Second)
+	}
+	cb.mu.Unlock()
+}
+
+// MigrationTracker tracks in-flight PVC/disk migrations with SSE progress streaming.
+type MigrationTracker struct {
+	running atomic.Bool
+	mu      sync.Mutex
+	current *MigrationProgress
+	nextSub int
+	subs    map[int]chan MigrationProgress
+}
+
+// MigrationProgress describes the state of an in-flight migration.
+type MigrationProgress struct {
+	ID           string `json:"id"`
+	ResourceType string `json:"resourceType"`
+	ResourceName string `json:"resourceName"`
+	TargetPool   string `json:"targetPool"`
+	Phase        string `json:"phase"`
+	BytesCopied  int64  `json:"bytesCopied"`
+	TotalBytes   int64  `json:"totalBytes"`
+	StartedAt    string `json:"startedAt"`
+	Error        string `json:"error,omitempty"`
+}
+
+func newMigrationTracker() *MigrationTracker {
+	return &MigrationTracker{
+		subs: make(map[int]chan MigrationProgress),
+	}
+}
+
+// TryStart attempts to begin a new migration. Returns false if one is already running.
+func (mt *MigrationTracker) TryStart(id, resType, resName, targetPool string) bool {
+	if !mt.running.CompareAndSwap(false, true) {
+		return false
+	}
+	mt.mu.Lock()
+	mt.current = &MigrationProgress{
+		ID:           id,
+		ResourceType: resType,
+		ResourceName: resName,
+		TargetPool:   targetPool,
+		Phase:        "starting",
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	mt.mu.Unlock()
+	return true
+}
+
+// Update sets the current phase and byte counts, broadcasting to SSE subscribers.
+func (mt *MigrationTracker) Update(phase string, bytesCopied, totalBytes int64) {
+	mt.mu.Lock()
+	if mt.current != nil {
+		mt.current.Phase = phase
+		mt.current.BytesCopied = bytesCopied
+		mt.current.TotalBytes = totalBytes
+	}
+	snap := *mt.current
+	subs := make([]chan MigrationProgress, 0, len(mt.subs))
+	for _, ch := range mt.subs {
+		subs = append(subs, ch)
+	}
+	mt.mu.Unlock()
+
+	for _, ch := range subs {
+		select {
+		case ch <- snap:
+		default: // slow subscriber, skip
+		}
+	}
+}
+
+// Complete marks the migration as done (success or failure) and releases the guard.
+func (mt *MigrationTracker) Complete(errMsg string) {
+	mt.mu.Lock()
+	if mt.current != nil {
+		if errMsg != "" {
+			mt.current.Phase = "failed"
+			mt.current.Error = errMsg
+		} else {
+			mt.current.Phase = "complete"
+		}
+	}
+	snap := *mt.current
+	subs := make([]chan MigrationProgress, 0, len(mt.subs))
+	for _, ch := range mt.subs {
+		subs = append(subs, ch)
+	}
+	mt.mu.Unlock()
+
+	// Broadcast final event
+	for _, ch := range subs {
+		select {
+		case ch <- snap:
+		default:
+		}
+	}
+
+	mt.running.Store(false)
+}
+
+// Current returns a snapshot of the current migration, or nil if none.
+func (mt *MigrationTracker) Current() *MigrationProgress {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if mt.current == nil {
+		return nil
+	}
+	snap := *mt.current
+	return &snap
+}
+
+// Subscribe returns a channel that receives progress updates.
+func (mt *MigrationTracker) Subscribe() (int, <-chan MigrationProgress) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.nextSub++
+	id := mt.nextSub
+	ch := make(chan MigrationProgress, 16)
+	mt.subs[id] = ch
+	return id, ch
+}
+
+// Unsubscribe removes a subscriber.
+func (mt *MigrationTracker) Unsubscribe(id int) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	if ch, ok := mt.subs[id]; ok {
+		close(ch)
+		delete(mt.subs, id)
+	}
 }
 
 // SetStore sets the NATS store on the provider (used for deferred NATS connection).
@@ -232,6 +402,15 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		pushNotify:       make(chan registry.PushEvent, 16),
 		kickReconcile:    make(chan struct{}, 1),
 		kickScheduler:    make(chan struct{}, 1),
+		micrologsClient: &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: &http.Transport{
+				MaxConnsPerHost:     2,
+				IdleConnTimeout:     60 * time.Second,
+				TLSHandshakeTimeout: 2 * time.Second,
+			},
+		},
+		migrationTracker: newMigrationTracker(),
 	}
 
 	// Initialize BMC controller for IPMI power management
