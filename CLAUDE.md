@@ -60,7 +60,7 @@ go test ./...                                    # Run tests
 ### Infrastructure
 | Host | IP | Role |
 |------|-----|------|
-| rose1.gw.lo | 192.168.1.88 | MikroTik ARM64, runs mkube + all containers |
+| rose1.gw.lo | 192.168.1.1 | MikroTik ARM64, runs mkube + all containers |
 | pvex.gw.lo | 192.168.1.160 | Proxmox node, gw microdns (CT 117) |
 
 ### Container IPs (gt network)
