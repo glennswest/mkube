@@ -15,7 +15,7 @@
 #   gt   — bridge-gt    192.168.200.0/24  dns: gt.lo   (192.168.200.199)
 #   g10  — bridge-g10   192.168.10.0/24   dns: g10.lo  (192.168.10.252)
 #   g11  — bridge-g11   192.168.11.0/24   dns: g11.lo  (192.168.11.252)
-#   gw   — bridge-lan   192.168.1.0/24    dns: gw.lo   (192.168.1.52)
+#   gw   — bridge-lan   192.168.1.0/24    dns: gw.lo   (192.168.1.252)
 #
 # Registry is at 192.168.200.3:5000 (standalone container, created by mkube-installer).
 # mkube-update is deployed separately by the installer.

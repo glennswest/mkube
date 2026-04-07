@@ -39,7 +39,7 @@ type DeployConfig struct {
 	Bridge  string `yaml:"bridge"`  // e.g. "vmbr0"
 	IP      string `yaml:"ip"`      // e.g. "192.168.1.161/24"
 	Gateway string `yaml:"gateway"` // e.g. "192.168.1.1"
-	DNS     string `yaml:"dns"`     // e.g. "192.168.1.52"
+	DNS     string `yaml:"dns"`     // e.g. "192.168.1.252"
 
 	// Service configuration
 	ServiceName string            `yaml:"serviceName"` // systemd unit name

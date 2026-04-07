@@ -24,9 +24,9 @@ networks:
     cidr: "192.168.1.0/24"
     gateway: "192.168.1.1"
     dns:
-      endpoint: "http://192.168.1.52:8080"
+      endpoint: "http://192.168.1.252:8080"
       zone: "gw.lo"
-      server: "192.168.1.52"
+      server: "192.168.1.252"
 
 storage:
   basePath: "/var/lib/mkube/images"

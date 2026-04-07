@@ -123,7 +123,7 @@ func TestGetContainerConfig(t *testing.T) {
 			Net0:       "name=eth0,bridge=vmbr0,ip=192.168.1.10/24,gw=192.168.1.1",
 			Memory:     512,
 			Cores:      1,
-			Nameserver: "192.168.1.199",
+			Nameserver: "192.168.1.252",
 			OnBoot:     1,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -389,7 +389,7 @@ func TestCreateContainer(t *testing.T) {
 		RootFS:       "local-lvm:8",
 		Unprivileged: true,
 		Features:     "nesting=1",
-		Nameserver:   "192.168.1.199",
+		Nameserver:   "192.168.1.252",
 		OnBoot:       true,
 		Start:        false,
 		MountPoints:  map[int]string{0: "local-lvm:4,mp=/data"},

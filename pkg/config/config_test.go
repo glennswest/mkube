@@ -96,9 +96,9 @@ networks:
     cidr: "192.168.1.0/24"
     gateway: "192.168.1.1"
     dns:
-      endpoint: "http://192.168.1.199:8080"
+      endpoint: "http://192.168.1.252:8080"
       zone: "gw.lo"
-      server: "192.168.1.199"
+      server: "192.168.1.252"
 storage:
   gcIntervalMinutes: 60
 registry:

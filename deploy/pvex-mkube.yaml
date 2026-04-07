@@ -26,7 +26,7 @@ storage: local-lvm
 bridge: vmbr0
 ip: 192.168.1.163/24
 gateway: 192.168.1.1
-dns: 192.168.1.52
+dns: 192.168.1.252
 
 serviceName: mkube
 execArgs: "--config /etc/mkube/config.yaml"
@@ -52,5 +52,5 @@ configFiles:
         bridge: vmbr0
         cidr: "192.168.1.0/24"
         gateway: "192.168.1.1"
-        dns: "192.168.1.52"
+        dns: "192.168.1.252"
         dnsZone: "gw.lo"

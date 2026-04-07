@@ -1062,7 +1062,7 @@ mkube manages multiple networks, each with its own bridge, CIDR, DNS, and DHCP:
 | g9 | user | bridge-g9 | 192.168.9.0/24 | 192.168.9.252 | yes | — |
 | g10 | data | bridge-g10 | 192.168.10.0/24 | 192.168.10.252 | yes | .200-.250 |
 | g11 | ipmi | bridge-g11 | 192.168.11.0/24 | 192.168.11.252 | yes | .200-.250 |
-| gw | external | bridge-lan | 192.168.1.0/24 | 192.168.1.52 | no | — |
+| gw | external | bridge-lan | 192.168.1.0/24 | 192.168.1.252 | no | — |
 
 ## Configuration
 
