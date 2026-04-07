@@ -45,6 +45,7 @@ func (c *Console) handleLogs(w http.ResponseWriter, r *http.Request) {
 var _pods=[];
 var _rawLines=[];
 var _detailKey='';
+var _refreshTimer=null;
 
 var _levelOrder={ERROR:0,WARN:1,INFO:2,DEBUG:3,TRACE:4};
 
@@ -65,6 +66,7 @@ async function fetchLogLines(ns,name,params){
   }
   try{
     var res=await fetch(url);
+    if(!res.ok) return {lines:[],stormd:false,error:true};
     var ct=res.headers.get('content-type')||'';
     var txt=await res.text();
     if(ct.indexOf('application/json')>=0){
@@ -76,7 +78,7 @@ async function fetchLogLines(ns,name,params){
     // Plain text fallback (no stormd)
     var lines=txt.split('\n').filter(function(l){return l.length>0;});
     return {lines:lines,stormd:false};
-  }catch(e){return {lines:[],stormd:false};}
+  }catch(e){return {lines:[],stormd:false,error:true};}
 }
 
 async function init(){
@@ -92,25 +94,61 @@ async function init(){
   });
   nf.onchange=function(){ renderSources(); };
 
-  await fetchLastLines();
+  // Render the source list immediately (no last-line data yet)
   renderSources();
+
+  // Fetch last lines async in background, re-render as each completes
+  fetchLastLinesAsync();
+
+  // Refresh last lines every 30s
+  _refreshTimer=setInterval(fetchLastLinesAsync,30000);
 }
 
 var _lastLines={};
 var _hasStormd={};
-async function fetchLastLines(){
-  var fetches=_pods.map(function(p){
+function fetchLastLinesAsync(){
+  _pods.forEach(function(p){
     var ns=p.metadata.namespace||'default';
     var name=p.metadata.name;
     var key=ns+'/'+name;
-    return fetchLogLines(ns,name,{tail:'1'})
+    fetchLogLines(ns,name,{tail:'1'})
       .then(function(result){
-        _lastLines[key]=result.lines.length>0?result.lines[result.lines.length-1]:'';
-        _hasStormd[key]=result.stormd;
+        if(result.error){
+          if(!_lastLines[key]) _lastLines[key]='';
+          _hasStormd[key]=false;
+        } else {
+          _lastLines[key]=result.lines.length>0?result.lines[result.lines.length-1]:'';
+          _hasStormd[key]=result.stormd;
+        }
+        // Re-render the row for this pod if we're on the list view
+        if(!_detailKey) updateSourceRow(key);
       })
-      .catch(function(){_lastLines[key]='';_hasStormd[key]=false;});
+      .catch(function(){});
   });
-  await Promise.all(fetches);
+}
+
+// Update a single row in the sources table without re-rendering the whole table
+function updateSourceRow(key){
+  var tbl=document.getElementById('sources-tbl');
+  if(!tbl) return;
+  var links=tbl.querySelectorAll('a');
+  for(var i=0;i<links.length;i++){
+    if(links[i].getAttribute('onclick')&&links[i].getAttribute('onclick').indexOf(key)>=0){
+      var tr=links[i].closest('tr');
+      if(!tr) continue;
+      var hasSD=_hasStormd[key];
+      links[i].style.color=hasSD?'var(--cyan)':'var(--red)';
+      links[i].title=hasSD?'':'no stormd — logs may be incomplete';
+      var lastTd=tr.querySelector('td:last-child');
+      if(lastTd){
+        var last=_lastLines[key]||'';
+        lastTd.textContent=formatPreview(last);
+      }
+      return;
+    }
+  }
+  // Row not found — full re-render (filter may have changed)
+  renderSources();
 }
 
 // Parse a stormd log line. Format:
@@ -214,8 +252,9 @@ function renderSources(){
     var displayLast=formatPreview(last);
 
     var hasSD=_hasStormd[key];
-    var nameColor=hasSD?'var(--cyan)':'var(--red)';
-    var nameTitle=hasSD?'':'title="no stormd — logs may be incomplete"';
+    var checked=_hasStormd.hasOwnProperty(key);
+    var nameColor=!checked?'var(--fg)':hasSD?'var(--cyan)':'var(--red)';
+    var nameTitle=(!checked||hasSD)?'':'title="no stormd — logs may be incomplete"';
 
     rows.push('<tr>'+
       '<td><a href="#" onclick="showDetail(\''+escapeHtml(key)+'\');return false" style="color:'+nameColor+';text-decoration:none;font-weight:600" '+nameTitle+'>'+escapeHtml(name)+'</a></td>'+

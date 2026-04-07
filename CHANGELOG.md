@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-04-07
+- **fix:** Logs page now renders source list immediately — last-line previews load asynchronously in the background and refresh every 30s. No more blocking page load while probing all pods.
+- **fix:** Log API returns empty JSON instead of HTTP 500 error text when RouterOS fallback fails — prevents error messages from appearing as log lines in the UI.
+- **fix:** Frontend `fetchLogLines` now checks HTTP status before treating response as log content.
+
 ### 2026-04-06
 - **feat:** Stormd logs as primary log source — pod log API now queries stormd REST API (port 9080) on each pod's IP first, with micrologs and RouterOS system logs as fallbacks. Passes through `tail`, `search`, `process` query params. All stormd-managed containers now have proper logs.
 - **feat:** Logs UI rewrite — source list with last-log preview; detail view with JSON-aware formatting, level filter (Error/Warn+/Info+/Debug), field toggle checkboxes (timestamp, level, target, extras, path, pid). Parses stormd ANSI-colored lines, tracing-format lines, and JSON structured logs. Pods without stormd shown in red. Timestamps simplified to HH:MM:SS.

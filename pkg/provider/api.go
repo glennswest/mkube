@@ -636,13 +636,15 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Fall back to runtime logs filtered by container name
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	logs, err := p.deps.Runtime.GetLogs(r.Context(), rosName)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("error fetching logs: %v", err), http.StatusInternalServerError)
+		// Return empty JSON so the UI doesn't display the error as a log line
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":0,"lines":[]}`))
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	for _, entry := range logs {
 		if strings.Contains(entry.Message, rosName) {
 			_, _ = fmt.Fprintf(w, "%s %s %s\n", entry.Timestamp, entry.Stream, entry.Message)
