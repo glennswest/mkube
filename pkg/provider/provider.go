@@ -2338,9 +2338,10 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		for _, c := range pod.Spec.Containers {
 			changed, alreadyChecked := checkedImages[c.Image]
 			if !alreadyChecked {
-				_, changed, err := p.deps.StorageMgr.RefreshImage(ctx, c.Image)
+				deployedDigest := pod.Annotations[annotationImageDigest]
+				_, changed, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
 				if err != nil {
-					log.Debugw("image freshness check failed", "pod", key, "image", c.Image, "error", err)
+					log.Warnw("image freshness check failed", "pod", key, "image", c.Image, "error", err)
 					checkedImages[c.Image] = false
 				} else {
 					checkedImages[c.Image] = changed
