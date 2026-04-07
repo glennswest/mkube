@@ -2754,7 +2754,7 @@ func (p *MicroKubeProvider) stampImageDigest(ctx context.Context, pod *corev1.Po
 		}
 		digest, err := p.deps.StorageMgr.GetCurrentDigest(ctx, c.Image)
 		if err != nil {
-			p.deps.Logger.Debugw("failed to get digest for annotation stamp",
+			p.deps.Logger.Warnw("failed to get digest for annotation stamp",
 				"pod", podKey(pod), "image", c.Image, "error", err)
 			continue
 		}
@@ -2765,7 +2765,7 @@ func (p *MicroKubeProvider) stampImageDigest(ctx context.Context, pod *corev1.Po
 	if p.deps.Store != nil {
 		storeKey := pod.Namespace + "." + pod.Name
 		if _, err := p.deps.Store.Pods.PutJSON(context.Background(), storeKey, pod); err != nil {
-			p.deps.Logger.Debugw("failed to persist digest annotation", "pod", storeKey, "error", err)
+			p.deps.Logger.Warnw("failed to persist digest annotation", "pod", storeKey, "error", err)
 		}
 	}
 }
