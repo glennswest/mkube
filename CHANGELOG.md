@@ -7,6 +7,8 @@
 - **fix:** Log API returns empty JSON instead of HTTP 500 error text when RouterOS fallback fails — prevents error messages from appearing as log lines in the UI.
 - **fix:** Frontend `fetchLogLines` now checks HTTP status before treating response as log content.
 - **fix:** CloudID UI showing nothing — API returns wrapped objects (`{templates:[...]}`, `{assignments:{...}}`, `{completed:{...}}`) but JS expected raw arrays/objects. Now unwraps all three endpoints correctly.
+- **docs:** README overhaul — added Secrets API, Storage Pools API, Git Backup API sections. Added Web Dashboard, Container Logging, IPMI/BMC, Git Backup features. Fixed BMH Operations section (removed undocumented reboot annotation, documented actual annotations). Added bmh-operator as companion service. Fixed rose1 IP references.
+- **chore:** Added bmh-operator pod manifest to `deploy/site-pods/rose1-apps.yaml` with ConfigMap mount. Redeployed bmh-operator on rose1 (gt network, infra namespace).
 
 ### 2026-04-06
 - **feat:** Stormd logs as primary log source — pod log API now queries stormd REST API (port 9080) on each pod's IP first, with micrologs and RouterOS system logs as fallbacks. Passes through `tail`, `search`, `process` query params. All stormd-managed containers now have proper logs.
