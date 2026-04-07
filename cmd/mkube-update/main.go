@@ -338,7 +338,15 @@ func (u *Updater) checkContainerHealth(ctx context.Context) {
 func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 	ct, err := u.rosGetContainer(ctx, name)
 	if err != nil {
-		return // container doesn't exist, skip
+		// Container doesn't exist — if it's the bootstrap container (mkube),
+		// re-bootstrap it instead of silently skipping.
+		if u.cfg.Bootstrap.Enabled && name == u.cfg.Bootstrap.Container.Name {
+			u.log.Warnw("watchdog: bootstrap container missing, re-bootstrapping", "container", name)
+			if err := u.bootstrap(ctx); err != nil {
+				u.log.Errorw("watchdog: re-bootstrap failed", "container", name, "error", err)
+			}
+		}
+		return
 	}
 
 	if ct.isRunning() || !ct.isStopped() {
@@ -760,6 +768,11 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	// Step 2: Get current container config
 	ct, err := u.rosGetContainer(ctx, name)
 	if err != nil {
+		// Container missing — if it's the bootstrap container, recreate via bootstrap
+		if u.cfg.Bootstrap.Enabled && name == u.cfg.Bootstrap.Container.Name {
+			log.Warnw("container missing during replace, re-bootstrapping", "error", err)
+			return u.bootstrap(ctx)
+		}
 		return fmt.Errorf("getting container: %w", err)
 	}
 
