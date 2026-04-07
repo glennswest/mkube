@@ -48,9 +48,11 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 | Binary | Description | Runs on |
 |--------|-------------|---------|
 | `mkube` | Main controller — pods, networking, storage, DNS, reconciler | RouterOS container (ARM64) |
-| `mkube-update` | Watches registry for new images, updates mkube and other containers | RouterOS container (ARM64) |
+| `mkube-update` | Watches registry for new mkube images, updates the mkube binary | RouterOS container (ARM64) |
 | `mkube-registry` | Standalone OCI registry with TLS, push webhooks to mkube | RouterOS container (ARM64) |
 | `mkube-installer` | One-shot bootstrap CLI — creates registry, seeds images, starts mkube-update | Local Mac/Linux |
+| `pve-deploy` | Deploy OCI images as Proxmox LXC containers | Local Mac/Linux |
+| `mkube-boot` | Bootstrap mkube infrastructure on Proxmox LXC | Proxmox LXC (x86_64) |
 | `mkube-agent` | Job execution agent — pulls work, runs scripts, streams logs, reports completion | CoreOS bare metal (x86_64) |
 
 ### Container IPs (gt network)
@@ -58,10 +60,11 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 | Container | IP | Port |
 |-----------|-----|------|
 | rose1 (gateway) | 192.168.200.1 | — |
-| mkube | 192.168.200.2 | 8082 (API) |
+| mkube | 192.168.200.2 | 8082 (API + UI) |
 | registry.gt.lo | 192.168.200.3 | 5000 (HTTPS) |
 | mkube-update | 192.168.200.5 | — |
 | NATS | 192.168.200.10 | 4222 |
+| gt DNS (microdns) | 192.168.200.199 | 53 (DNS), 8080 (API) |
 
 ## Features
 
@@ -105,6 +108,17 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - Registry address rewriting (aliases → primary address)
 - Volume provisioning with per-container isolation
 - Persistent mounts for data that survives container recreation
+- iSCSI-backed PVCs (`storageClassName: iscsi`) — file-backed ext4 disks on RouterOS with thin provisioning
+- Storage pools with live capacity stats, write rate, and thin provisioning savings
+- Async PVC migration between pools with SSE progress streaming
+
+### Secret Management
+- Full CRUD API with AES-256-GCM encrypted-at-rest storage in NATS
+- Secret volume mounts (files with 0600 permissions)
+- Environment variable injection (`envFrom`, `secretKeyRef`, `configMapKeyRef`)
+- List responses redact Data fields; decrypted only on read
+- Cluster sync (secrets replicate encrypted between peers)
+- YAML export/import (decrypted on export, encrypted on import)
 
 ### Lifecycle Manager
 - Boot ordering with priority levels
@@ -138,6 +152,33 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - Lifecycle: Pending → Scheduling → Provisioning → Running → Completed | Failed | TimedOut | Cancelled
 - Idle hosts auto-powered-off after configurable timeout (reclaim policy)
 
+### Web Dashboard
+- Built-in Dracula-themed web UI at `/ui/`
+- Pages: Dashboard, Nodes, Pods, Deployments, Networks, BMH, Boot Configs, Registries, Storage, Jobs, Logs, CloudID
+- Detail views for all resources with inline actions
+- Storage page: pool capacity cards, PVC migration with progress bar, iSCSI disk management
+- Logs page: source list with stormd status indicators, detail view with level filter, field toggles, JSON-aware formatting, follow mode
+- CloudID: template and assignment management for cloud-init/ignition
+
+### Container Logging
+- Primary log source: stormd REST API (port 9080) on each pod's IP
+- Fallback chain: stormd → micrologs → RouterOS system logs
+- Circuit breaker on micrologs — after 3 failures, skips for 30s cooldown (prevents 10s blocking)
+- Parses structured formats: tracing (`TIMESTAMP LEVEL target: message`), JSON (`{timestamp, level, fields}`), and plain text
+- ANSI escape code stripping for clean display
+
+### IPMI/BMC Integration
+- Pure-Go IPMI client for bare metal power control (`pkg/bmc/`)
+- Automatic PXE → disk boot device switching on install images
+- Prevents infinite reinstall loops (boot-once semantics)
+- DHCP lease watcher triggers localboot switch after installation
+
+### Git-Backed State Backup
+- Periodic NATS KV export as YAML files to rust4git repos (`pkg/gitbackup/`)
+- Content-hash incremental pushes (only changed files pushed)
+- DNS config snapshotter — per-network debounced microdns state snapshots
+- Status/trigger REST endpoints at `/api/v1/gitbackup/`
+
 ### Additional Features
 - DHCP relay support with microdns integration
 - PXE/UEFI boot support (`bootFileEfi` for iPXE)
@@ -145,6 +186,8 @@ A single-binary [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kub
 - ConfigMap support (auto-generated from network config)
 - Export/import of all resources as YAML manifests
 - Event recording (ring buffer, max 256)
+- Multi-backend support: RouterOS (default), Proxmox, StormBase
+- Multi-node clustering with peer health, push sync, full resync
 
 ## Quick Start
 
@@ -157,7 +200,7 @@ make build-all
 # Bootstrap a fresh MikroTik device
 make deploy-installer
 # Or manually:
-./installer --device 192.168.1.88
+./installer --device 192.168.1.1
 ```
 
 The installer will:
@@ -320,8 +363,34 @@ GET    /api/v1/namespaces/{ns}/configmaps              # List in namespace
 GET    /api/v1/namespaces/{ns}/configmaps/{name}       # Get ConfigMap
 POST   /api/v1/namespaces/{ns}/configmaps              # Create ConfigMap
 PUT    /api/v1/namespaces/{ns}/configmaps/{name}       # Update ConfigMap
+PATCH  /api/v1/namespaces/{ns}/configmaps/{name}       # Patch ConfigMap
 DELETE /api/v1/namespaces/{ns}/configmaps/{name}        # Delete ConfigMap
 ```
+
+### Secrets
+```
+GET    /api/v1/namespaces/{ns}/secrets                 # List (Data fields redacted)
+GET    /api/v1/namespaces/{ns}/secrets/{name}           # Get secret (decrypted)
+POST   /api/v1/namespaces/{ns}/secrets                 # Create secret
+PUT    /api/v1/namespaces/{ns}/secrets/{name}           # Update secret
+PATCH  /api/v1/namespaces/{ns}/secrets/{name}           # Patch secret
+DELETE /api/v1/namespaces/{ns}/secrets/{name}           # Delete secret
+```
+
+### Storage Pools (cluster-scoped)
+```
+GET    /api/v1/storagepools                            # List all pools
+GET    /api/v1/storagepools/{name}                     # Get pool (with live capacity)
+POST   /api/v1/storagepools                            # Create pool
+PUT    /api/v1/storagepools/{name}                     # Update pool
+PATCH  /api/v1/storagepools/{name}                     # Patch pool
+DELETE /api/v1/storagepools/{name}                     # Delete pool
+POST   /api/v1/storagepools/{name}/migrate             # Migrate PVC between pools
+GET    /api/v1/storagepools/migrations/current         # Current migration status
+GET    /api/v1/storagepools/migrations/{id}/progress   # SSE progress stream
+```
+
+**Async migration:** Add `?async=true` to the migrate POST to return 202 immediately. Connect to the SSE progress endpoint for real-time phase and byte-level updates.
 
 ### Registries (cluster-scoped)
 ```
@@ -394,10 +463,17 @@ GET    /api/v1/lifecycle/stats                          # Lifecycle phase timing
 GET    /healthz                                        # Health check (version + commit)
 ```
 
-### Manifests (oc apply compatible)
+### Git Backup
 ```
-POST   /api/v1/apply                                   # Apply YAML manifest
-GET    /api/v1/export                                  # Export all as YAML
+GET    /api/v1/gitbackup/status                        # Backup status (last push, changes)
+POST   /api/v1/gitbackup/trigger                       # Trigger immediate backup
+GET    /api/v1/gitbackup/diag                          # Diagnostic store export
+```
+
+### Manifests
+```
+GET    /api/v1/export                                  # Export all resources as YAML
+POST   /api/v1/import                                  # Import YAML manifests
 ```
 
 ## oc / kubectl Commands
@@ -430,7 +506,9 @@ All resources support `oc` (or `kubectl`) with `--server=http://192.168.200.2:80
 | persistentvolumeclaims | pvc | yes | PersistentVolumeClaim |
 | pods | | yes | Pod |
 | registries | reg | no | Registry |
+| secrets | | yes | Secret |
 | services | | yes | Service |
+| storagepools | sp | no | StoragePool |
 
 ### Common Commands
 
@@ -1095,15 +1173,19 @@ cmd/
   installer/        Bootstrap CLI tool (runs on Mac)
   pve-deploy/       Deploy OCI images as Proxmox LXC containers
 pkg/
+  bmc/              Pure Go IPMI client for power control and boot device management
   cluster/          Multi-node clustering (peer health, push sync, full resync)
   config/           YAML configuration with CLI overrides
+  console/          Built-in web dashboard UI (Dracula theme)
   diskimg/          Pure Go disk image converters (VMDK, QCOW2, VHD → raw)
   dns/              microdns REST API client
   dzo/              DNS Zone Orchestrator (cross-zone management)
+  gitbackup/        Git-backed config state backup via rust4git State API
   lifecycle/        Boot ordering, health checks, watchdog
   namespace/        Namespace management
   nats/             Embedded NATS server (in-process JetStream)
   network/          Multi-network IPAM, veth/bridge management
+  podman/           Pure Go Podman REST API client via Unix socket
   provider/         Virtual Kubelet provider (pods, deployments, BMH, consistency)
   proxmox/          Proxmox VE REST API client, VMID allocator
   pvectl/           Proxmox LXC deploy library (OCI extraction, SSH, systemd install)
@@ -1128,6 +1210,9 @@ hack/
 ## Monitoring
 
 ```bash
+# Web dashboard
+open http://192.168.200.2:8082/ui/
+
 # mkube API health
 curl -s http://192.168.200.2:8082/healthz
 
@@ -1140,11 +1225,14 @@ curl -s http://192.168.200.2:8082/api/v1/pods | python3 -m json.tool
 # Image cache state
 curl -s http://192.168.200.2:8082/api/v1/images | python3 -m json.tool
 
+# Git backup status
+curl -s http://192.168.200.2:8082/api/v1/gitbackup/status | python3 -m json.tool
+
 # RouterOS container logs
-ssh admin@rose1.gw.lo '/log/print where topics~"container"'
+ssh admin@192.168.1.1 '/log/print where topics~"container"'
 
 # Container status
-ssh admin@rose1.gw.lo '/container/print'
+ssh admin@192.168.1.1 '/container/print'
 ```
 
 ## License
