@@ -126,7 +126,7 @@ function hideModal(id){ document.getElementById(id).classList.remove('show'); }
 async function loadTemplates(){
   const data=await fetch(CLOUDID+'/api/v1/templates').then(r=>r.json()).catch(()=>null);
   const tb=document.getElementById('tpl-tbl');
-  const items=Array.isArray(data)?data:[];
+  const items=Array.isArray(data)?data:(data&&Array.isArray(data.templates)?data.templates:[]);
   if(items.length===0){tb.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'+(data===null?'CloudID unavailable — check connection':'No templates')+'</td></tr>';return;}
   const tplRows=[];
   items.forEach(t=>{
@@ -170,7 +170,8 @@ async function delTpl(imageType,name){
 
 // ── Assignments ──
 async function loadAssignments(){
-  const data=await fetch(CLOUDID+'/api/v1/assignments').then(r=>r.json()).catch(()=>null);
+  const raw=await fetch(CLOUDID+'/api/v1/assignments').then(r=>r.json()).catch(()=>null);
+  const data=raw&&raw.assignments?raw.assignments:raw;
   const tb=document.getElementById('assign-tbl');
   if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:8px">No assignments</td></tr>';return;}
   const assignRows=[];
@@ -206,7 +207,8 @@ async function delAssign(host){
 
 // ── Oneshot ──
 async function loadOneshot(){
-  const data=await fetch(CLOUDID+'/api/v1/oneshot').then(r=>r.json()).catch(()=>null);
+  const raw=await fetch(CLOUDID+'/api/v1/oneshot').then(r=>r.json()).catch(()=>null);
+  const data=raw&&raw.completed?raw.completed:raw;
   const tb=document.getElementById('oneshot-tbl');
   if(!data||Object.keys(data).length===0){tb.innerHTML='<tr><td colspan="3" class="muted" style="text-align:center;padding:8px">No oneshot entries</td></tr>';return;}
   const osRows=[];
