@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 ### 2026-04-06
-- **feat:** Logs UI rewrite — source list with last-log preview; detail view with JSON-aware formatting, level filter (Error/Warn+/Info+/Debug), field toggle checkboxes (timestamp, level, target, extras, path, pid). JSON logs parsed and colorized by level; non-JSON lines passed through. Timestamps simplified to HH:MM:SS.
+- **feat:** Stormd logs as primary log source — pod log API now queries stormd REST API (port 9080) on each pod's IP first, with micrologs and RouterOS system logs as fallbacks. Passes through `tail`, `search`, `process` query params. All stormd-managed containers now have proper logs.
+- **feat:** Logs UI rewrite — source list with last-log preview; detail view with JSON-aware formatting, level filter (Error/Warn+/Info+/Debug), field toggle checkboxes (timestamp, level, target, extras, path, pid). Parses stormd ANSI-colored lines, tracing-format lines, and JSON structured logs. Pods without stormd shown in red. Timestamps simplified to HH:MM:SS.
 - **fix:** Micrologs circuit breaker — when micrologs service is down, first 3 log requests take 2s each (down from 10s), then all subsequent requests skip micrologs for 30s cooldown. Persistent HTTP client with 2s timeout replaces per-request 10s client.
 - **feat:** Async PVC migration with SSE progress streaming. `POST .../migrate?async=true` returns 202 immediately and runs migration in background. New SSE endpoint streams phase transitions and byte-level copy progress. Phases: stopping_pods → copying_data → updating_metadata → purging_source → restarting_pods → complete. MigrationTracker singleton with atomic guard prevents concurrent migrations.
 - **feat:** Console storage UI progress bar for PVC moves — modal shows real-time progress bar (Dracula theme: cyan during copy, green on complete, red on failure) with phase labels and byte counters via EventSource SSE. Sync API preserved for backward compat.

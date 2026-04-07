@@ -48,6 +48,37 @@ var _detailKey='';
 
 var _levelOrder={ERROR:0,WARN:1,INFO:2,DEBUG:3,TRACE:4};
 
+// Strip ANSI escape codes from a string
+function stripAnsi(s){
+  return s.replace(/\x1b\[[0-9;]*m/g,'');
+}
+
+// Fetch logs for a pod — handles stormd JSON or plain text response
+// Returns {lines:[], stormd:bool}
+async function fetchLogLines(ns,name,params){
+  var url=API+'/api/v1/namespaces/'+ns+'/pods/'+name+'/log';
+  var sep='?';
+  if(params){
+    Object.keys(params).forEach(function(k){
+      if(params[k]){url+=sep+k+'='+encodeURIComponent(params[k]);sep='&';}
+    });
+  }
+  try{
+    var res=await fetch(url);
+    var ct=res.headers.get('content-type')||'';
+    var txt=await res.text();
+    if(ct.indexOf('application/json')>=0){
+      try{
+        var obj=JSON.parse(txt);
+        return {lines:obj.lines||[],stormd:true};
+      }catch(e){return {lines:[],stormd:false};}
+    }
+    // Plain text fallback (no stormd)
+    var lines=txt.split('\n').filter(function(l){return l.length>0;});
+    return {lines:lines,stormd:false};
+  }catch(e){return {lines:[],stormd:false};}
+}
+
 async function init(){
   var [nodes,pods]=await Promise.all([
     apiGet(API+'/api/v1/nodes'),
@@ -66,26 +97,94 @@ async function init(){
 }
 
 var _lastLines={};
+var _hasStormd={};
 async function fetchLastLines(){
   var fetches=_pods.map(function(p){
     var ns=p.metadata.namespace||'default';
     var name=p.metadata.name;
     var key=ns+'/'+name;
-    return fetch(API+'/api/v1/namespaces/'+ns+'/pods/'+name+'/log')
-      .then(function(r){return r.text();})
-      .then(function(txt){
-        var lines=txt.trim().split('\n').filter(function(l){return l.length>0;});
-        _lastLines[key]=lines.length>0?lines[lines.length-1]:'';
+    return fetchLogLines(ns,name,{tail:'1'})
+      .then(function(result){
+        _lastLines[key]=result.lines.length>0?result.lines[result.lines.length-1]:'';
+        _hasStormd[key]=result.stormd;
       })
-      .catch(function(){_lastLines[key]='';});
+      .catch(function(){_lastLines[key]='';_hasStormd[key]=false;});
   });
   await Promise.all(fetches);
 }
 
+// Parse a stormd log line. Format:
+//   "2026-04-07T13:08:06.214Z [stdout] <ANSI-colored content>"
+// The inner content may be structured tracing output like:
+//   "2026-04-07T13:08:06.214827Z  WARN microdns_recursor: message here"
+// Or JSON: {"timestamp":..., "level":..., "fields":{...}, "target":...}
+function parseLogLine(raw){
+  var clean=stripAnsi(raw);
+
+  // Try to find stormd prefix: "YYYY-MM-DDTHH:MM:SS.nnnZ [stdout/stderr] ..."
+  var prefixMatch=clean.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+\[(stdout|stderr)\]\s+(.*)/);
+  var stormdTs='';
+  var stream='';
+  var body=clean;
+  if(prefixMatch){
+    stormdTs=prefixMatch[1];
+    stream=prefixMatch[2];
+    body=prefixMatch[3];
+  }
+
+  // Try JSON parse on body
+  var jsonIdx=body.indexOf('{');
+  if(jsonIdx>=0){
+    try{
+      var obj=JSON.parse(body.substring(jsonIdx));
+      return {
+        json:true,
+        timestamp:obj.timestamp||stormdTs,
+        level:(obj.level||'').toUpperCase(),
+        message:(obj.fields&&obj.fields.message)||obj.msg||obj.message||'',
+        target:obj.target||'',
+        fields:obj.fields||{},
+        stream:stream,
+        raw:raw
+      };
+    }catch(e){}
+  }
+
+  // Try structured tracing format: "YYYY-MM-DDTHH:MM:SS.nnnZ  LEVEL target: message"
+  var tracingMatch=body.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+(\S+?):\s+(.*)/);
+  if(tracingMatch){
+    return {
+      json:true,
+      timestamp:tracingMatch[1],
+      level:tracingMatch[2],
+      message:tracingMatch[4],
+      target:tracingMatch[3],
+      fields:{},
+      stream:stream,
+      raw:raw
+    };
+  }
+
+  // Plain text with optional stormd prefix
+  var level='';
+  var msg=body;
+  // Try to detect level from plain text
+  if(/\bERROR\b/.test(body)) level='ERROR';
+  else if(/\bWARN\b/.test(body)) level='WARN';
+
+  return {json:false,timestamp:stormdTs,level:level,message:msg,target:'',fields:{},stream:stream,raw:raw};
+}
+
+function shortTime(ts){
+  if(!ts) return '';
+  var m=ts.match(/T(\d{2}:\d{2}:\d{2})/);
+  return m?m[1]:ts;
+}
+
 function formatPreview(raw){
+  if(!raw) return '';
   var parsed=parseLogLine(raw);
-  if(!parsed.json) return raw.length>120?raw.substring(0,120)+'...':raw;
-  var msg=parsed.message||'';
+  var msg=parsed.message||stripAnsi(raw);
   if(msg.length>100) msg=msg.substring(0,100)+'...';
   var lvl=parsed.level||'';
   var ts=shortTime(parsed.timestamp);
@@ -114,8 +213,12 @@ function renderSources(){
     var last=_lastLines[key]||'';
     var displayLast=formatPreview(last);
 
+    var hasSD=_hasStormd[key];
+    var nameColor=hasSD?'var(--cyan)':'var(--red)';
+    var nameTitle=hasSD?'':'title="no stormd — logs may be incomplete"';
+
     rows.push('<tr>'+
-      '<td><a href="#" onclick="showDetail(\''+escapeHtml(key)+'\');return false" style="color:var(--cyan);text-decoration:none;font-weight:600">'+escapeHtml(name)+'</a></td>'+
+      '<td><a href="#" onclick="showDetail(\''+escapeHtml(key)+'\');return false" style="color:'+nameColor+';text-decoration:none;font-weight:600" '+nameTitle+'>'+escapeHtml(name)+'</a></td>'+
       '<td>'+escapeHtml(ns)+'</td>'+
       '<td>'+statusBadge(phase)+'</td>'+
       '<td style="font-size:11px;color:var(--comment);max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(displayLast)+'</td>'+
@@ -152,51 +255,14 @@ async function loadDetail(){
   if(!_detailKey) return;
   var parts=_detailKey.split('/');
   var ns=parts[0],name=parts[1];
-  var txt=await fetch(API+'/api/v1/namespaces/'+ns+'/pods/'+name+'/log').then(function(r){return r.text();}).catch(function(){return '';});
-  _rawLines=txt.split('\n').filter(function(l){return l.length>0;});
+  var result=await fetchLogLines(ns,name,{});
+  _rawLines=result.lines;
   filterLogs();
-}
-
-// Parse a raw log line. Handles:
-// - Pure JSON: {"timestamp":..., "level":..., "fields":{"message":...}, "target":...}
-// - RouterOS prefix + JSON: "2026-04-06 15:51:47  gt_dns_microdns: {json...}"
-// - Plain text
-function parseLogLine(raw){
-  // Try to extract JSON from the line
-  var jsonIdx=raw.indexOf('{');
-  if(jsonIdx<0) return {json:false,raw:raw};
-  var prefix=raw.substring(0,jsonIdx).trim();
-  var jsonStr=raw.substring(jsonIdx);
-  try{
-    var obj=JSON.parse(jsonStr);
-    return {
-      json:true,
-      prefix:prefix,
-      timestamp:obj.timestamp||'',
-      level:(obj.level||'').toUpperCase(),
-      message:(obj.fields&&obj.fields.message)||obj.msg||obj.message||'',
-      target:obj.target||'',
-      fields:obj.fields||{},
-      raw:raw
-    };
-  }catch(e){
-    return {json:false,raw:raw};
-  }
-}
-
-// Simplify ISO timestamp to HH:MM:SS
-function shortTime(ts){
-  if(!ts) return '';
-  // "2026-04-06T20:51:47.606406Z" -> "20:51:47"
-  var m=ts.match(/T(\d{2}:\d{2}:\d{2})/);
-  return m?m[1]:ts;
 }
 
 var _levelColors={ERROR:'var(--red)',WARN:'var(--orange)',INFO:'var(--green)',DEBUG:'var(--comment)',TRACE:'var(--comment)'};
 
 function formatLogLine(parsed){
-  if(!parsed.json) return escapeHtml(parsed.raw);
-
   var showTs=document.getElementById('fld-timestamp').checked;
   var showLevel=document.getElementById('fld-level').checked;
   var showTarget=document.getElementById('fld-target').checked;
@@ -222,7 +288,7 @@ function formatLogLine(parsed){
     parts.push('<span style="color:var(--purple)">['+escapeHtml(parsed.target)+']</span>');
   }
 
-  // Extra fields from fields object (excluding message, path, pid which have their own toggles)
+  // Extra fields from fields object
   var skipKeys={message:1};
   if(!showPath) skipKeys.path=1;
   if(!showPid) skipKeys.pid=1;
@@ -253,12 +319,13 @@ function filterLogs(){
 
   var html=[];
   _rawLines.forEach(function(raw){
-    if(search && raw.toLowerCase().indexOf(search)<0) return;
+    var clean=stripAnsi(raw);
+    if(search && clean.toLowerCase().indexOf(search)<0) return;
 
     var parsed=parseLogLine(raw);
 
     // Level filter
-    if(parsed.json && parsed.level && levelFilter){
+    if(parsed.level && levelFilter){
       var lineLevel=_levelOrder[parsed.level];
       if(lineLevel!=null && lineLevel>minLevel) return;
     }

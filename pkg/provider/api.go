@@ -559,6 +559,7 @@ func (p *MicroKubeProvider) handleDeletePod(w http.ResponseWriter, r *http.Reque
 }
 
 // handleGetPodLog streams container logs for a pod.
+// Priority: stormd logs (pod IP :9080) → micrologs → RouterOS system logs.
 func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
@@ -577,9 +578,43 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 
 	rosName := sanitizeName(pod, containerName)
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json")
 
-	// Try micrologs first if configured (with circuit breaker)
+	// Pass through query params for stormd logs API
+	tail := r.URL.Query().Get("tail")
+	search := r.URL.Query().Get("search")
+	process := r.URL.Query().Get("process")
+
+	// Try stormd logs first (direct to pod IP on port 9080)
+	podIP := pod.Status.PodIP
+	if podIP != "" {
+		stormdURL := fmt.Sprintf("http://%s:9080/api/v1/logs", podIP)
+		if process != "" {
+			stormdURL += "/" + process
+		}
+		sep := "?"
+		if tail != "" {
+			stormdURL += sep + "tail=" + tail
+			sep = "&"
+		}
+		if search != "" {
+			stormdURL += sep + "search=" + search
+		}
+		req, err := http.NewRequestWithContext(r.Context(), "GET", stormdURL, nil)
+		if err == nil {
+			resp, err := p.micrologsClient.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				_, _ = io.Copy(w, resp.Body)
+				return
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+
+	// Try micrologs if configured (with circuit breaker)
 	if p.deps.Config.Logging.Enabled && p.deps.Config.Logging.URL != "" && !p.micrologsBreaker.isOpen() {
 		logsURL := strings.TrimRight(p.deps.Config.Logging.URL, "/") +
 			fmt.Sprintf("/api/v1/logs/%s/%s/%s", ns, name, containerName)
@@ -589,6 +624,7 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 			if err == nil && resp.StatusCode == http.StatusOK {
 				p.micrologsBreaker.recordSuccess()
 				defer resp.Body.Close()
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				_, _ = io.Copy(w, resp.Body)
 				return
 			}
@@ -600,6 +636,7 @@ func (p *MicroKubeProvider) handleGetPodLog(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Fall back to runtime logs filtered by container name
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	logs, err := p.deps.Runtime.GetLogs(r.Context(), rosName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("error fetching logs: %v", err), http.StatusInternalServerError)
