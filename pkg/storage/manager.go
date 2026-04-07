@@ -269,9 +269,13 @@ func (m *Manager) RefreshImageWithHint(ctx context.Context, imageRef, deployedDi
 	localTarball := fmt.Sprintf("%s/%s", m.cfg.TarballCache, tarballName)
 
 	// Compare against in-memory digest from this session first.
+	// Even when cache matches registry, check the deployed digest hint —
+	// EnsureImage may have pre-populated the cache before step 3a runs,
+	// masking a stale deployed pod.
 	if cached, ok := m.images[imageRef]; ok && cached.Digest == currentDigest {
 		hostPath := m.HostVisiblePath(localTarball)
-		return hostPath, false, nil
+		stale := deployedDigest != "" && deployedDigest != currentDigest
+		return hostPath, stale, nil
 	}
 
 	// First check this session: use deployedDigest hint if available.

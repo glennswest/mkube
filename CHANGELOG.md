@@ -4,6 +4,7 @@
 
 ### 2026-04-07
 - **fix:** Image update detection after push notification — step 3c used `RefreshImage` which returned `changed=false` on first call after cache clear (no baseline digest). Now uses `RefreshImageWithHint` with the pod's deployed digest annotation, matching step 3a behavior. Also promoted image freshness check error log from Debug (invisible) to Warn.
+- **fix:** `RefreshImageWithHint` cache-hit path ignored deployed digest hint — when `EnsureImage` pre-populated the cache before step 3a, the cache-hit early return skipped the hint comparison entirely, so stale pods were never detected on boot. Now checks deployed digest even on cache hit.
 - **fix:** Logs page now renders source list immediately — last-line previews load asynchronously in the background and refresh every 30s. No more blocking page load while probing all pods.
 - **fix:** Log API returns empty JSON instead of HTTP 500 error text when RouterOS fallback fails — prevents error messages from appearing as log lines in the UI.
 - **fix:** Frontend `fetchLogLines` now checks HTTP status before treating response as log content.
