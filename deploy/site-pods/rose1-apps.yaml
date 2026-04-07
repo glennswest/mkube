@@ -1,5 +1,31 @@
 # Site-specific pods for rose1
-# Apply via: kubectl --server=http://rose1.gw.lo:8082 apply -f rose1-apps.yaml
+# Apply via: mk apply -f deploy/site-pods/rose1-apps.yaml
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bmh-operator
+  namespace: infra
+  annotations:
+    vkube.io/network: gt
+    vkube.io/image-policy: auto
+spec:
+  restartPolicy: Always
+  containers:
+    - name: bmh-operator
+      image: registry.gt.lo:5000/bmh-operator:edge
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        - name: config
+          mountPath: /etc/bmh-operator
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: config
+      configMap:
+        name: bmh-operator-config
 
 ---
 apiVersion: v1

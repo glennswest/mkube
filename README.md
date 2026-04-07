@@ -939,18 +939,38 @@ Set `allowOverflow: true` on the JobRunner to let the scheduler use any unreserv
 
 ## BMH Operations
 
-### Reboot a Server
+mkube handles BMH CRUD, IPMI power control (`pkg/bmc/`), boot device switching (PXE vs disk), and job scheduling for bare metal hosts. The external **bmh-operator** service handles stateful host management: inventory probing, serial proxy, orchestrated refresh cycles, and state machine transitions. bmh-operator writes status fields (state, operatorVersion, serialActive, ipmiReachable) via PATCH and consumes DHCP events published by mkube on `mkube.dhcp.{network}.lease`.
+
+### Power Control
 
 ```bash
-# Reboot immediately (bmh-operator powers off then on)
-mk annotate bmh/server1 bmh.mkube.io/reboot="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
-
-# Power off
+# Power off (IPMI chassis power off)
 mk patch bmh server1 --type=merge -p '{"spec":{"online":false}}'
 
-# Power on
+# Power on (IPMI chassis power on)
 mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
 ```
+
+Manual power-on sets `bmh.mkube.io/manual-power` annotation automatically — this prevents the job scheduler from powering off the host during its idle timeout. Cleared when powered off.
+
+### Refresh
+
+```bash
+# Trigger bmh-operator refresh on a single host
+curl -s -X POST http://192.168.200.2:8082/api/v1/namespaces/default/baremetalhosts/server1/refresh
+
+# Refresh all hosts
+curl -s -X POST http://192.168.200.2:8082/api/v1/baremetalhosts/refresh
+```
+
+Sets `bmh.mkube.io/refresh` annotation — bmh-operator watches for this and runs a full orchestrated refresh cycle (power off, boot baremetalservices, probe inventory, restore state).
+
+### Annotations
+
+| Annotation | Managed by | Description |
+|-----------|-----------|-------------|
+| `bmh.mkube.io/manual-power` | mkube (auto) | Set on manual power-on, prevents scheduler auto-power-off |
+| `bmh.mkube.io/refresh` | mkube (via refresh API) | Triggers bmh-operator refresh cycle |
 
 ## Boot Configurations
 
