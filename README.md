@@ -949,6 +949,9 @@ mk patch bmh server1 --type=merge -p '{"spec":{"online":false}}'
 
 # Power on (IPMI chassis power on)
 mk patch bmh server1 --type=merge -p '{"spec":{"online":true}}'
+
+# Reboot (bmh-operator powers off then on)
+mk annotate bmh/server1 bmh.mkube.io/reboot="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 ```
 
 Manual power-on sets `bmh.mkube.io/manual-power` annotation automatically — this prevents the job scheduler from powering off the host during its idle timeout. Cleared when powered off.
@@ -970,6 +973,7 @@ Sets `bmh.mkube.io/refresh` annotation — bmh-operator watches for this and run
 | Annotation | Managed by | Description |
 |-----------|-----------|-------------|
 | `bmh.mkube.io/manual-power` | mkube (auto) | Set on manual power-on, prevents scheduler auto-power-off |
+| `bmh.mkube.io/reboot` | bmh-operator | IPMI power cycle (off → on). Value = RFC3339 timestamp. Cleared after reboot. |
 | `bmh.mkube.io/refresh` | mkube (via refresh API) | Triggers bmh-operator refresh cycle |
 
 ## Boot Configurations
