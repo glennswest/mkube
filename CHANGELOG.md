@@ -11,6 +11,7 @@
 - **fix:** CloudID UI showing nothing — API returns wrapped objects (`{templates:[...]}`, `{assignments:{...}}`, `{completed:{...}}`) but JS expected raw arrays/objects. Now unwraps all three endpoints correctly.
 - **docs:** README overhaul — added Secrets API, Storage Pools API, Git Backup API sections. Added Web Dashboard, Container Logging, IPMI/BMC, Git Backup features. Fixed BMH Operations section (removed undocumented reboot annotation, documented actual annotations). Added bmh-operator as companion service. Fixed rose1 IP references.
 - **chore:** Added bmh-operator pod manifest to `deploy/site-pods/rose1-apps.yaml` with ConfigMap mount. Redeployed bmh-operator on rose1 (gt network, infra namespace).
+- **fix:** mkube-update re-bootstraps when mkube container goes missing. Previously, if mkube's container was removed during a failed update, mkube-update looped forever with "container not found" errors and required a manual stop/start. Now both `replaceContainer` and the watchdog `checkAndRestart` detect the missing bootstrap container and trigger re-bootstrap automatically.
 
 ### 2026-04-06
 - **feat:** Stormd logs as primary log source — pod log API now queries stormd REST API (port 9080) on each pod's IP first, with micrologs and RouterOS system logs as fallbacks. Passes through `tail`, `search`, `process` query params. All stormd-managed containers now have proper logs.
