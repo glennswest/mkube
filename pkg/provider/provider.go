@@ -112,6 +112,7 @@ type MicroKubeProvider struct {
 	storagePools    *safemap.Map[string, *StoragePool]                   // name -> StoragePool (cluster-scoped)
 	redeploying     *safemap.Map[string, bool]                           // pod keys currently being redeployed
 	createFailures  *safemap.Map[string, int]                            // pod key -> consecutive CreatePod failures
+	createBackoff   *safemap.Map[string, *containerRestartState]         // pod key -> creation backoff tracking
 	networkFailures *safemap.Map[string, int]                            // pod key -> consecutive network health failures
 	restartBackoff  *safemap.Map[string, *containerRestartState]         // container name -> restart backoff tracking
 	cleanupTickCounter  int                                  // scheduler tick counter for auto-cleanup
@@ -394,6 +395,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		storagePools:     safemap.New[string, *StoragePool](),
 		redeploying:      safemap.New[string, bool](),
 		createFailures:   safemap.New[string, int](),
+		createBackoff:    safemap.New[string, *containerRestartState](),
 		networkFailures:  safemap.New[string, int](),
 		restartBackoff:   safemap.New[string, *containerRestartState](),
 		jobLogBuf:        newJobLogStore(),
@@ -1641,6 +1643,8 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 
 	p.recordEvent(pod, "Killing", fmt.Sprintf("Stopping pod %s/%s", pod.Namespace, pod.Name), "Normal")
 	p.pods.Delete(podKey(pod))
+	p.createFailures.Delete(podKey(pod))
+	p.createBackoff.Delete(podKey(pod))
 
 	// Run async consistency check to clean up any orphaned resources
 	p.CheckConsistencyAsync("delete-pod/" + podKey(pod))
@@ -2215,6 +2219,21 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 
 		if !allExist {
+			// Check creation backoff — skip if we're still in cooldown from prior failures
+			const (
+				createBackoffThreshold = 3               // retries before backoff kicks in
+				createInitialBackoff   = 30 * time.Second
+				createMaxBackoff       = 5 * time.Minute
+			)
+			cbs, _ := p.createBackoff.Get(key)
+			if cbs != nil && cbs.backoff > 0 && time.Since(cbs.lastAttempt) < cbs.backoff {
+				log.Debugw("pod creation in backoff, skipping",
+					"pod", key, "backoff", cbs.backoff,
+					"remaining", cbs.backoff-time.Since(cbs.lastAttempt),
+					"attempts", cbs.attempts)
+				continue
+			}
+
 			// If this pod has failed creation before, force-release stale
 			// IPAM + veth state that may be blocking it.
 			if priorFailures >= 2 {
@@ -2231,8 +2250,28 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				failures := safemap.Increment(p.createFailures, key, 1)
 				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", failures)
 				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
+
+				// Track backoff state for exponential cooldown
+				if cbs == nil {
+					cbs = &containerRestartState{}
+				}
+				cbs.attempts++
+				cbs.lastAttempt = time.Now()
+				if cbs.attempts > createBackoffThreshold {
+					if cbs.backoff == 0 {
+						cbs.backoff = createInitialBackoff
+					} else {
+						cbs.backoff *= 2
+						if cbs.backoff > createMaxBackoff {
+							cbs.backoff = createMaxBackoff
+						}
+					}
+					p.recordEvent(pod, "BackOff", fmt.Sprintf("Back-off creating pod, next retry in %s (attempt %d)", cbs.backoff, cbs.attempts), "Warning")
+				}
+				p.createBackoff.Set(key, cbs)
 			} else {
 				p.createFailures.Delete(key)
+				p.createBackoff.Delete(key)
 			}
 		} else {
 			// Track already-existing pods
