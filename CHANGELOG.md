@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-04-21
+- **feat:** BMH `spec.bootMode` field — `"forever"` keeps the image on every PXE boot (for live ISOs like fcos-cloudid), default/empty/`"once"` switches to localboot after serving sanboot (for install images like baremetalservices). Fixes boot loop for servers that always live-boot.
+- **fix:** Release veth on CreatePod failure to prevent RouterOS API churn from orphaned veths.
+- **docs:** Enhancement spec for bmh-operator TFTP/PXE server — TFTP was lost when pxemanager was decommissioned in Mar 2026. Needed for legacy Intel PXE clients to chain-load iPXE.
+
 ### 2026-04-07
 - **fix:** Image update detection after push notification — step 3c used `RefreshImage` which returned `changed=false` on first call after cache clear (no baseline digest). Now uses `RefreshImageWithHint` with the pod's deployed digest annotation, matching step 3a behavior. Also promoted image freshness check error log from Debug (invisible) to Warn.
 - **fix:** `RefreshImageWithHint` cache-hit path ignored deployed digest hint — when `EnsureImage` pre-populated the cache before step 3a, the cache-hit early return skipped the hint comparison entirely, so stale pods were never detected on boot. Now checks deployed digest even on cache hit.
