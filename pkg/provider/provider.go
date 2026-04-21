@@ -662,6 +662,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				var err error
 				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
 				if err != nil {
+					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
 				}
 				localDir := fmt.Sprintf("/data/configmaps/%s/%s", name, vm.Name)
@@ -680,6 +681,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				var err error
 				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
 				if err != nil {
+					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
 				}
 				localDir := fmt.Sprintf("/data/secrets/%s/%s", name, vm.Name)
@@ -698,6 +700,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				var err error
 				hostPath, err = p.deps.StorageMgr.ProvisionVolume(ctx, name, vm.Name, vm.MountPath)
 				if err != nil {
+					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 					return fmt.Errorf("provisioning volume %s: %w", vm.Name, err)
 				}
 			}
@@ -761,6 +764,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 
 		if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
+			log.Warnw("releasing veth after container creation failure", "veth", vethName)
+			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("creating container %s: %w", name, err)
 		}
 
@@ -772,6 +777,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		tracker.start(PhaseTarballExtract)
 		ct, err := p.waitForStopped(ctx, name, 120*time.Second)
 		if err != nil {
+			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("waiting for container %s to be ready: %w", name, err)
 		}
 
@@ -801,6 +807,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 		if startErr != nil {
+			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("starting container %s after %d attempts: %w", name, len(startBackoffs)+1, startErr)
 		}
 
