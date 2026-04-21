@@ -43,6 +43,7 @@ type BMHSpec struct {
 	BootFileEFI    string          `json:"bootFileEfi,omitempty"`    // PXE boot file (UEFI)
 	BootConfigRef  string          `json:"bootConfigRef,omitempty"`  // reference to a BootConfig CRD name (legacy — use Template for cloudid)
 	Disk           string          `json:"disk,omitempty"`           // ISCSIDisk name for iSCSI root disk boot
+	BootMode       string          `json:"bootMode,omitempty"`       // "once" (default) = switch to localboot after iPXE serve; "forever" = always PXE boot this image
 	Template       string          `json:"template,omitempty"`       // cloudid template ref (e.g. "agent-runner.ign.json")
 	Ignition       json.RawMessage `json:"ignition,omitempty"`       // base Ignition v3 JSON (platform config — disks, filesystems)
 	Kickstart      string          `json:"kickstart,omitempty"`      // base kickstart text (platform config)
