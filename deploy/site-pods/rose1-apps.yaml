@@ -8,7 +8,8 @@ metadata:
   name: bmh-operator
   namespace: infra
   annotations:
-    vkube.io/network: gt
+    vkube.io/network: g10
+    vkube.io/static-ip: "192.168.10.200"
     vkube.io/image-policy: auto
 spec:
   restartPolicy: Always

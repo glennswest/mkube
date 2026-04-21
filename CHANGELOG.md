@@ -5,6 +5,7 @@
 ### 2026-04-21
 - **feat:** BMH `spec.bootMode` field — `"forever"` keeps the image on every PXE boot (for live ISOs like fcos-cloudid), default/empty/`"once"` switches to localboot after serving sanboot (for install images like baremetalservices). Fixes boot loop for servers that always live-boot.
 - **fix:** Release veth on CreatePod failure to prevent RouterOS API churn from orphaned veths.
+- **fix:** Move bmh-operator from gt network (192.168.200.103) to g10 network (192.168.10.200) for PXE boot. DHCP pool `nextServer` points to 192.168.10.200 — bmh-operator must be there to serve TFTP/iPXE. Removed conflicting RouterOS bridge IP and NAT rules that previously forwarded PXE traffic to mkube.
 - **docs:** Enhancement spec for bmh-operator TFTP/PXE server — TFTP was lost when pxemanager was decommissioned in Mar 2026. Needed for legacy Intel PXE clients to chain-load iPXE.
 
 ### 2026-04-07
