@@ -268,6 +268,17 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 	// This catches zombie containers where RouterOS says "running"
 	// but the process inside is dead or unresponsive.
 	p.checkPodPortHealth(ctx)
+
+	// Periodic DHCP relay NAT exemption check (every 5 minutes).
+	// Ensures srcnat accept rules haven't been removed by manual changes.
+	if time.Since(p.lastNATCheck) >= 5*time.Minute {
+		p.lastNATCheck = time.Now()
+		for _, netObj := range ihNets {
+			if netObj.Spec.DHCP.Enabled {
+				p.ensureDHCPRelayNAT(ctx, netObj)
+			}
+		}
+	}
 }
 
 // podHealthFailureThreshold is the number of consecutive failures before

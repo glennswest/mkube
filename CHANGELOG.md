@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-04-21
+- **feat:** Auto-repair DHCP relay NAT exemption — when RouterOS has a DHCP relay + srcnat masquerade on the same bridge, the masquerade rewrites the relay source port (67 → random), breaking DHCP. mkube now auto-detects and inserts a `srcnat accept udp 67→67` rule before any masquerade rule. Runs on network provisioning and every 5 minutes via infra health checks.
 - **feat:** BMH `spec.bootMode` field — `"forever"` keeps the image on every PXE boot (for live ISOs like fcos-cloudid), default/empty/`"once"` switches to localboot after serving sanboot (for install images like baremetalservices). Fixes boot loop for servers that always live-boot.
 - **fix:** Release veth on CreatePod failure to prevent RouterOS API churn from orphaned veths.
 - **fix:** Move bmh-operator from gt network (192.168.200.103) to g10 network (192.168.10.200) for PXE boot. DHCP pool `nextServer` points to 192.168.10.200 — bmh-operator must be there to serve TFTP/iPXE. Removed conflicting RouterOS bridge IP and NAT rules that previously forwarded PXE traffic to mkube.

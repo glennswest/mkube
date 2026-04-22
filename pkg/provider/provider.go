@@ -137,6 +137,7 @@ type MicroKubeProvider struct {
 	micrologsBreaker   micrologsCircuitBreaker               // circuit breaker for micrologs service
 	micrologsClient    *http.Client                          // persistent HTTP client for micrologs (2s timeout)
 	migrationTracker   *MigrationTracker                     // tracks in-flight PVC/disk migrations
+	lastNATCheck       time.Time                              // last DHCP relay NAT exemption check
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.

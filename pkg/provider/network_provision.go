@@ -108,6 +108,9 @@ func (p *MicroKubeProvider) provisionNetwork(ctx context.Context, net *Network) 
 		}
 	}
 
+	// 3b. Ensure NAT exemption for DHCP relay
+	p.ensureDHCPRelayNAT(ctx, net)
+
 	// 4. Mark as provisioned
 	net.Spec.Provisioned = true
 	if p.deps.Store != nil && p.deps.Store.Networks != nil {
@@ -217,4 +220,74 @@ func (p *MicroKubeProvider) BridgeExists(ctx context.Context, name string) (bool
 		}
 	}
 	return false, nil
+}
+
+// ensureDHCPRelayNAT checks that a srcnat accept rule for UDP 67→67 exists
+// before any masquerade rule on the network's bridge. Without this, the
+// masquerade rewrites the DHCP relay's source port, causing DHCP responses
+// to be dropped by conntrack.
+func (p *MicroKubeProvider) ensureDHCPRelayNAT(ctx context.Context, net *Network) {
+	rosClient := p.getRouterOSClient()
+	if rosClient == nil {
+		return
+	}
+	if !net.Spec.DHCP.Enabled {
+		return
+	}
+
+	bridge := net.Spec.Bridge
+	if bridge == "" {
+		return
+	}
+
+	log := p.deps.Logger.With("network", net.Name, "bridge", bridge)
+
+	rules, err := rosClient.ListNatRules(ctx)
+	if err != nil {
+		log.Warnw("failed to list NAT rules for DHCP relay check", "error", err)
+		return
+	}
+
+	// Check if our exemption rule already exists
+	const relayComment = "mkube: DHCP relay NAT exemption"
+	for _, r := range rules {
+		if r.Chain == "srcnat" && r.Action == "accept" &&
+			r.Protocol == "udp" && r.SrcPort == "67" && r.DstPort == "67" &&
+			strings.Contains(r.Comment, "mkube: DHCP relay") {
+			return // already exists
+		}
+	}
+
+	// Find the first masquerade rule on this bridge
+	var masqueradeID string
+	for _, r := range rules {
+		if r.Chain == "srcnat" && r.Action == "masquerade" && r.OutInterface == bridge {
+			masqueradeID = r.ID
+			break
+		}
+	}
+
+	if masqueradeID == "" {
+		// No masquerade on this bridge — no conflict possible
+		return
+	}
+
+	// Create the accept rule before the masquerade rule
+	rule := map[string]string{
+		"chain":        "srcnat",
+		"action":       "accept",
+		"protocol":     "udp",
+		"src-port":     "67",
+		"dst-port":     "67",
+		"out-interface": bridge,
+		"comment":      relayComment,
+		"place-before": masqueradeID,
+	}
+	if err := rosClient.AddNatRule(ctx, rule); err != nil {
+		log.Warnw("failed to create DHCP relay NAT exemption", "error", err)
+		return
+	}
+
+	log.Infow("auto-repaired DHCP relay NAT exemption",
+		"placedBefore", masqueradeID)
 }

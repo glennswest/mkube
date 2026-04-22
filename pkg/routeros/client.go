@@ -749,6 +749,35 @@ func (c *Client) RemoveDHCPRelayByInterface(ctx context.Context, iface string) e
 	return nil
 }
 
+// ─── Firewall NAT Operations ─────────────────────────────────────────────────
+
+// NatRule represents a RouterOS firewall NAT rule.
+type NatRule struct {
+	ID           string `json:".id"`
+	Chain        string `json:"chain"`
+	Action       string `json:"action"`
+	Protocol     string `json:"protocol,omitempty"`
+	SrcPort      string `json:"src-port,omitempty"`
+	DstPort      string `json:"dst-port,omitempty"`
+	OutInterface string `json:"out-interface,omitempty"`
+	Comment      string `json:"comment,omitempty"`
+}
+
+// ListNatRules returns all firewall NAT rules.
+func (c *Client) ListNatRules(ctx context.Context) ([]NatRule, error) {
+	var rules []NatRule
+	if err := c.restGET(ctx, "/ip/firewall/nat", &rules); err != nil {
+		return nil, fmt.Errorf("listing NAT rules: %w", err)
+	}
+	return rules, nil
+}
+
+// AddNatRule creates a firewall NAT rule. The rule map supports all RouterOS
+// NAT fields including "place-before" to position relative to another rule.
+func (c *Client) AddNatRule(ctx context.Context, rule map[string]string) error {
+	return c.restPOST(ctx, "/ip/firewall/nat/add", rule, nil)
+}
+
 // ─── EoIP Tunnel Operations ──────────────────────────────────────────────────
 
 // CreateEoIPTunnel creates an EoIP tunnel interface.
