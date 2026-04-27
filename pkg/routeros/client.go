@@ -135,8 +135,114 @@ func (c *Client) GetContainer(ctx context.Context, name string) (*Container, err
 }
 
 // CreateContainer creates a new container from a spec.
+// Uses a temporary RouterOS script to run the /container/add CLI command
+// asynchronously, avoiding REST session timeouts during tarball extraction.
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error {
-	return c.restPOST(ctx, "/container/add", spec, nil)
+	cmd := buildContainerAddCLI(spec)
+	scriptName := "mkube-add-" + spec.Name
+
+	// Create temporary script
+	scriptID, err := c.createScript(ctx, scriptName, cmd)
+	if err != nil {
+		return fmt.Errorf("creating script for container add: %w", err)
+	}
+	defer c.removeScript(ctx, scriptID) //nolint:errcheck
+
+	// Run script (returns immediately, extraction happens in background)
+	if err := c.runScript(ctx, scriptID); err != nil {
+		return fmt.Errorf("running script for container add: %w", err)
+	}
+
+	// Poll for container to appear (2s interval, 120s timeout)
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for container %q to appear after script-based creation", spec.Name)
+		}
+		time.Sleep(2 * time.Second)
+
+		containers, err := c.ListContainers(ctx)
+		if err != nil {
+			continue // transient error, keep polling
+		}
+		for _, ct := range containers {
+			if ct.Name == spec.Name {
+				return nil
+			}
+		}
+	}
+}
+
+// buildContainerAddCLI constructs the RouterOS CLI command for /container/add.
+func buildContainerAddCLI(spec ContainerSpec) string {
+	parts := []string{"/container/add"}
+	parts = append(parts, "name="+spec.Name)
+	if spec.File != "" {
+		parts = append(parts, "file="+spec.File)
+	}
+	if spec.RemoteImage != "" {
+		parts = append(parts, "remote-image="+spec.RemoteImage)
+	}
+	parts = append(parts, "interface="+spec.Interface)
+	parts = append(parts, "root-dir="+spec.RootDir)
+	if spec.MountLists != "" {
+		parts = append(parts, "mountlists="+spec.MountLists)
+	}
+	if spec.Cmd != "" {
+		parts = append(parts, "cmd="+spec.Cmd)
+	}
+	if spec.Entrypoint != "" {
+		parts = append(parts, "entrypoint="+spec.Entrypoint)
+	}
+	if spec.WorkDir != "" {
+		parts = append(parts, "workdir="+spec.WorkDir)
+	}
+	if spec.Hostname != "" {
+		parts = append(parts, "hostname="+spec.Hostname)
+	}
+	if spec.DNS != "" {
+		parts = append(parts, "dns="+spec.DNS)
+	}
+	if spec.User != "" {
+		parts = append(parts, "user="+spec.User)
+	}
+	if spec.Envlist != "" {
+		parts = append(parts, "envlist="+spec.Envlist)
+	}
+	if spec.Logging != "" {
+		parts = append(parts, "logging="+spec.Logging)
+	}
+	if spec.StartOnBoot != "" {
+		parts = append(parts, "start-on-boot="+spec.StartOnBoot)
+	}
+	return strings.Join(parts, " ")
+}
+
+// ─── Script Helpers ─────────────────────────────────────────────────────────
+
+// createScript creates a RouterOS script and returns its .id.
+func (c *Client) createScript(ctx context.Context, name, source string) (string, error) {
+	var result struct {
+		Ret string `json:"ret"`
+	}
+	err := c.restPOST(ctx, "/system/script/add", map[string]string{
+		"name":   name,
+		"source": source,
+	}, &result)
+	if err != nil {
+		return "", err
+	}
+	return result.Ret, nil
+}
+
+// runScript runs a RouterOS script by its .id.
+func (c *Client) runScript(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/system/script/run", map[string]string{".id": id}, nil)
+}
+
+// removeScript removes a RouterOS script by its .id.
+func (c *Client) removeScript(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/system/script/remove", map[string]string{".id": id}, nil)
 }
 
 // RemoveContainer removes a container by its RouterOS .id.

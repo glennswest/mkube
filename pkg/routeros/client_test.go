@@ -84,13 +84,38 @@ func TestGetContainer(t *testing.T) {
 }
 
 func TestCreateContainer(t *testing.T) {
-	var received ContainerSpec
+	var scriptSource string
+	var scriptCreated, scriptRun, scriptRemoved bool
+	containerReady := false
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
+		switch r.URL.Path {
+		case "/system/script/add":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			scriptSource = body["source"]
+			scriptCreated = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"ret": "*A1"})
+		case "/system/script/run":
+			scriptRun = true
+			containerReady = true // simulate async extraction completing
+			w.WriteHeader(http.StatusOK)
+		case "/system/script/remove":
+			scriptRemoved = true
+			w.WriteHeader(http.StatusOK)
+		case "/container":
+			w.Header().Set("Content-Type", "application/json")
+			if containerReady {
+				_ = json.NewEncoder(w).Encode([]Container{
+					{ID: "*1", Name: "new-container", Stopped: "true"},
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode([]Container{})
+			}
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&received)
-		w.WriteHeader(http.StatusOK)
 	})
 
 	client, server := newTestClient(t, handler)
@@ -101,14 +126,53 @@ func TestCreateContainer(t *testing.T) {
 		File:      "/cache/test.tar",
 		Interface: "veth-test-0",
 		RootDir:   "/data/test",
+		Logging:   "yes",
 	}
 
 	err := client.CreateContainer(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if received.Name != "new-container" {
-		t.Errorf("expected name 'new-container', got %q", received.Name)
+	if !scriptCreated {
+		t.Error("expected script to be created")
+	}
+	if !scriptRun {
+		t.Error("expected script to be run")
+	}
+	if !scriptRemoved {
+		t.Error("expected script to be cleaned up")
+	}
+	expected := "/container/add name=new-container file=/cache/test.tar interface=veth-test-0 root-dir=/data/test logging=yes"
+	if scriptSource != expected {
+		t.Errorf("unexpected script source:\n got: %s\nwant: %s", scriptSource, expected)
+	}
+}
+
+func TestBuildContainerAddCLI(t *testing.T) {
+	spec := ContainerSpec{
+		Name:        "test",
+		RemoteImage: "192.168.200.3:5000/myapp:latest",
+		Interface:   "veth-ns-pod-0",
+		RootDir:     "/data/test",
+		MountLists:  "mounts-test",
+		Cmd:         "/app",
+		Entrypoint:  "/bin/sh",
+		WorkDir:     "/app",
+		Hostname:    "test-host",
+		DNS:         "192.168.200.199",
+		User:        "nobody",
+		Envlist:     "envs-test",
+		Logging:     "yes",
+		StartOnBoot: "yes",
+	}
+
+	result := buildContainerAddCLI(spec)
+	expected := "/container/add name=test remote-image=192.168.200.3:5000/myapp:latest" +
+		" interface=veth-ns-pod-0 root-dir=/data/test mountlists=mounts-test" +
+		" cmd=/app entrypoint=/bin/sh workdir=/app hostname=test-host" +
+		" dns=192.168.200.199 user=nobody envlist=envs-test logging=yes start-on-boot=yes"
+	if result != expected {
+		t.Errorf("unexpected CLI:\n got: %s\nwant: %s", result, expected)
 	}
 }
 
