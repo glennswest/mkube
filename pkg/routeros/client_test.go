@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/glennswest/mkube/pkg/config"
@@ -84,27 +85,32 @@ func TestGetContainer(t *testing.T) {
 }
 
 func TestCreateContainer(t *testing.T) {
-	var scriptSource string
+	var scriptSource, scriptName string
 	var scriptCreated, scriptRun, scriptRemoved bool
 	containerReady := false
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/system/script/add":
+		switch {
+		case r.URL.Path == "/system/script" && r.Method == http.MethodGet:
+			// cleanupStaleScripts lists existing scripts
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]scriptEntry{})
+		case r.URL.Path == "/system/script/add":
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			scriptSource = body["source"]
+			scriptName = body["name"]
 			scriptCreated = true
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"ret": "*A1"})
-		case "/system/script/run":
+		case r.URL.Path == "/system/script/run":
 			scriptRun = true
 			containerReady = true // simulate async extraction completing
 			w.WriteHeader(http.StatusOK)
-		case "/system/script/remove":
+		case r.URL.Path == "/system/script/remove":
 			scriptRemoved = true
 			w.WriteHeader(http.StatusOK)
-		case "/container":
+		case r.URL.Path == "/container":
 			w.Header().Set("Content-Type", "application/json")
 			if containerReady {
 				_ = json.NewEncoder(w).Encode([]Container{
@@ -142,9 +148,81 @@ func TestCreateContainer(t *testing.T) {
 	if !scriptRemoved {
 		t.Error("expected script to be cleaned up")
 	}
+	if !strings.HasPrefix(scriptName, "mkube-task-") {
+		t.Errorf("expected script name with mkube-task- prefix, got %q", scriptName)
+	}
 	expected := "/container/add name=new-container file=/cache/test.tar interface=veth-test-0 root-dir=/data/test logging=yes"
 	if scriptSource != expected {
 		t.Errorf("unexpected script source:\n got: %s\nwant: %s", scriptSource, expected)
+	}
+}
+
+func TestCreateContainerCleansUpStaleScripts(t *testing.T) {
+	var removedIDs []string
+	containerReady := false
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/system/script" && r.Method == http.MethodGet:
+			// Return stale scripts from prior runs
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]scriptEntry{
+				{ID: "*S1", Name: "mkube-task-000001"},
+				{ID: "*S2", Name: "mkube-task-000002"},
+				{ID: "*S3", Name: "user-script"}, // should NOT be removed
+			})
+		case r.URL.Path == "/system/script/add":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"ret": "*A1"})
+		case r.URL.Path == "/system/script/run":
+			containerReady = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/system/script/remove":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			removedIDs = append(removedIDs, body[".id"])
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/container":
+			w.Header().Set("Content-Type", "application/json")
+			if containerReady {
+				_ = json.NewEncoder(w).Encode([]Container{
+					{ID: "*1", Name: "test-ct", Stopped: "true"},
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode([]Container{})
+			}
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	})
+
+	client, server := newTestClient(t, handler)
+	defer server.Close()
+
+	spec := ContainerSpec{
+		Name:      "test-ct",
+		File:      "/cache/test.tar",
+		Interface: "veth-test-0",
+		RootDir:   "/data/test",
+	}
+
+	err := client.CreateContainer(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have removed the two stale mkube-task-* scripts, plus the new one after completion
+	staleRemoved := 0
+	for _, id := range removedIDs {
+		if id == "*S1" || id == "*S2" {
+			staleRemoved++
+		}
+		if id == "*S3" {
+			t.Error("should not remove non-mkube-task scripts")
+		}
+	}
+	if staleRemoved != 2 {
+		t.Errorf("expected 2 stale scripts removed, got %d (removed: %v)", staleRemoved, removedIDs)
 	}
 }
 

@@ -9,10 +9,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/glennswest/mkube/pkg/config"
 )
+
+// scriptSeq is a monotonically increasing counter for unique script names.
+var scriptSeq atomic.Uint64
 
 // Client wraps both the RouterOS REST API and the RouterOS protocol API.
 // The REST API (available since RouterOS 7.1) is preferred for container
@@ -139,7 +143,10 @@ func (c *Client) GetContainer(ctx context.Context, name string) (*Container, err
 // asynchronously, avoiding REST session timeouts during tarball extraction.
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error {
 	cmd := buildContainerAddCLI(spec)
-	scriptName := "mkube-add-" + spec.Name
+	scriptName := fmt.Sprintf("mkube-task-%06d", scriptSeq.Add(1))
+
+	// Clean up any stale mkube-task-* scripts from previous runs
+	c.cleanupStaleScripts(ctx)
 
 	// Create temporary script
 	scriptID, err := c.createScript(ctx, scriptName, cmd)
@@ -243,6 +250,24 @@ func (c *Client) runScript(ctx context.Context, id string) error {
 // removeScript removes a RouterOS script by its .id.
 func (c *Client) removeScript(ctx context.Context, id string) error {
 	return c.restPOST(ctx, "/system/script/remove", map[string]string{".id": id}, nil)
+}
+
+type scriptEntry struct {
+	ID   string `json:".id"`
+	Name string `json:"name"`
+}
+
+// cleanupStaleScripts removes any leftover mkube-task-* scripts from prior runs.
+func (c *Client) cleanupStaleScripts(ctx context.Context) {
+	var scripts []scriptEntry
+	if err := c.restGET(ctx, "/system/script", &scripts); err != nil {
+		return // best effort
+	}
+	for _, s := range scripts {
+		if strings.HasPrefix(s.Name, "mkube-task-") {
+			_ = c.removeScript(ctx, s.ID)
+		}
+	}
 }
 
 // RemoveContainer removes a container by its RouterOS .id.
