@@ -28,6 +28,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -833,7 +834,7 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	}
 
 	log.Infow("creating container from tarball", "rosPath", rosPath)
-	if err := u.rosPost(ctx, "/container/add", spec); err != nil {
+	if err := u.rosCreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("creating: %w", err)
 	}
 
@@ -1001,7 +1002,7 @@ func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *
 	}
 
 	log.Infow("rollback: creating container from previous tarball", "rosPath", prevROSPath)
-	if err := u.rosPost(ctx, "/container/add", spec); err != nil {
+	if err := u.rosCreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("rollback create failed: %w", err)
 	}
 
@@ -1155,7 +1156,7 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 	}
 
 	log.Infow("creating mkube container from tarball", "spec", spec)
-	if err := u.rosPost(ctx, "/container/add", spec); err != nil {
+	if err := u.rosCreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("creating container: %w", err)
 	}
 
@@ -1371,6 +1372,106 @@ func (u *Updater) rosRemoveDirectory(ctx context.Context, path string) {
 		_ = u.rosPost(ctx, "/file/remove", map[string]string{".id": child.id})
 	}
 	u.log.Infow("recursive root-dir removal", "path", path, "files_removed", len(children))
+}
+
+// ─── Script-based container creation ─────────────────────────────────────────
+
+// rosScriptSeq is a monotonically increasing counter for unique script names.
+var rosScriptSeq atomic.Uint64
+
+// rosCreateContainer creates a container via a temporary RouterOS script,
+// avoiding the REST session timeout that occurs during tarball extraction.
+// The script runs the /container/add CLI command asynchronously. The caller
+// should use waitForExtraction() to poll for completion.
+func (u *Updater) rosCreateContainer(ctx context.Context, spec map[string]string) error {
+	// Clean up stale mkube-task-* scripts from prior runs
+	u.rosCleanupStaleScripts(ctx)
+
+	cmd := u.buildContainerAddCLI(spec)
+	scriptName := fmt.Sprintf("mkube-task-%06d", rosScriptSeq.Add(1))
+
+	// Create temporary script
+	scriptID, err := u.rosCreateScript(ctx, scriptName, cmd)
+	if err != nil {
+		return fmt.Errorf("creating script for container add: %w", err)
+	}
+	defer func() { _ = u.rosRemoveScript(ctx, scriptID) }()
+
+	// Run script (returns immediately, extraction happens in background)
+	if err := u.rosRunScript(ctx, scriptID); err != nil {
+		return fmt.Errorf("running script for container add: %w", err)
+	}
+
+	return nil
+}
+
+// buildContainerAddCLI constructs the RouterOS CLI command for /container/add.
+func (u *Updater) buildContainerAddCLI(spec map[string]string) string {
+	parts := []string{"/container/add"}
+	// Required fields first
+	for _, key := range []string{"name", "file", "remote-image", "interface", "root-dir"} {
+		if v, ok := spec[key]; ok && v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	// Optional fields
+	for _, key := range []string{"mountlists", "cmd", "entrypoint", "workdir", "hostname", "dns", "user", "envlist", "logging", "start-on-boot"} {
+		if v, ok := spec[key]; ok && v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func (u *Updater) rosCreateScript(ctx context.Context, name, source string) (string, error) {
+	data, _ := json.Marshal(map[string]string{"name": name, "source": source})
+	req, err := http.NewRequestWithContext(ctx, "POST", u.cfg.RouterOSURL+"/system/script/add", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := u.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("script/add: %d: %s", resp.StatusCode, string(b))
+	}
+	var result struct {
+		Ret string `json:"ret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result.Ret, nil
+}
+
+func (u *Updater) rosRunScript(ctx context.Context, id string) error {
+	return u.rosPost(ctx, "/system/script/run", map[string]string{".id": id})
+}
+
+func (u *Updater) rosRemoveScript(ctx context.Context, id string) error {
+	return u.rosPost(ctx, "/system/script/remove", map[string]string{".id": id})
+}
+
+func (u *Updater) rosCleanupStaleScripts(ctx context.Context) {
+	var scripts []struct {
+		ID   string `json:".id"`
+		Name string `json:"name"`
+	}
+	if err := u.rosGET(ctx, "/system/script", &scripts); err != nil {
+		return
+	}
+	for _, s := range scripts {
+		if strings.HasPrefix(s.Name, "mkube-task-") {
+			_ = u.rosRemoveScript(ctx, s.ID)
+		}
+	}
 }
 
 // ─── Wait helpers ───────────────────────────────────────────────────────────
