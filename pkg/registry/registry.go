@@ -1,12 +1,14 @@
 package registry
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	goruntime "runtime"
@@ -33,6 +35,7 @@ type Registry struct {
 	cfg        config.RegistryConfig
 	log        *zap.SugaredLogger
 	server     *http.Server
+	listener   net.Listener // raw listener for dual-protocol mode
 	store      *BlobStore
 	client     *http.Client
 	PushEvents chan PushEvent
@@ -92,13 +95,36 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 		if err != nil {
 			return nil, fmt.Errorf("loading TLS cert: %w", err)
 		}
-		r.server.TLSConfig = &tls.Config{
+		tlsCfg := &tls.Config{
 			Certificates: []tls.Certificate{tlsCert},
 		}
+
+		ln, err := net.Listen("tcp", cfg.ListenAddr)
+		if err != nil {
+			return nil, fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		}
+		r.listener = ln
+
+		// Serve both HTTP and HTTPS on the same port by peeking at the
+		// first byte of each connection. TLS ClientHello starts with 0x16;
+		// plain HTTP starts with an ASCII method letter.
+		httpSrv := &http.Server{
+			Handler: mux,
+		}
+		r.server.TLSConfig = tlsCfg
+
 		go func() {
-			log.Infow("registry listening (HTTPS)", "addr", cfg.ListenAddr)
-			if err := r.server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-				log.Errorw("registry server error", "error", err)
+			log.Infow("registry listening (HTTP+HTTPS)", "addr", cfg.ListenAddr)
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					if strings.Contains(err.Error(), "use of closed") {
+						return
+					}
+					log.Errorw("accept error", "error", err)
+					continue
+				}
+				go r.serveConn(conn, tlsCfg, mux, httpSrv, log)
 			}
 		}()
 	} else {
@@ -128,6 +154,51 @@ func Start(ctx context.Context, cfg config.RegistryConfig, log *zap.SugaredLogge
 	return r, nil
 }
 
+// serveConn peeks at the first byte of a connection to determine if it is
+// TLS (0x16 = ClientHello) or plain HTTP, then serves accordingly.
+func (r *Registry) serveConn(conn net.Conn, tlsCfg *tls.Config, mux http.Handler, httpSrv *http.Server, log *zap.SugaredLogger) {
+	br := bufio.NewReader(conn)
+	b, err := br.Peek(1)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	pc := &peekedConn{Conn: conn, r: br}
+	if b[0] == 0x16 {
+		// TLS handshake
+		tlsConn := tls.Server(pc, tlsCfg)
+		httpSrv.Handler = mux
+		http.Serve(&singleListener{conn: tlsConn}, mux)
+	} else {
+		// Plain HTTP
+		http.Serve(&singleListener{conn: pc}, mux)
+	}
+}
+
+// peekedConn wraps a net.Conn whose first bytes have been buffered by Peek.
+type peekedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// singleListener yields a single connection then returns ErrServerClosed.
+type singleListener struct {
+	conn net.Conn
+	done bool
+}
+
+func (l *singleListener) Accept() (net.Conn, error) {
+	if l.done {
+		return nil, http.ErrServerClosed
+	}
+	l.done = true
+	return l.conn, nil
+}
+func (l *singleListener) Close() error   { return nil }
+func (l *singleListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
 // Store returns the underlying blob store (used by the image watcher).
 func (r *Registry) Store() *BlobStore {
 	return r.store
@@ -136,6 +207,9 @@ func (r *Registry) Store() *BlobStore {
 // Shutdown gracefully stops the registry server.
 func (r *Registry) Shutdown(ctx context.Context) error {
 	r.log.Info("shutting down registry")
+	if r.listener != nil {
+		r.listener.Close()
+	}
 	return r.server.Shutdown(ctx)
 }
 

@@ -1610,11 +1610,14 @@ func (u *Updater) readSSEStream(ctx context.Context, sseURL string) error {
 }
 
 // managementURL derives the registry management API URL (:5001) from the
-// registry URL. Replaces the port with 5001.
+// registry URL. Replaces the port with 5001 and forces HTTP scheme since
+// the management API serves plain HTTP only.
 func (u *Updater) managementURL() string {
 	url := u.cfg.RegistryURL
 	// Replace :5000 with :5001 if present
 	url = strings.Replace(url, ":5000", ":5001", 1)
+	// Management API on :5001 is always plain HTTP
+	url = strings.Replace(url, "https://", "http://", 1)
 	return url
 }
 
