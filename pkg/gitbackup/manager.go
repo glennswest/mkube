@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,11 +20,12 @@ import (
 
 // Manager handles periodic and change-triggered git backups of store state.
 type Manager struct {
-	cfg       config.GitBackupConfig
-	store     *store.Store
-	log       *zap.SugaredLogger
-	client    *rust4gitClient
-	triggerCh chan struct{}
+	cfg         config.GitBackupConfig
+	store       *store.Store
+	log         *zap.SugaredLogger
+	client      *rust4gitClient
+	triggerCh   chan struct{} // debounced trigger from store changes
+	immediateCh chan struct{} // immediate trigger bypassing debounce
 
 	// Content hashes for incremental pushes
 	mu     sync.Mutex
@@ -67,12 +69,13 @@ func New(cfg config.GitBackupConfig, s *store.Store, log *zap.SugaredLogger) (*M
 	)
 
 	return &Manager{
-		cfg:       cfg,
-		store:     s,
-		log:       log.Named("gitbackup"),
-		client:    client,
-		triggerCh: make(chan struct{}, 1),
-		hashes:    make(map[string]string),
+		cfg:         cfg,
+		store:       s,
+		log:         log.Named("gitbackup"),
+		client:      client,
+		triggerCh:   make(chan struct{}, 1),
+		immediateCh: make(chan struct{}, 1),
+		hashes:      make(map[string]string),
 	}, nil
 }
 
@@ -87,10 +90,10 @@ func (m *Manager) OnStoreChange(bucket, key, op string, value []byte) {
 	}
 }
 
-// TriggerNow forces an immediate backup snapshot.
+// TriggerNow forces an immediate backup snapshot, bypassing debounce.
 func (m *Manager) TriggerNow() {
 	select {
-	case m.triggerCh <- struct{}{}:
+	case m.immediateCh <- struct{}{}:
 	default:
 	}
 }
@@ -104,6 +107,7 @@ func (m *Manager) Run(ctx context.Context) {
 
 	interval := time.Duration(m.cfg.IntervalSeconds) * time.Second
 	debounce := time.Duration(m.cfg.DebounceSeconds) * time.Second
+	maxDebounce := debounce * 3 // fire even if changes keep flowing
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -112,11 +116,14 @@ func (m *Manager) Run(ctx context.Context) {
 	defer renewTicker.Stop()
 
 	var debounceTimer *time.Timer
+	var maxTimer *time.Timer
+	var firstChangeAt time.Time
 
 	m.log.Infow("git backup started",
 		"repo", m.cfg.RepoName,
 		"interval", interval,
 		"debounce", debounce,
+		"maxDebounce", maxDebounce,
 	)
 
 	// Initial backup after a short delay
@@ -130,6 +137,9 @@ func (m *Manager) Run(ctx context.Context) {
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
+			if maxTimer != nil {
+				maxTimer.Stop()
+			}
 			m.log.Info("git backup stopped")
 			return
 
@@ -141,6 +151,29 @@ func (m *Manager) Run(ctx context.Context) {
 			}
 
 		case <-ticker.C:
+			// Periodic snapshot — cancel pending debounce
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+				debounceTimer = nil
+			}
+			if maxTimer != nil {
+				maxTimer.Stop()
+				maxTimer = nil
+			}
+			firstChangeAt = time.Time{}
+			m.doSnapshot(ctx)
+
+		case <-m.immediateCh:
+			// Immediate trigger — bypass debounce
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+				debounceTimer = nil
+			}
+			if maxTimer != nil {
+				maxTimer.Stop()
+				maxTimer = nil
+			}
+			firstChangeAt = time.Time{}
 			m.doSnapshot(ctx)
 
 		case <-m.triggerCh:
@@ -149,8 +182,16 @@ func (m *Manager) Run(ctx context.Context) {
 				debounceTimer.Stop()
 			}
 			debounceTimer = time.AfterFunc(debounce, func() {
-				m.doSnapshot(ctx)
+				m.TriggerNow() // fires into immediateCh
 			})
+
+			// Start max-debounce deadline on first change in window
+			if firstChangeAt.IsZero() {
+				firstChangeAt = time.Now()
+				maxTimer = time.AfterFunc(maxDebounce, func() {
+					m.TriggerNow() // fires into immediateCh
+				})
+			}
 		}
 	}
 }
@@ -282,9 +323,16 @@ func buildCommitMessage(changed []exportedFile) string {
 		}
 	}
 
+	// Sort directory names for deterministic output
+	dirs := make([]string, 0, len(counts))
+	for dir := range counts {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+
 	var parts []string
-	for dir, count := range counts {
-		parts = append(parts, fmt.Sprintf("%d %s", count, dir))
+	for _, dir := range dirs {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[dir], dir))
 	}
 	return fmt.Sprintf("backup: %s", strings.Join(parts, ", "))
 }

@@ -259,8 +259,9 @@ func TestAPIHandlers(t *testing.T) {
 			RepoName: "test/repo",
 			Branch:   "main",
 		},
-		triggerCh: make(chan struct{}, 1),
-		hashes:    make(map[string]string),
+		triggerCh:   make(chan struct{}, 1),
+		immediateCh: make(chan struct{}, 1),
+		hashes:      make(map[string]string),
 	}
 
 	// Test status endpoint
@@ -290,12 +291,12 @@ func TestAPIHandlers(t *testing.T) {
 			t.Errorf("expected 202, got %d", w.Code)
 		}
 
-		// Should have a trigger in channel
+		// Should have a trigger in the immediate channel
 		select {
-		case <-m.triggerCh:
+		case <-m.immediateCh:
 			// Good
 		case <-time.After(100 * time.Millisecond):
-			t.Error("expected trigger in channel after POST")
+			t.Error("expected trigger in immediate channel after POST")
 		}
 	})
 
