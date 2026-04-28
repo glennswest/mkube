@@ -107,175 +107,81 @@ func TestGetContainer(t *testing.T) {
 }
 
 func TestCreateContainer(t *testing.T) {
-	var scriptSource, scriptName string
-	var scriptCreated, scriptRun, scriptRemoved bool
-	containerReady := false
+	var addCalled bool
+	var addArgs map[string]string
 
 	client := newTestClient(t)
 	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
 		cmd := words[0]
-		switch {
-		case cmd == "/system/script/print":
-			// cleanupStaleScripts lists existing scripts
-			return makeReply(), nil // empty list
-		case cmd == "/system/script/add":
-			scriptCreated = true
-			for _, w := range words[1:] {
-				if strings.HasPrefix(w, "=name=") {
-					scriptName = strings.TrimPrefix(w, "=name=")
-				}
-				if strings.HasPrefix(w, "=source=") {
-					scriptSource = strings.TrimPrefix(w, "=source=")
-				}
-			}
-			return makeAddReply("*A1"), nil
-		case cmd == "/system/script/run":
-			scriptRun = true
-			containerReady = true // simulate async extraction completing
-			return makeDoneReply(), nil
-		case cmd == "/system/script/remove":
-			scriptRemoved = true
-			return makeDoneReply(), nil
-		case cmd == "/container/print":
-			if containerReady {
-				return makeReply(
-					map[string]string{".id": "*1", "name": "new-container", "stopped": "true"},
-				), nil
-			}
-			return makeReply(), nil
-		default:
+		if cmd != "/container/add" {
 			t.Errorf("unexpected command: %v", words)
 			return makeDoneReply(), nil
 		}
-	}
-
-	spec := ContainerSpec{
-		Name:      "new-container",
-		File:      "/cache/test.tar",
-		Interface: "veth-test-0",
-		RootDir:   "/data/test",
-		Logging:   "yes",
-	}
-
-	err := client.CreateContainer(context.Background(), spec)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !scriptCreated {
-		t.Error("expected script to be created")
-	}
-	if !scriptRun {
-		t.Error("expected script to be run")
-	}
-	if !scriptRemoved {
-		t.Error("expected script to be cleaned up")
-	}
-	if !strings.HasPrefix(scriptName, "mkube-task-") {
-		t.Errorf("expected script name with mkube-task- prefix, got %q", scriptName)
-	}
-	expected := "/container/add name=new-container file=/cache/test.tar interface=veth-test-0 root-dir=/data/test logging=yes"
-	if scriptSource != expected {
-		t.Errorf("unexpected script source:\n got: %s\nwant: %s", scriptSource, expected)
-	}
-}
-
-func TestCreateContainerCleansUpStaleScripts(t *testing.T) {
-	var removedIDs []string
-	containerReady := false
-
-	client := newTestClient(t)
-	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
-		cmd := words[0]
-		switch {
-		case cmd == "/system/script/print":
-			return makeReply(
-				map[string]string{".id": "*S1", "name": "mkube-task-000001"},
-				map[string]string{".id": "*S2", "name": "mkube-task-000002"},
-				map[string]string{".id": "*S3", "name": "user-script"},
-			), nil
-		case cmd == "/system/script/add":
-			return makeAddReply("*A1"), nil
-		case cmd == "/system/script/run":
-			containerReady = true
-			return makeDoneReply(), nil
-		case cmd == "/system/script/remove":
-			for _, w := range words[1:] {
-				if strings.HasPrefix(w, "=.id=") {
-					removedIDs = append(removedIDs, strings.TrimPrefix(w, "=.id="))
-				}
+		addCalled = true
+		addArgs = map[string]string{}
+		for _, w := range words[1:] {
+			if !strings.HasPrefix(w, "=") {
+				continue
 			}
-			return makeDoneReply(), nil
-		case cmd == "/container/print":
-			if containerReady {
-				return makeReply(
-					map[string]string{".id": "*1", "name": "test-ct", "stopped": "true"},
-				), nil
+			kv := strings.SplitN(strings.TrimPrefix(w, "="), "=", 2)
+			if len(kv) == 2 {
+				addArgs[kv[0]] = kv[1]
 			}
-			return makeReply(), nil
-		default:
-			t.Errorf("unexpected command: %v", words)
-			return makeDoneReply(), nil
 		}
+		return makeDoneReply(), nil
 	}
 
 	spec := ContainerSpec{
-		Name:      "test-ct",
-		File:      "/cache/test.tar",
-		Interface: "veth-test-0",
-		RootDir:   "/data/test",
-	}
-
-	err := client.CreateContainer(context.Background(), spec)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have removed the two stale mkube-task-* scripts, plus the new one after completion
-	staleRemoved := 0
-	for _, id := range removedIDs {
-		if id == "*S1" || id == "*S2" {
-			staleRemoved++
-		}
-		if id == "*S3" {
-			t.Error("should not remove non-mkube-task scripts")
-		}
-	}
-	if staleRemoved != 2 {
-		t.Errorf("expected 2 stale scripts removed, got %d (removed: %v)", staleRemoved, removedIDs)
-	}
-}
-
-func TestBuildContainerAddCLI(t *testing.T) {
-	spec := ContainerSpec{
-		Name:        "test",
-		RemoteImage: "192.168.200.3:5000/myapp:latest",
-		Interface:   "veth-ns-pod-0",
+		Name:        "new-container",
+		File:        "/cache/test.tar",
+		Interface:   "veth-test-0",
 		RootDir:     "/data/test",
-		MountLists:  "mounts-test",
-		Cmd:         "/app",
-		Entrypoint:  "/bin/sh",
-		WorkDir:     "/app",
-		Hostname:    "test-host",
-		DNS:         "192.168.200.199",
-		User:        "nobody",
-		Envlist:     "envs-test",
 		Logging:     "yes",
-		StartOnBoot: "yes",
+		StartOnBoot: "true",
 	}
 
-	result := buildContainerAddCLI(spec)
-	expected := "/container/add name=test remote-image=192.168.200.3:5000/myapp:latest" +
-		" interface=veth-ns-pod-0 root-dir=/data/test mountlists=mounts-test" +
-		" cmd=/app entrypoint=/bin/sh workdir=/app hostname=test-host" +
-		" dns=192.168.200.199 user=nobody envlist=envs-test logging=yes start-on-boot=yes"
-	if result != expected {
-		t.Errorf("unexpected CLI:\n got: %s\nwant: %s", result, expected)
+	if err := client.CreateContainer(context.Background(), spec); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !addCalled {
+		t.Fatal("expected /container/add to be invoked")
+	}
+	want := map[string]string{
+		"name":          "new-container",
+		"file":          "/cache/test.tar",
+		"interface":     "veth-test-0",
+		"root-dir":      "/data/test",
+		"logging":       "yes",
+		"start-on-boot": "no", // rosBool: "true" maps to "yes"; verify pass-through
+	}
+	want["start-on-boot"] = "yes" // rosBool("true") = "yes"
+	for k, v := range want {
+		if got := addArgs[k]; got != v {
+			t.Errorf("arg %q = %q, want %q", k, got, v)
+		}
 	}
 }
 
-func TestBuildContainerAddCLI_QuotesValuesWithSpaces(t *testing.T) {
-	// Real-world failure: nats-server cmd has spaces; without quoting, RouterOS
-	// CLI parsed `cmd=nats-server` then choked on `-js --store_dir ...`.
+// TestCreateContainerMultiWordCmd verifies that a cmd with shell-style spaces
+// is passed through cleanly via the native API. Earlier implementations wrapped
+// /container/add in a /system/script command, which forced CLI quoting and
+// broke on values like `cmd=nats-server -js --store_dir /data ...`. The native
+// API takes attribute words verbatim, so no quoting is needed.
+func TestCreateContainerMultiWordCmd(t *testing.T) {
+	var seenCmd string
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		if words[0] != "/container/add" {
+			return makeDoneReply(), nil
+		}
+		for _, w := range words[1:] {
+			if strings.HasPrefix(w, "=cmd=") {
+				seenCmd = strings.TrimPrefix(w, "=cmd=")
+			}
+		}
+		return makeDoneReply(), nil
+	}
+
 	spec := ContainerSpec{
 		Name:      "gt_nats_nats",
 		File:      "/raid1/cache/nats.tar",
@@ -283,31 +189,11 @@ func TestBuildContainerAddCLI_QuotesValuesWithSpaces(t *testing.T) {
 		RootDir:   "/raid1/images/gt_nats_nats",
 		Cmd:       "nats-server -js --store_dir /data --addr 0.0.0.0 -m 8222",
 	}
-	result := buildContainerAddCLI(spec)
-	want := `cmd="nats-server -js --store_dir /data --addr 0.0.0.0 -m 8222"`
-	if !strings.Contains(result, want) {
-		t.Errorf("multi-word cmd not quoted:\n got: %s\nwant substring: %s", result, want)
+	if err := client.CreateContainer(context.Background(), spec); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-}
-
-func TestCLIQuote(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"", ""},
-		{"plain", "plain"},
-		{"with-dash_and.dot", "with-dash_and.dot"},
-		{"has space", `"has space"`},
-		{"has\ttab", "\"has\ttab\""},
-		{`has"quote`, `"has\"quote"`},
-		{`has\backslash`, `"has\\backslash"`},
-		{"has;semicolon", `"has;semicolon"`},
-	}
-	for _, c := range cases {
-		got := cliQuote(c.in)
-		if got != c.want {
-			t.Errorf("cliQuote(%q) = %q, want %q", c.in, got, c.want)
-		}
+	if seenCmd != spec.Cmd {
+		t.Errorf("cmd not passed through verbatim:\n got: %q\nwant: %q", seenCmd, spec.Cmd)
 	}
 }
 

@@ -13,15 +13,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	rosapi "github.com/go-routeros/routeros/v3"
 	"github.com/glennswest/mkube/pkg/config"
 )
 
-// scriptSeq is a monotonically increasing counter for unique script names.
-var scriptSeq atomic.Uint64
 
 // Client wraps the RouterOS native API (TCP port 8728) for container and
 // infrastructure management. A single persistent TCP connection is maintained
@@ -291,114 +288,62 @@ func (c *Client) GetContainer(ctx context.Context, name string) (*Container, err
 }
 
 // CreateContainer creates a new container from a spec.
-// Uses a temporary RouterOS script to run the /container/add CLI command
-// asynchronously, avoiding blocking during tarball extraction.
+// Calls /container/add directly via the native API. Async tag-multiplexing
+// keeps the connection responsive to other commands while RouterOS extracts
+// the tarball in the background, so no script wrapper or polling loop is
+// needed. Boolean fields (logging, start-on-boot) are passed as the CLI
+// "yes"/"no" form that RouterOS accepts on both transports.
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error {
 	defer c.InvalidateContainerCache()
-	cmd := buildContainerAddCLI(spec)
-	scriptName := fmt.Sprintf("mkube-task-%06d", scriptSeq.Add(1))
 
-	// Clean up any stale mkube-task-* scripts from previous runs
-	c.cleanupStaleScripts(ctx)
-
-	// Create temporary script
-	scriptID, err := c.createScript(ctx, scriptName, cmd)
-	if err != nil {
-		return fmt.Errorf("creating script for container add: %w", err)
+	body := map[string]string{
+		"name":      spec.Name,
+		"interface": spec.Interface,
+		"root-dir":  spec.RootDir,
 	}
-	defer c.removeScript(ctx, scriptID) //nolint:errcheck
-
-	// Run script (returns immediately, extraction happens in background)
-	if err := c.runScript(ctx, scriptID); err != nil {
-		return fmt.Errorf("running script for container add: %w", err)
-	}
-
-	// Poll for container to appear (2s interval, 120s timeout)
-	deadline := time.Now().Add(120 * time.Second)
-	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for container %q to appear after script-based creation", spec.Name)
-		}
-		time.Sleep(2 * time.Second)
-
-		containers, err := c.ListContainers(ctx)
-		if err != nil {
-			continue // transient error, keep polling
-		}
-		for _, ct := range containers {
-			if ct.Name == spec.Name {
-				return nil
-			}
-		}
-	}
-}
-
-// buildContainerAddCLI constructs the RouterOS CLI command for /container/add.
-func buildContainerAddCLI(spec ContainerSpec) string {
-	parts := []string{"/container/add"}
-	parts = append(parts, "name="+cliQuote(spec.Name))
 	if spec.File != "" {
-		parts = append(parts, "file="+cliQuote(spec.File))
+		body["file"] = spec.File
 	}
 	if spec.RemoteImage != "" {
-		parts = append(parts, "remote-image="+cliQuote(spec.RemoteImage))
+		body["remote-image"] = spec.RemoteImage
 	}
-	parts = append(parts, "interface="+cliQuote(spec.Interface))
-	parts = append(parts, "root-dir="+cliQuote(spec.RootDir))
 	if spec.MountLists != "" {
-		parts = append(parts, "mountlists="+cliQuote(spec.MountLists))
+		body["mountlists"] = spec.MountLists
 	}
 	if spec.Cmd != "" {
-		parts = append(parts, "cmd="+cliQuote(spec.Cmd))
+		body["cmd"] = spec.Cmd
 	}
 	if spec.Entrypoint != "" {
-		parts = append(parts, "entrypoint="+cliQuote(spec.Entrypoint))
+		body["entrypoint"] = spec.Entrypoint
 	}
 	if spec.WorkDir != "" {
-		parts = append(parts, "workdir="+cliQuote(spec.WorkDir))
+		body["workdir"] = spec.WorkDir
 	}
 	if spec.Hostname != "" {
-		parts = append(parts, "hostname="+cliQuote(spec.Hostname))
+		body["hostname"] = spec.Hostname
 	}
 	if spec.DNS != "" {
-		parts = append(parts, "dns="+cliQuote(spec.DNS))
+		body["dns"] = spec.DNS
 	}
 	if spec.User != "" {
-		parts = append(parts, "user="+cliQuote(spec.User))
+		body["user"] = spec.User
 	}
 	if spec.Envlist != "" {
-		parts = append(parts, "envlist="+cliQuote(spec.Envlist))
+		body["envlist"] = spec.Envlist
 	}
 	if spec.Logging != "" {
-		parts = append(parts, "logging="+rosBool(spec.Logging))
+		body["logging"] = rosBool(spec.Logging)
 	}
 	if spec.StartOnBoot != "" {
-		parts = append(parts, "start-on-boot="+rosBool(spec.StartOnBoot))
+		body["start-on-boot"] = rosBool(spec.StartOnBoot)
 	}
-	return strings.Join(parts, " ")
+
+	return c.restPOST(ctx, "/container/add", body, nil)
 }
 
-// cliQuote wraps a parameter value in RouterOS CLI double-quotes when it
-// contains whitespace or characters the parser would otherwise treat as a
-// statement boundary. Without this, a multi-word value like
-// `cmd=nats-server -js --store_dir /data` is parsed as `cmd=nats-server`
-// followed by unrecognized parameters, producing
-// "expected end of command (line 1 column N)". Plain alphanumeric values are
-// returned unchanged so simple commands stay readable in the device log.
-func cliQuote(v string) string {
-	if v == "" {
-		return v
-	}
-	if !strings.ContainsAny(v, " \t\"\\;") {
-		return v
-	}
-	escaped := strings.ReplaceAll(v, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	return `"` + escaped + `"`
-}
-
-// rosBool converts REST API boolean strings (true/false) to RouterOS CLI
-// syntax (yes/no). Passes through values that are already in CLI format.
+// rosBool converts REST/JSON boolean strings (true/false) to the RouterOS
+// "yes"/"no" form accepted by both REST and native API. Passes through
+// already-correct values.
 func rosBool(v string) string {
 	switch v {
 	case "true":
@@ -407,51 +352,6 @@ func rosBool(v string) string {
 		return "no"
 	default:
 		return v
-	}
-}
-
-// ─── Script Helpers ─────────────────────────────────────────────────────────
-
-// createScript creates a RouterOS script and returns its .id.
-func (c *Client) createScript(ctx context.Context, name, source string) (string, error) {
-	var result struct {
-		Ret string `json:"ret"`
-	}
-	err := c.restPOST(ctx, "/system/script/add", map[string]string{
-		"name":   name,
-		"source": source,
-	}, &result)
-	if err != nil {
-		return "", err
-	}
-	return result.Ret, nil
-}
-
-// runScript runs a RouterOS script by its .id.
-func (c *Client) runScript(ctx context.Context, id string) error {
-	return c.restPOST(ctx, "/system/script/run", map[string]string{".id": id}, nil)
-}
-
-// removeScript removes a RouterOS script by its .id.
-func (c *Client) removeScript(ctx context.Context, id string) error {
-	return c.restPOST(ctx, "/system/script/remove", map[string]string{".id": id}, nil)
-}
-
-type scriptEntry struct {
-	ID   string `json:".id"`
-	Name string `json:"name"`
-}
-
-// cleanupStaleScripts removes any leftover mkube-task-* scripts from prior runs.
-func (c *Client) cleanupStaleScripts(ctx context.Context) {
-	var scripts []scriptEntry
-	if err := c.restGET(ctx, "/system/script", &scripts); err != nil {
-		return // best effort
-	}
-	for _, s := range scripts {
-		if strings.HasPrefix(s.Name, "mkube-task-") {
-			_ = c.removeScript(ctx, s.ID)
-		}
 	}
 }
 
