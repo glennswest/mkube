@@ -157,9 +157,11 @@ func main() {
 		},
 		rosHTTP: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-				DisableKeepAlives: true,
-				MaxConnsPerHost:   4,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				MaxIdleConns:        4,
+				MaxIdleConnsPerHost: 2,
+				MaxConnsPerHost:     2,
+				IdleConnTimeout:     5 * time.Minute,
 			},
 			Timeout: 30 * time.Second,
 		},
@@ -203,8 +205,8 @@ type Updater struct {
 	cfg      Config
 	log      *zap.SugaredLogger
 	digests  map[string]string // "repo:tag" → last seen digest
-	http     *http.Client      // for registry calls (keep-alive OK)
-	rosHTTP  *http.Client      // for RouterOS REST calls (no keep-alive to prevent session leaks)
+	http     *http.Client      // for registry calls
+	rosHTTP  *http.Client      // for RouterOS REST calls (keep-alive enabled to reuse sessions)
 	kickPoll chan struct{}     // SSE-triggered immediate poll
 }
 
@@ -1292,7 +1294,7 @@ func (u *Updater) rosGET(ctx context.Context, path string, result interface{}) e
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Accept", "application/json")
-	req.Close = true // prevent RouterOS session accumulation
+
 
 	resp, err := u.rosHTTP.Do(req)
 	if err != nil {
@@ -1319,7 +1321,7 @@ func (u *Updater) rosPost(ctx context.Context, path string, body interface{}) er
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Content-Type", "application/json")
-	req.Close = true // prevent RouterOS session accumulation
+
 
 	resp, err := u.rosHTTP.Do(req)
 	if err != nil {
@@ -1457,7 +1459,7 @@ func (u *Updater) rosCreateScript(ctx context.Context, name, source string) (str
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Content-Type", "application/json")
-	req.Close = true // prevent RouterOS session accumulation
+
 
 	resp, err := u.rosHTTP.Do(req)
 	if err != nil {

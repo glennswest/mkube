@@ -107,19 +107,17 @@ func NewClient(cfg config.RouterOSConfig) (*Client, error) {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureVerify,
 		},
-		// Disable keep-alive to prevent RouterOS "active user" session
-		// accumulation. RouterOS creates a persistent user session for
-		// each HTTP request regardless of TCP connection reuse. Without
-		// Connection:close, these sessions never expire and eventually
-		// exhaust the max-sessions limit (default 20), causing all
-		// subsequent REST calls to hang or return "Session closed".
-		//
-		// With DisableKeepAlives, each request opens and closes its own
-		// TCP connection, prompting RouterOS to clean up the session.
-		// The container list cache (5s TTL) reduces total REST calls to
-		// ~1-2 per reconcile cycle, so the overhead is negligible.
-		DisableKeepAlives: true,
-		MaxConnsPerHost:   4,
+		// Keep-alive ENABLED so RouterOS reuses the same session on a
+		// persistent TCP connection (~10 min reuse window). This is critical:
+		// RouterOS has an unfixed bug where each new connection creates an
+		// "active user" session that NEVER auto-expires. With keep-alive,
+		// we get ~1 session per persistent connection instead of 1 per request.
+		// MaxConnsPerHost limits concurrent sessions to a small bounded number.
+		// A periodic janitor uses /user/active/request-logout to clean leaked sessions.
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 4,
+		MaxConnsPerHost:     4,
+		IdleConnTimeout:     5 * time.Minute,
 	}
 
 	return &Client{
@@ -137,21 +135,39 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// CleanupStaleSessions removes zombie "active user" sessions from RouterOS.
-// RouterOS creates a persistent user session per REST request. If the TCP
-// connection is not properly closed (e.g., mkube crashed, keep-alive was
-// used), these sessions accumulate forever. At startup, we run a script to
-// purge all rest-api sessions (our own new session is the only survivor).
+// CleanupStaleSessions removes zombie "active user" REST sessions from RouterOS.
+// RouterOS has an unfixed bug where REST API sessions accumulate in /user/active
+// and NEVER auto-expire (confirmed still broken in 7.23 beta2). This method uses
+// the /user/active/request-logout REST endpoint to properly terminate stale sessions.
+// With keep-alive enabled, we typically have only ~4 live sessions (MaxConnsPerHost),
+// so any sessions beyond that are zombies from prior connections.
 func (c *Client) CleanupStaleSessions(ctx context.Context) {
-	// Use a script because REST cannot remove active user sessions directly
-	scriptName := "mkube-session-cleanup"
-	cmd := `:foreach s in=[/user/active find via=rest-api] do={:do {/user/active remove $s} on-error={}}`
-	sid, err := c.createScript(ctx, scriptName, cmd)
-	if err != nil {
+	type activeUser struct {
+		ID      string `json:".id"`
+		Via     string `json:"via"`
+		Address string `json:"address"`
+		When    string `json:"when"`
+	}
+	var users []activeUser
+	if err := c.restGET(ctx, "/user/active", &users); err != nil {
 		return // best effort
 	}
-	defer c.removeScript(ctx, sid) //nolint:errcheck
-	_ = c.runScript(ctx, sid)
+
+	cleaned := 0
+	for _, u := range users {
+		if u.Via != "rest-api" {
+			continue
+		}
+		// Use request-logout to properly terminate the session
+		err := c.restPOST(ctx, "/user/active/request-logout",
+			map[string]string{"numbers": u.ID}, nil)
+		if err == nil {
+			cleaned++
+		}
+	}
+	if cleaned > 0 {
+		// Log is not available here — caller can check ActiveSessionCount after
+	}
 }
 
 // EnsureMaxSessions sets the www service max-sessions to at least minSessions.
@@ -740,7 +756,6 @@ func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Read
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1492,7 +1507,6 @@ func (c *Client) restGET(ctx context.Context, path string, result interface{}) e
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Accept", "application/json")
-	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1525,7 +1539,6 @@ func (c *Client) restPOST(ctx context.Context, path string, body interface{}, re
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
