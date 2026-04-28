@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,9 +23,21 @@ var scriptSeq atomic.Uint64
 // The REST API (available since RouterOS 7.1) is preferred for container
 // management. The protocol API (port 8728) is used for operations not
 // yet exposed via REST.
+//
+// RouterOS limits concurrent REST sessions (default 20). To stay within
+// this limit, the client caches ListContainers results for a short TTL
+// so that GetContainer calls reuse the cache instead of each making a
+// separate REST request. This eliminates the N+1 query pattern where
+// checking N containers would otherwise require N full list fetches.
 type Client struct {
 	cfg        config.RouterOSConfig
 	httpClient *http.Client
+
+	// containerCache: short-lived cache for ListContainers to avoid
+	// N+1 REST calls (each GetContainer was doing a full list fetch).
+	containerCacheMu sync.Mutex
+	containerCache   []Container
+	containerCacheAt time.Time
 }
 
 // Container represents a RouterOS container as returned by /rest/container.
@@ -94,9 +107,12 @@ func NewClient(cfg config.RouterOSConfig) (*Client, error) {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureVerify,
 		},
-		MaxIdleConns:        10,
-		MaxIdleConnsPerHost: 4,
-		MaxConnsPerHost:     8,
+		// Keep connection count low to stay within RouterOS's default
+		// 20-session limit for REST services. The container list cache
+		// dramatically reduces the number of concurrent requests.
+		MaxIdleConns:        4,
+		MaxIdleConnsPerHost: 2,
+		MaxConnsPerHost:     4,
 		IdleConnTimeout:     30 * time.Second,
 	}
 
@@ -117,14 +133,48 @@ func (c *Client) Close() error {
 
 // ─── Container Operations ───────────────────────────────────────────────────
 
+// containerCacheTTL controls how long ListContainers results are cached.
+// RouterOS limits concurrent REST sessions (default 20), so caching avoids
+// the N+1 query pattern where each GetContainer call would list ALL containers.
+const containerCacheTTL = 5 * time.Second
+
 // ListContainers returns all containers on the RouterOS device.
+// Results are cached for containerCacheTTL to reduce REST API pressure.
 func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
+	c.containerCacheMu.Lock()
+	if c.containerCache != nil && time.Since(c.containerCacheAt) < containerCacheTTL {
+		cached := make([]Container, len(c.containerCache))
+		copy(cached, c.containerCache)
+		c.containerCacheMu.Unlock()
+		return cached, nil
+	}
+	c.containerCacheMu.Unlock()
+
 	var containers []Container
 	err := c.restGET(ctx, "/container", &containers)
-	return containers, err
+	if err != nil {
+		return nil, err
+	}
+
+	c.containerCacheMu.Lock()
+	c.containerCache = make([]Container, len(containers))
+	copy(c.containerCache, containers)
+	c.containerCacheAt = time.Now()
+	c.containerCacheMu.Unlock()
+
+	return containers, nil
+}
+
+// InvalidateContainerCache forces the next ListContainers call to fetch fresh data.
+// Call this after creating, deleting, starting, or stopping a container.
+func (c *Client) InvalidateContainerCache() {
+	c.containerCacheMu.Lock()
+	c.containerCache = nil
+	c.containerCacheMu.Unlock()
 }
 
 // GetContainer returns a single container by name.
+// Uses the cached container list to avoid a separate REST call.
 func (c *Client) GetContainer(ctx context.Context, name string) (*Container, error) {
 	containers, err := c.ListContainers(ctx)
 	if err != nil {
@@ -142,6 +192,7 @@ func (c *Client) GetContainer(ctx context.Context, name string) (*Container, err
 // Uses a temporary RouterOS script to run the /container/add CLI command
 // asynchronously, avoiding REST session timeouts during tarball extraction.
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error {
+	defer c.InvalidateContainerCache()
 	cmd := buildContainerAddCLI(spec)
 	scriptName := fmt.Sprintf("mkube-task-%06d", scriptSeq.Add(1))
 
@@ -285,16 +336,19 @@ func (c *Client) cleanupStaleScripts(ctx context.Context) {
 
 // RemoveContainer removes a container by its RouterOS .id.
 func (c *Client) RemoveContainer(ctx context.Context, id string) error {
+	defer c.InvalidateContainerCache()
 	return c.restPOST(ctx, "/container/remove", map[string]string{".id": id}, nil)
 }
 
 // StartContainer starts a container by its RouterOS .id.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
+	defer c.InvalidateContainerCache()
 	return c.restPOST(ctx, "/container/start", map[string]string{".id": id}, nil)
 }
 
 // StopContainer stops a container by its RouterOS .id.
 func (c *Client) StopContainer(ctx context.Context, id string) error {
+	defer c.InvalidateContainerCache()
 	return c.restPOST(ctx, "/container/stop", map[string]string{".id": id}, nil)
 }
 
@@ -584,6 +638,7 @@ func (c *Client) removeContainersUsingVeth(ctx context.Context, vethName string)
 			_ = c.restPOST(ctx, "/container/remove", map[string]string{".id": ct.ID}, nil)
 		}
 	}
+	c.InvalidateContainerCache()
 }
 
 // ListVeths returns all veth interfaces.
