@@ -273,6 +273,44 @@ func TestBuildContainerAddCLI(t *testing.T) {
 	}
 }
 
+func TestBuildContainerAddCLI_QuotesValuesWithSpaces(t *testing.T) {
+	// Real-world failure: nats-server cmd has spaces; without quoting, RouterOS
+	// CLI parsed `cmd=nats-server` then choked on `-js --store_dir ...`.
+	spec := ContainerSpec{
+		Name:      "gt_nats_nats",
+		File:      "/raid1/cache/nats.tar",
+		Interface: "veth_gt_nats_0",
+		RootDir:   "/raid1/images/gt_nats_nats",
+		Cmd:       "nats-server -js --store_dir /data --addr 0.0.0.0 -m 8222",
+	}
+	result := buildContainerAddCLI(spec)
+	want := `cmd="nats-server -js --store_dir /data --addr 0.0.0.0 -m 8222"`
+	if !strings.Contains(result, want) {
+		t.Errorf("multi-word cmd not quoted:\n got: %s\nwant substring: %s", result, want)
+	}
+}
+
+func TestCLIQuote(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"plain", "plain"},
+		{"with-dash_and.dot", "with-dash_and.dot"},
+		{"has space", `"has space"`},
+		{"has\ttab", "\"has\ttab\""},
+		{`has"quote`, `"has\"quote"`},
+		{`has\backslash`, `"has\\backslash"`},
+		{"has;semicolon", `"has;semicolon"`},
+	}
+	for _, c := range cases {
+		got := cliQuote(c.in)
+		if got != c.want {
+			t.Errorf("cliQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestStartStopContainer(t *testing.T) {
 	var lastCmd string
 	client := newTestClient(t)

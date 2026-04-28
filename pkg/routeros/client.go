@@ -336,38 +336,38 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error 
 // buildContainerAddCLI constructs the RouterOS CLI command for /container/add.
 func buildContainerAddCLI(spec ContainerSpec) string {
 	parts := []string{"/container/add"}
-	parts = append(parts, "name="+spec.Name)
+	parts = append(parts, "name="+cliQuote(spec.Name))
 	if spec.File != "" {
-		parts = append(parts, "file="+spec.File)
+		parts = append(parts, "file="+cliQuote(spec.File))
 	}
 	if spec.RemoteImage != "" {
-		parts = append(parts, "remote-image="+spec.RemoteImage)
+		parts = append(parts, "remote-image="+cliQuote(spec.RemoteImage))
 	}
-	parts = append(parts, "interface="+spec.Interface)
-	parts = append(parts, "root-dir="+spec.RootDir)
+	parts = append(parts, "interface="+cliQuote(spec.Interface))
+	parts = append(parts, "root-dir="+cliQuote(spec.RootDir))
 	if spec.MountLists != "" {
-		parts = append(parts, "mountlists="+spec.MountLists)
+		parts = append(parts, "mountlists="+cliQuote(spec.MountLists))
 	}
 	if spec.Cmd != "" {
-		parts = append(parts, "cmd="+spec.Cmd)
+		parts = append(parts, "cmd="+cliQuote(spec.Cmd))
 	}
 	if spec.Entrypoint != "" {
-		parts = append(parts, "entrypoint="+spec.Entrypoint)
+		parts = append(parts, "entrypoint="+cliQuote(spec.Entrypoint))
 	}
 	if spec.WorkDir != "" {
-		parts = append(parts, "workdir="+spec.WorkDir)
+		parts = append(parts, "workdir="+cliQuote(spec.WorkDir))
 	}
 	if spec.Hostname != "" {
-		parts = append(parts, "hostname="+spec.Hostname)
+		parts = append(parts, "hostname="+cliQuote(spec.Hostname))
 	}
 	if spec.DNS != "" {
-		parts = append(parts, "dns="+spec.DNS)
+		parts = append(parts, "dns="+cliQuote(spec.DNS))
 	}
 	if spec.User != "" {
-		parts = append(parts, "user="+spec.User)
+		parts = append(parts, "user="+cliQuote(spec.User))
 	}
 	if spec.Envlist != "" {
-		parts = append(parts, "envlist="+spec.Envlist)
+		parts = append(parts, "envlist="+cliQuote(spec.Envlist))
 	}
 	if spec.Logging != "" {
 		parts = append(parts, "logging="+rosBool(spec.Logging))
@@ -376,6 +376,25 @@ func buildContainerAddCLI(spec ContainerSpec) string {
 		parts = append(parts, "start-on-boot="+rosBool(spec.StartOnBoot))
 	}
 	return strings.Join(parts, " ")
+}
+
+// cliQuote wraps a parameter value in RouterOS CLI double-quotes when it
+// contains whitespace or characters the parser would otherwise treat as a
+// statement boundary. Without this, a multi-word value like
+// `cmd=nats-server -js --store_dir /data` is parsed as `cmd=nats-server`
+// followed by unrecognized parameters, producing
+// "expected end of command (line 1 column N)". Plain alphanumeric values are
+// returned unchanged so simple commands stay readable in the device log.
+func cliQuote(v string) string {
+	if v == "" {
+		return v
+	}
+	if !strings.ContainsAny(v, " \t\"\\;") {
+		return v
+	}
+	escaped := strings.ReplaceAll(v, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
 }
 
 // rosBool converts REST API boolean strings (true/false) to RouterOS CLI
