@@ -122,6 +122,19 @@ func (r *RouterOSRuntime) RemoveMountsByList(ctx context.Context, listName strin
 	return r.client.RemoveMountsByList(ctx, listName)
 }
 
+func (r *RouterOSRuntime) ReconcileMounts(ctx context.Context, listName string, desired []DesiredMount) error {
+	// Convert runtime.DesiredMount to routeros.DesiredMount
+	rosMounts := make([]routeros.DesiredMount, len(desired))
+	for i, d := range desired {
+		rosMounts[i] = routeros.DesiredMount{
+			Src:   d.Src,
+			Dst:   d.Dst,
+			IsPVC: d.IsPVC,
+		}
+	}
+	return r.client.ReconcileMounts(ctx, listName, rosMounts)
+}
+
 func (r *RouterOSRuntime) CreateEnv(ctx context.Context, listName, key, value string) error {
 	return r.client.CreateEnv(ctx, listName, key, value)
 }

@@ -339,6 +339,11 @@ func (p *ProxmoxRuntime) RemoveMountsByList(_ context.Context, _ string) error {
 	return nil
 }
 
+func (p *ProxmoxRuntime) ReconcileMounts(_ context.Context, _ string, _ []DesiredMount) error {
+	// Mounts are specified at container creation time on Proxmox
+	return nil
+}
+
 func (p *ProxmoxRuntime) CreateEnv(_ context.Context, _, _, _ string) error {
 	return nil // Proxmox LXC uses spec.Env directly
 }

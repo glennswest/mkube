@@ -105,8 +105,11 @@ func (m *mockRuntime) EnsureDirectory(context.Context, string) error            
 func (m *mockRuntime) FileExists(context.Context, string) (bool, error)            { return true, nil }
 func (m *mockRuntime) ListDirectory(context.Context, string) ([]string, error)     { return nil, nil }
 func (m *mockRuntime) DirectoryDiskUsage(context.Context, string) (int64, error)   { return 0, nil }
-func (m *mockRuntime) CreateMount(context.Context, string, string, string) error   { return nil }
-func (m *mockRuntime) RemoveMountsByList(context.Context, string) error            { return nil }
+func (m *mockRuntime) CreateMount(context.Context, string, string, string) error { return nil }
+func (m *mockRuntime) RemoveMountsByList(context.Context, string) error          { return nil }
+func (m *mockRuntime) ReconcileMounts(_ context.Context, _ string, _ []runtime.DesiredMount) error {
+	return nil
+}
 func (m *mockRuntime) CreateEnv(context.Context, string, string, string) error    { return nil }
 func (m *mockRuntime) RemoveEnvsByList(context.Context, string) error             { return nil }
 func (m *mockRuntime) Backend() string                                           { return "stormbase" }

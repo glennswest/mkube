@@ -137,6 +137,11 @@ Known test failures (pre-existing):
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
 
 ### Recently Completed
+- [x] PVC mount preservation across container recreation — `ReconcileMounts` replaces destructive `RemoveMountsByList` + `CreateMount` pattern. PVC-backed mounts (src containing `/pvc/`) are never auto-deleted, preventing data loss when reconcile loop recreates containers.
+- [x] mkube-update SSE timeout fix — dedicated `sseClient` without timeout for long-lived SSE connections.
+- [x] Registry dual-protocol HTTP+HTTPS on port 5000 (Closes #10).
+- [x] mkube-update SSE scheme fix for management API (Closes #9).
+- [x] RouterOS CLI boolean syntax fix in script-based container creation.
 - [x] Fix RouterOS container/add REST session timeout — uses script-based creation to avoid synchronous tarball extraction blocking the REST session. Creates temp script, runs async, polls for container.
 - [x] Auto-repair DHCP relay NAT exemption — `ensureDHCPRelayNAT()` inserts `srcnat accept udp 67→67` before masquerade rules on bridges with DHCP relays. Runs on network provisioning and every 5 min via infra health. Prevents masquerade from rewriting relay source port.
 - [x] PXE boot fix — moved bmh-operator from gt network (192.168.200.103) to g10 (192.168.10.200) where DHCP nextServer points. Removed conflicting RouterOS bridge IP + NAT rules. TFTP/iPXE boot chain verified working.

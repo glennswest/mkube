@@ -1597,7 +1597,13 @@ func (u *Updater) readSSEStream(ctx context.Context, sseURL string) error {
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := u.http.Do(req)
+	// SSE is a long-lived stream — use a client without a request timeout.
+	// The context cancellation handles shutdown; the 30s u.http timeout
+	// would kill every SSE connection prematurely.
+	sseClient := &http.Client{
+		Transport: u.http.Transport,
+	}
+	resp, err := sseClient.Do(req)
 	if err != nil {
 		return err
 	}

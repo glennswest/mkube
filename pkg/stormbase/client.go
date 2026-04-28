@@ -298,6 +298,10 @@ func (c *Client) RemoveMountsByList(_ context.Context, _ string) error {
 	return nil // stormd manages volume cleanup
 }
 
+func (c *Client) ReconcileMounts(_ context.Context, _ string, _ []runtime.DesiredMount) error {
+	return nil // stormd manages volume lifecycle
+}
+
 func (c *Client) CreateEnv(_ context.Context, _, _, _ string) error {
 	return nil // StormBase uses spec.Env directly via gRPC
 }

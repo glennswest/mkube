@@ -340,6 +340,69 @@ func (c *Client) RemoveMountsByList(ctx context.Context, listName string) error 
 	return nil
 }
 
+// DesiredMount describes a mount that should exist.
+type DesiredMount struct {
+	Src   string // host path
+	Dst   string // container path
+	IsPVC bool   // true = persistent volume claim, never auto-delete
+}
+
+// ReconcileMounts ensures the mount list for a container matches the desired
+// state. Existing mounts that match are preserved. Missing mounts are added.
+// Extra mounts are removed ONLY if they are NOT PVC-backed (any mount whose
+// src contains "/pvc/" or "/volumes/pvc/" is treated as PVC-backed and
+// preserved even if not in the desired list, to prevent data loss).
+func (c *Client) ReconcileMounts(ctx context.Context, listName string, desired []DesiredMount) error {
+	mounts, err := c.ListMounts(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Index existing mounts for this list by "src→dst"
+	type existingMount struct {
+		entry MountEntry
+		seen  bool // true if matched to a desired mount
+	}
+	existing := make(map[string]*existingMount)
+	for _, m := range mounts {
+		if m.List != listName {
+			continue
+		}
+		key := m.Src + "→" + m.Dst
+		existing[key] = &existingMount{entry: m}
+	}
+
+	// Add missing mounts
+	for _, d := range desired {
+		key := d.Src + "→" + d.Dst
+		if em, ok := existing[key]; ok {
+			em.seen = true // already exists, keep it
+			continue
+		}
+		// Create the missing mount
+		if err := c.CreateMount(ctx, listName, d.Src, d.Dst); err != nil {
+			return fmt.Errorf("creating mount %s→%s: %w", d.Src, d.Dst, err)
+		}
+	}
+
+	// Remove extra mounts (not in desired list) — but NEVER remove PVC mounts
+	for _, em := range existing {
+		if em.seen {
+			continue // matched a desired mount, keep it
+		}
+		// Safety: never remove mounts that look like PVC volumes
+		src := em.entry.Src
+		if strings.Contains(src, "/pvc/") || strings.Contains(src, "/volumes/pvc/") {
+			continue // PVC mount — preserve unconditionally
+		}
+		if err := c.restPOST(ctx, "/container/mounts/remove", map[string]string{".id": em.entry.ID}, nil); err != nil {
+			return fmt.Errorf("removing stale mount %s: %w", em.entry.ID, err)
+		}
+	}
+
+	return nil
+}
+
 // ─── Environment Variable Operations ────────────────────────────────────────
 
 // EnvEntry represents a RouterOS container environment variable.

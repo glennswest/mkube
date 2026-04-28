@@ -548,12 +548,13 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// 0. Pre-creation cleanup: remove any stale RouterOS container with
 		// the same name from a previous failed CreatePod attempt. Without this,
 		// the orphaned container holds the veth interface and blocks recreation.
+		// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive across
+		// container recreation. ReconcileMounts (step 3) handles stale cleanup.
 		tracker.start(PhaseCleanup)
 		if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil {
 			log.Warnw("stale container found, cleaning up before recreation",
 				"name", name, "status", ct.Status, "id", ct.ID)
 			p.stopAndRemoveContainer(ctx, name, ct.ID)
-			_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 		}
 
 		tracker.done()
@@ -643,13 +644,13 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 
 		tracker.done()
 
-		// 3. Provision volumes, write ConfigMap data, and create mount entries.
-		// Clean up any orphaned mounts from previous failed attempts first.
+		// 3. Provision volumes, write ConfigMap data, and reconcile mount entries.
+		// Uses ReconcileMounts to preserve PVC-backed mounts across recreation.
 		tracker.start(PhaseVolumeMount)
-		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
-		mountListName := ""
+		var desiredMounts []runtime.DesiredMount
 		for _, vm := range container.VolumeMounts {
 			var hostPath string
+			isPVC := false
 
 			// Three-way volume resolution:
 			// 1. PVC-backed volume — persistent, bypasses ProvisionVolume/GC
@@ -657,6 +658,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			// 3. Ephemeral (default) — ProvisionVolume, subject to GC
 			if pvcPath, ok := p.resolvePVCVolume(ctx, pod, vm.Name); ok {
 				hostPath = pvcPath
+				isPVC = true
 				log.Infow("using PVC volume", "volume", vm.Name, "path", hostPath)
 			} else if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
 				// ConfigMap volume: provision ephemeral host dir, then write data files
@@ -706,10 +708,18 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				}
 			}
 
-			// Create mount entry on the runtime
+			desiredMounts = append(desiredMounts, runtime.DesiredMount{
+				Src:   hostPath,
+				Dst:   vm.MountPath,
+				IsPVC: isPVC,
+			})
+		}
+
+		mountListName := ""
+		if len(desiredMounts) > 0 {
 			mountListName = name
-			if err := p.deps.Runtime.CreateMount(ctx, mountListName, hostPath, vm.MountPath); err != nil {
-				log.Warnw("failed to create mount", "volume", vm.Name, "error", err)
+			if err := p.deps.Runtime.ReconcileMounts(ctx, name, desiredMounts); err != nil {
+				log.Warnw("failed to reconcile mounts", "error", err)
 			}
 		}
 
@@ -1258,8 +1268,9 @@ func (p *MicroKubeProvider) cutoverContainer(
 		}
 	}
 
-	// Remove old mounts
-	_ = p.deps.Runtime.RemoveMountsByList(ctx, stg.prodName)
+	// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive across
+	// container recreation. createContainerMounts uses ReconcileMounts which
+	// preserves PVC-backed mounts and cleans up stale non-PVC mounts.
 
 	// Release old veth + IP. If this fails (veth still bound), try force-release.
 	if err := p.deps.NetworkMgr.ReleaseInterface(ctx, stg.prodVeth); err != nil {
@@ -1385,19 +1396,25 @@ func (p *MicroKubeProvider) cutoverContainer(
 }
 
 // createContainerMounts provisions volumes and creates mount entries for a container.
+// Uses ReconcileMounts to preserve PVC-backed mounts across container recreation.
 // Returns the mount list name (empty string if no volumes) or an error.
 func (p *MicroKubeProvider) createContainerMounts(
 	ctx context.Context, pod *corev1.Pod, containerName string,
 	container corev1.Container, log *zap.SugaredLogger,
 ) (string, error) {
-	_ = p.deps.Runtime.RemoveMountsByList(ctx, containerName)
-	mountListName := ""
+	if len(container.VolumeMounts) == 0 {
+		return "", nil
+	}
+
+	var desired []runtime.DesiredMount
 
 	for _, vm := range container.VolumeMounts {
 		var hostPath string
+		isPVC := false
 
 		if pvcPath, ok := p.resolvePVCVolume(ctx, pod, vm.Name); ok {
 			hostPath = pvcPath
+			isPVC = true
 		} else if data := p.resolveConfigMapVolume(pod, vm.Name); data != nil {
 			var provErr error
 			hostPath, provErr = p.deps.StorageMgr.ProvisionVolume(ctx, containerName, vm.Name, vm.MountPath)
@@ -1440,13 +1457,18 @@ func (p *MicroKubeProvider) createContainerMounts(
 			}
 		}
 
-		mountListName = containerName
-		if err := p.deps.Runtime.CreateMount(ctx, mountListName, hostPath, vm.MountPath); err != nil {
-			log.Warnw("failed to create mount", "volume", vm.Name, "error", err)
-		}
+		desired = append(desired, runtime.DesiredMount{
+			Src:   hostPath,
+			Dst:   vm.MountPath,
+			IsPVC: isPVC,
+		})
 	}
 
-	return mountListName, nil
+	if err := p.deps.Runtime.ReconcileMounts(ctx, containerName, desired); err != nil {
+		log.Warnw("failed to reconcile mounts", "container", containerName, "error", err)
+	}
+
+	return containerName, nil
 }
 
 // alternateStagingRootDir returns a staging root-dir path that does NOT

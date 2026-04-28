@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-04-27
+- **fix:** PVC mount preservation across container recreation — replaced destructive `RemoveMountsByList` + `CreateMount` pattern with `ReconcileMounts` which preserves PVC-backed mounts (src containing `/pvc/` or `/volumes/pvc/`) unconditionally. Existing mounts are matched by src+dst; only stale non-PVC mounts are removed. Prevents data loss when mkube's reconcile loop recreates containers (e.g. image-policy auto-update). Added `ReconcileMounts` to `ContainerRuntime` interface, RouterOS/Proxmox/StormBase adapters.
+- **fix:** mkube-update SSE timeout — `readSSEStream` was using the shared `u.http` client with 30s timeout, causing SSE connections to always disconnect. Now uses a dedicated `sseClient` without timeout.
 - **fix:** Script-based container creation syntax error — RouterOS CLI uses `yes`/`no` for booleans but REST API returns `true`/`false`. `buildContainerAddCLI` now converts boolean values for `logging` and `start-on-boot`. Fixed in both mkube-update and pkg/routeros.
 - **fix:** mkube-update SSE connection to registry management API — management API on port 5001 is plain HTTP, but mkube-update inherited the `https://` scheme from the registry URL. Now forces `http://` when constructing the management URL.
 - **fix:** Registry port 5000 now serves both HTTP and HTTPS — uses connection peeking to detect TLS ClientHello vs plain HTTP on the same port. External clients without the registry CA cert can now pull over plain HTTP instead of getting TLS handshake errors.

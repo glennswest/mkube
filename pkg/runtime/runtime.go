@@ -39,6 +39,7 @@ type ContainerRuntime interface {
 	// Mount operations (RouterOS-specific, no-op on other backends)
 	CreateMount(ctx context.Context, name, src, dst string) error
 	RemoveMountsByList(ctx context.Context, listName string) error
+	ReconcileMounts(ctx context.Context, listName string, desired []DesiredMount) error
 
 	// Environment variable operations (RouterOS-specific, no-op on other backends)
 	CreateEnv(ctx context.Context, listName, key, value string) error
@@ -115,6 +116,15 @@ type PortMapping struct {
 	HostPort      uint32
 	ContainerPort uint32
 	Protocol      string // "tcp" or "udp"
+}
+
+// DesiredMount describes a mount that should exist on a container.
+// ReconcileMounts uses this to add missing mounts and remove stale ones
+// while preserving PVC-backed mounts unconditionally.
+type DesiredMount struct {
+	Src   string // host path
+	Dst   string // container mount path
+	IsPVC bool   // true = persistent volume claim, never auto-delete
 }
 
 // VolumeMount describes a bind mount.
