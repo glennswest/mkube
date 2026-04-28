@@ -143,6 +143,13 @@ func runRouterOS(ctx context.Context, cfg *config.Config, log *zap.SugaredLogger
 	defer rosClient.Close()
 	log.Infow("BOOT: RouterOS connected", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
 
+	// Cleanup zombie REST sessions from prior runs and ensure session headroom.
+	// RouterOS accumulates "active user" entries that never expire if TCP
+	// connections weren't closed cleanly (crash, keep-alive, etc.).
+	rosClient.CleanupStaleSessions(ctx)
+	rosClient.EnsureMaxSessions(ctx, 100)
+	log.Info("BOOT: RouterOS session cleanup done")
+
 	rt := runtime.NewRouterOSRuntime(rosClient)
 
 	// ── DNS Client ──────────────────────────────────────────────────

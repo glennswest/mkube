@@ -137,6 +137,52 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// CleanupStaleSessions removes zombie "active user" sessions from RouterOS.
+// RouterOS creates a persistent user session per REST request. If the TCP
+// connection is not properly closed (e.g., mkube crashed, keep-alive was
+// used), these sessions accumulate forever. At startup, we run a script to
+// purge all rest-api sessions (our own new session is the only survivor).
+func (c *Client) CleanupStaleSessions(ctx context.Context) {
+	// Use a script because REST cannot remove active user sessions directly
+	scriptName := "mkube-session-cleanup"
+	cmd := `:foreach s in=[/user/active find via=rest-api] do={:do {/user/active remove $s} on-error={}}`
+	sid, err := c.createScript(ctx, scriptName, cmd)
+	if err != nil {
+		return // best effort
+	}
+	defer c.removeScript(ctx, sid) //nolint:errcheck
+	_ = c.runScript(ctx, sid)
+}
+
+// EnsureMaxSessions sets the www service max-sessions to at least minSessions.
+// RouterOS defaults to 20, which is too low for mkube + mkube-update.
+func (c *Client) EnsureMaxSessions(ctx context.Context, minSessions int) {
+	type svcEntry struct {
+		ID          string `json:".id"`
+		Name        string `json:"name"`
+		MaxSessions string `json:"max-sessions"`
+	}
+	var services []svcEntry
+	if err := c.restGET(ctx, "/ip/service", &services); err != nil {
+		return // best effort
+	}
+	for _, svc := range services {
+		if svc.Name != "www" {
+			continue
+		}
+		var current int
+		fmt.Sscanf(svc.MaxSessions, "%d", &current)
+		if current >= minSessions {
+			return // already high enough
+		}
+		_ = c.restPOST(ctx, fmt.Sprintf("/ip/service/set"), map[string]string{
+			".id":          svc.ID,
+			"max-sessions": fmt.Sprintf("%d", minSessions),
+		}, nil)
+		return
+	}
+}
+
 // ─── Container Operations ───────────────────────────────────────────────────
 
 // containerCacheTTL controls how long ListContainers results are cached.
