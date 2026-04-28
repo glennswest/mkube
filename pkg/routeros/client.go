@@ -135,39 +135,19 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// CleanupStaleSessions removes zombie "active user" REST sessions from RouterOS.
-// RouterOS has an unfixed bug where REST API sessions accumulate in /user/active
-// and NEVER auto-expire (confirmed still broken in 7.23 beta2). This method uses
-// the /user/active/request-logout REST endpoint to properly terminate stale sessions.
-// With keep-alive enabled, we typically have only ~4 live sessions (MaxConnsPerHost),
-// so any sessions beyond that are zombies from prior connections.
+// CleanupStaleSessions is a no-op placeholder.
+// RouterOS has an unfixed bug (confirmed in 7.22.2 stable and 7.23 beta2) where
+// REST API sessions accumulate in /user/active and NEVER auto-expire.
+// Neither /user/active/remove, /user/active/request-logout, nor script-based
+// removal works — RouterOS refuses to terminate "active" sessions via any API.
+// The only effective mitigations are:
+//   1. Keep-alive enabled on the HTTP client so RouterOS reuses sessions on
+//      persistent TCP connections (~1 session per connection, not per request)
+//   2. High max-sessions (1000) to provide headroom
+//   3. Periodic router reboot or www service toggle (manual)
 func (c *Client) CleanupStaleSessions(ctx context.Context) {
-	type activeUser struct {
-		ID      string `json:".id"`
-		Via     string `json:"via"`
-		Address string `json:"address"`
-		When    string `json:"when"`
-	}
-	var users []activeUser
-	if err := c.restGET(ctx, "/user/active", &users); err != nil {
-		return // best effort
-	}
-
-	cleaned := 0
-	for _, u := range users {
-		if u.Via != "rest-api" {
-			continue
-		}
-		// Use request-logout to properly terminate the session
-		err := c.restPOST(ctx, "/user/active/request-logout",
-			map[string]string{"numbers": u.ID}, nil)
-		if err == nil {
-			cleaned++
-		}
-	}
-	if cleaned > 0 {
-		// Log is not available here — caller can check ActiveSessionCount after
-	}
+	// No-op: RouterOS provides no working API to clear zombie sessions.
+	// Keep-alive + high max-sessions is the mitigation.
 }
 
 // EnsureMaxSessions sets the www service max-sessions to at least minSessions.
