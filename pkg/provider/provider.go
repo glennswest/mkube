@@ -719,7 +719,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		if len(desiredMounts) > 0 {
 			mountListName = name
 			if err := p.deps.Runtime.ReconcileMounts(ctx, name, desiredMounts); err != nil {
-				log.Warnw("failed to reconcile mounts", "error", err)
+				_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
+				return fmt.Errorf("reconciling mounts for %s: %w", name, err)
 			}
 		}
 
@@ -1012,15 +1013,72 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 	if err := p.blueGreenUpdate(ctx, pod); err != nil {
 		log.Errorw("blue-green update failed, falling back to destructive update", "error", err)
 		p.cleanupStaging(ctx, pod)
-		if delErr := p.DeletePod(ctx, pod); delErr != nil {
-			log.Warnw("fallback delete error", "error", delErr)
-		}
+		// Use teardownForUpdate instead of DeletePod to preserve mount entries.
+		// DeletePod calls RemoveMountsByList which destroys PVC and ConfigMap
+		// mounts. teardownForUpdate removes containers and veths but keeps
+		// mounts intact so CreatePod's ReconcileMounts can reconcile them.
+		p.teardownForUpdate(ctx, pod)
 		return p.CreatePod(ctx, pod)
 	}
 	// Stamp the deployed digest after successful update
 	p.stampImageDigest(ctx, pod)
 	p.pods.Set(podKey(pod), pod.DeepCopy())
 	return nil
+}
+
+// teardownForUpdate removes containers and veths for a pod that is about to
+// be recreated by CreatePod. Unlike DeletePod, it does NOT remove mount
+// entries — this preserves PVC and ConfigMap mounts so that CreatePod's
+// ReconcileMounts can add missing mounts rather than recreating from scratch.
+func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.Pod) {
+	log := p.deps.Logger.With("pod", podKey(pod))
+
+	// Unregister from lifecycle manager to prevent watchdog interference
+	for _, container := range pod.Spec.Containers {
+		name := sanitizeName(pod, container.Name)
+		p.deps.LifecycleMgr.Unregister(name)
+	}
+
+	// Collect container IPs for alias cleanup
+	networkName := pod.Annotations[annotationNetwork]
+	namespaceName := pod.Annotations[annotationNamespace]
+	containerIPs := make(map[string]string)
+	for i, container := range pod.Spec.Containers {
+		vn := vethName(pod, i)
+		if portIP, _, ok := p.deps.NetworkMgr.GetPortInfo(vn); ok {
+			containerIPs[container.Name] = portIP
+		}
+	}
+	p.deregisterPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
+
+	for i, container := range pod.Spec.Containers {
+		name := sanitizeName(pod, container.Name)
+
+		// Stop and remove the container
+		if ct, err := p.deps.Runtime.GetContainer(ctx, name); err == nil {
+			p.stopAndRemoveContainer(ctx, name, ct.ID)
+		}
+
+		// NOTE: Do NOT RemoveMountsByList — mount entries must survive so
+		// ReconcileMounts during CreatePod can preserve PVC mounts and
+		// reconcile ConfigMap mounts without data loss.
+
+		// Release veth (CreatePod will re-allocate)
+		vn := vethName(pod, i)
+		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
+			log.Warnw("error releasing network during update teardown", "veth", vn, "error", err)
+		}
+
+		// Remove from namespace (CreatePod will re-register)
+		if nsName := namespaceName; nsName != "" && p.deps.Namespace != nil {
+			p.deps.Namespace.RemoveContainerFromNamespace(nsName, name)
+		}
+	}
+
+	p.recordEvent(pod, "Killing", fmt.Sprintf("Tearing down pod %s/%s for update", pod.Namespace, pod.Name), "Normal")
+	p.pods.Delete(podKey(pod))
+	p.createFailures.Delete(podKey(pod))
+	p.createBackoff.Delete(podKey(pod))
 }
 
 // stagingInfo holds per-container staging state for blue-green updates.
@@ -1466,7 +1524,7 @@ func (p *MicroKubeProvider) createContainerMounts(
 	}
 
 	if err := p.deps.Runtime.ReconcileMounts(ctx, containerName, desired); err != nil {
-		log.Warnw("failed to reconcile mounts", "container", containerName, "error", err)
+		return "", fmt.Errorf("reconciling mounts for %s: %w", containerName, err)
 	}
 
 	return containerName, nil
