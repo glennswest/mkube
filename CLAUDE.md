@@ -135,9 +135,11 @@ Known test failures (pre-existing):
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
+- [ ] (started 2026-04-28) **Pod Worker deployed, DNS recovery in progress** — Pod worker + mount filter fix pushed and live. Waiting for mkube-update to restart mkube. RouterOS has ~69 orphaned mounts from prior flapping; need to clean up via `/container/mounts/remove [find]` once DNS pods stabilize. After DNS is up, clean orphaned RouterOS containers (debian, fedora, g88, g90, duplicate fastregistry).
 
 ### Recently Completed
 - [x] Pod Worker — serialized pod lifecycle queue (`pkg/provider/pod_worker.go`). Reconcile loop enqueues create/recreate operations; worker processes one at a time. 90s health check grace period for newly created pods.
+- [x] Mount REST query filter — `ReconcileMounts`/`RemoveMountsByList` now use `?list=<name>` to fetch only relevant mounts instead of all mounts. Fixes timeout with 69+ orphaned mounts on ARM64 router.
 - [x] PVC mount preservation across container recreation — `ReconcileMounts` replaces destructive `RemoveMountsByList` + `CreateMount` pattern. PVC-backed mounts (src containing `/pvc/`) are never auto-deleted, preventing data loss when reconcile loop recreates containers.
 - [x] mkube-update SSE timeout fix — dedicated `sseClient` without timeout for long-lived SSE connections.
 - [x] Registry dual-protocol HTTP+HTTPS on port 5000 (Closes #10).
