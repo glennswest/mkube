@@ -64,16 +64,32 @@ type ProvisionedVolume struct {
 // HostVisiblePath translates a container-internal path to the path visible
 // to RouterOS on the host. Paths under persistent mounts use the mount's
 // host path; all other paths use the selfRootDir prefix.
+//
+// Always emits an absolute path with a leading "/" so it matches what RouterOS
+// stores. Without this, ReconcileMounts indexes existing mounts by "src→dst",
+// existing src is "/raid1/..." but freshly-generated src is "raid1/...", the
+// keys don't match, reconcile tries to add a duplicate, RouterOS rejects with
+// "same dst already exists", and pod creation fails.
 func (m *Manager) HostVisiblePath(containerPath string) string {
+	var hostPath string
+	matched := false
 	for _, mount := range m.cfg.PersistentMounts {
 		if strings.HasPrefix(containerPath, mount.ContainerPath) {
-			return strings.Replace(containerPath, mount.ContainerPath, mount.HostPath, 1)
+			hostPath = strings.Replace(containerPath, mount.ContainerPath, mount.HostPath, 1)
+			matched = true
+			break
 		}
 	}
-	if m.cfg.SelfRootDir != "" {
-		return m.cfg.SelfRootDir + "/" + strings.TrimPrefix(containerPath, "/")
+	if !matched {
+		if m.cfg.SelfRootDir == "" {
+			return containerPath
+		}
+		hostPath = m.cfg.SelfRootDir + "/" + strings.TrimPrefix(containerPath, "/")
 	}
-	return containerPath
+	if !strings.HasPrefix(hostPath, "/") {
+		hostPath = "/" + hostPath
+	}
+	return hostPath
 }
 
 // NewManager initializes the storage manager.
