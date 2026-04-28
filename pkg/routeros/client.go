@@ -324,17 +324,23 @@ func (c *Client) ListMounts(ctx context.Context) ([]MountEntry, error) {
 	return mounts, err
 }
 
+// ListMountsByList returns only mount entries matching the given list name.
+// Uses RouterOS REST query filtering to avoid fetching all mounts.
+func (c *Client) ListMountsByList(ctx context.Context, listName string) ([]MountEntry, error) {
+	var mounts []MountEntry
+	err := c.restGET(ctx, "/container/mounts?list="+listName, &mounts)
+	return mounts, err
+}
+
 // RemoveMountsByList removes all mount entries with the given list name.
 func (c *Client) RemoveMountsByList(ctx context.Context, listName string) error {
-	mounts, err := c.ListMounts(ctx)
+	mounts, err := c.ListMountsByList(ctx, listName)
 	if err != nil {
 		return err
 	}
 	for _, m := range mounts {
-		if m.List == listName {
-			if err := c.restPOST(ctx, "/container/mounts/remove", map[string]string{".id": m.ID}, nil); err != nil {
-				return fmt.Errorf("removing mount %s: %w", m.ID, err)
-			}
+		if err := c.restPOST(ctx, "/container/mounts/remove", map[string]string{".id": m.ID}, nil); err != nil {
+			return fmt.Errorf("removing mount %s: %w", m.ID, err)
 		}
 	}
 	return nil
@@ -353,7 +359,7 @@ type DesiredMount struct {
 // src contains "/pvc/" or "/volumes/pvc/" is treated as PVC-backed and
 // preserved even if not in the desired list, to prevent data loss).
 func (c *Client) ReconcileMounts(ctx context.Context, listName string, desired []DesiredMount) error {
-	mounts, err := c.ListMounts(ctx)
+	mounts, err := c.ListMountsByList(ctx, listName)
 	if err != nil {
 		return err
 	}
@@ -365,9 +371,6 @@ func (c *Client) ReconcileMounts(ctx context.Context, listName string, desired [
 	}
 	existing := make(map[string]*existingMount)
 	for _, m := range mounts {
-		if m.List != listName {
-			continue
-		}
 		key := m.Src + "→" + m.Dst
 		existing[key] = &existingMount{entry: m}
 	}

@@ -7,6 +7,7 @@
 - **feat:** Health check grace period — newly created pods are exempt from port health checks and DNS health checks for 90 seconds after creation. Prevents false-positive failures from killing containers that haven't finished starting (the OpenShift-style "container must be reachable before health checks begin" pattern).
 - **refactor:** Extract `updateCreateResult` helper — pod creation backoff tracking logic extracted from inline reconcile code into a reusable method used by both the reconcile loop and the pod worker.
 - **refactor:** Route managed DNS pod creation through pod worker — removes `dnsPodCooldown` map and one-per-cycle rate limiting in favor of the worker's sequential processing. All managed DNS pods can be enqueued in a single cycle.
+- **fix:** RouterOS mount REST API uses filtered query (`?list=<name>`) instead of fetching all mounts. With 69+ orphaned mounts, the unfiltered GET was timing out on the ARM64 router, blocking all pod creation.
 
 ### 2026-04-27
 - **fix:** Mount loss during image-policy auto-updates — `UpdatePod` fallback path called `DeletePod` which destroys ALL mount entries via `RemoveMountsByList`, then `CreatePod`'s `ReconcileMounts` silently failed (error only warned, not propagated), leaving containers running without config or PVC mounts. Fixed by: (1) new `teardownForUpdate` method that removes containers and veths but preserves mount entries, (2) `ReconcileMounts` errors are now fatal — `CreatePod` fails and gets retried by the reconcile loop instead of creating broken containers without mounts.
