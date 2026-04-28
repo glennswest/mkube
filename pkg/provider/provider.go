@@ -138,6 +138,7 @@ type MicroKubeProvider struct {
 	micrologsClient    *http.Client                          // persistent HTTP client for micrologs (2s timeout)
 	migrationTracker   *MigrationTracker                     // tracks in-flight PVC/disk migrations
 	lastNATCheck       time.Time                              // last DHCP relay NAT exemption check
+	lastSessionCleanup time.Time                              // last RouterOS REST session cleanup
 	dnsPodCooldown     *safemap.Map[string, time.Time]        // network name → earliest retry time for managed DNS pod
 	podWorker          *PodWorker                             // serialized pod lifecycle queue
 }
@@ -2605,15 +2606,24 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	p.ReconcileISCSIDiskTargets(ctx)
 	log.Debugw("RECONCILE: step 10 storage refresh", "ms", time.Since(stepStart).Milliseconds())
 
-	// 11. Monitor RouterOS REST session count for leak detection
+	// 11. Monitor RouterOS REST session count and periodic cleanup.
+	// RouterOS keeps zombie "active user" entries even after TCP connections
+	// close. Periodically run a cleanup script to purge them.
 	if rosClient := p.getRouterOSClient(); rosClient != nil {
-		if sessions := rosClient.ActiveSessionCount(ctx); sessions >= 0 {
-			if sessions > 20 {
-				log.Warnw("RouterOS REST session leak detected",
-					"activeSessions", sessions)
-			} else {
-				log.Debugw("RECONCILE: RouterOS sessions", "activeSessions", sessions)
-			}
+		sessions := rosClient.ActiveSessionCount(ctx)
+		if sessions > 20 {
+			log.Warnw("RouterOS REST session leak detected",
+				"activeSessions", sessions)
+			// Immediate cleanup on high session count
+			rosClient.CleanupStaleSessions(ctx)
+			p.lastSessionCleanup = time.Now()
+		} else if sessions >= 0 {
+			log.Debugw("RECONCILE: RouterOS sessions", "activeSessions", sessions)
+		}
+		// Periodic cleanup every 5 minutes regardless
+		if time.Since(p.lastSessionCleanup) >= 5*time.Minute {
+			rosClient.CleanupStaleSessions(ctx)
+			p.lastSessionCleanup = time.Now()
 		}
 	}
 

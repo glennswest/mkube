@@ -147,7 +147,7 @@ func runRouterOS(ctx context.Context, cfg *config.Config, log *zap.SugaredLogger
 	// RouterOS accumulates "active user" entries that never expire if TCP
 	// connections weren't closed cleanly (crash, keep-alive, etc.).
 	rosClient.CleanupStaleSessions(ctx)
-	rosClient.EnsureMaxSessions(ctx, 100)
+	rosClient.EnsureMaxSessions(ctx, 1000)
 	log.Info("BOOT: RouterOS session cleanup done")
 
 	rt := runtime.NewRouterOSRuntime(rosClient)
