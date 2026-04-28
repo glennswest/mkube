@@ -107,13 +107,19 @@ func NewClient(cfg config.RouterOSConfig) (*Client, error) {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureVerify,
 		},
-		// Keep connection count low to stay within RouterOS's default
-		// 20-session limit for REST services. The container list cache
-		// dramatically reduces the number of concurrent requests.
-		MaxIdleConns:        4,
-		MaxIdleConnsPerHost: 2,
-		MaxConnsPerHost:     4,
-		IdleConnTimeout:     30 * time.Second,
+		// Disable keep-alive to prevent RouterOS "active user" session
+		// accumulation. RouterOS creates a persistent user session for
+		// each HTTP request regardless of TCP connection reuse. Without
+		// Connection:close, these sessions never expire and eventually
+		// exhaust the max-sessions limit (default 20), causing all
+		// subsequent REST calls to hang or return "Session closed".
+		//
+		// With DisableKeepAlives, each request opens and closes its own
+		// TCP connection, prompting RouterOS to clean up the session.
+		// The container list cache (5s TTL) reduces total REST calls to
+		// ~1-2 per reconcile cycle, so the overhead is negligible.
+		DisableKeepAlives: true,
+		MaxConnsPerHost:   4,
 	}
 
 	return &Client{
@@ -668,6 +674,7 @@ func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Read
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1419,6 +1426,7 @@ func (c *Client) restGET(ctx context.Context, path string, result interface{}) e
 	}
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Accept", "application/json")
+	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1451,6 +1459,7 @@ func (c *Client) restPOST(ctx context.Context, path string, body interface{}, re
 	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Close = true // ensure RouterOS cleans up the user session
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
