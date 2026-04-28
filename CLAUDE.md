@@ -114,47 +114,30 @@ Known test failures (pre-existing):
 ### Current Version: `v6.0.0`
 
 ### TODO (priority order)
-1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
-2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
-3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
-4. **Track external microdns instances**: gw DNS on pvex needs proper sync.
-5. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
-6. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
-7. **microdns resilience**: DNS containers must survive mkube failures independently.
-8. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
-9. ~~**configstate.gt.lo**: Git-backed config state backup for disaster recovery.~~ **DONE** — `pkg/gitbackup/` via rust4git State API.
+1. **Migrate mkube-update to native API**: `cmd/mkube-update/main.go` still has its own REST HTTP helpers (`rosGET`, `rosPost`, `rosCreateScript`). Should import `pkg/routeros.Client` instead. Currently leaking REST sessions.
+2. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
+3. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
+4. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
+5. **Track external microdns instances**: gw DNS on pvex needs proper sync.
+6. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
+7. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
+8. **microdns resilience**: DNS containers must survive mkube failures independently.
+9. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
-13. **Migrate mkube-update to native API**: `cmd/mkube-update/main.go` still has its own REST HTTP helpers (`rosGET`, `rosPost`, `rosCreateScript`). Should import `pkg/routeros.Client` instead.
-
-### Completed (recent)
-- [x] IPMI boot device control — `pkg/bmc/` package with pure-Go IPMI client. Install images auto-set PXE boot, then switch to disk after DHCP lease detected. Prevents infinite reinstall loop.
-- [x] Secret resource support — full CRUD API with AES-256-GCM encrypted-at-rest storage in NATS. Volume mounts, env var injection (Secrets + ConfigMaps), cluster sync, YAML export/import.
-- [x] Fix `fixOrphanedVolumeMounts` cross-pod PVC contamination — hardcoded `{ns}-dns-data` for ALL orphaned data mounts, causing netwatch to get DNS pod's PVC. Now derives PVC name from pod name.
-- [x] iSCSI-backed PVC provisioning — Rust prototype (tools/iscsi-pvc) + Go integration (pkg/provider/pvc_iscsi.go)
-- [x] RouterOS client disk management methods (FindFileDiskByPath, SetISCSIExport, CreateFileDisk, RemoveFileDisk)
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
-- [x] (completed 2026-04-28) **Pod Worker deployed, DNS recovered** — Pod worker + mount filter fix deployed. Native API migration eliminated REST session leak. DNS pods stable, 16/18 containers running. 42 zombie REST sessions remain from pre-migration (will never expire due to RouterOS bug) but no new ones created.
 
 ### Recently Completed
-- [x] Native API migration — RouterOS client migrated from REST API (HTTP) to native binary protocol (port 8728) via `go-routeros/routeros/v3`. Single persistent TCP connection with tag-based multiplexing. Eliminates REST session leak bug that caused DNS outages. Lazy connect with auto-reconnect. HTTP retained only for UploadFile.
-- [x] Pod Worker — serialized pod lifecycle queue (`pkg/provider/pod_worker.go`). Reconcile loop enqueues create/recreate operations; worker processes one at a time. 90s health check grace period for newly created pods.
-- [x] Mount REST query filter — `ReconcileMounts`/`RemoveMountsByList` now use `?list=<name>` to fetch only relevant mounts instead of all mounts. Fixes timeout with 69+ orphaned mounts on ARM64 router.
-- [x] PVC mount preservation across container recreation — `ReconcileMounts` replaces destructive `RemoveMountsByList` + `CreateMount` pattern. PVC-backed mounts (src containing `/pvc/`) are never auto-deleted, preventing data loss when reconcile loop recreates containers.
-- [x] mkube-update SSE timeout fix — dedicated `sseClient` without timeout for long-lived SSE connections.
-- [x] Registry dual-protocol HTTP+HTTPS on port 5000 (Closes #10).
-- [x] mkube-update SSE scheme fix for management API (Closes #9).
-- [x] RouterOS CLI boolean syntax fix in script-based container creation.
-- [x] Fix RouterOS container/add REST session timeout — uses script-based creation to avoid synchronous tarball extraction blocking the REST session. Creates temp script, runs async, polls for container.
-- [x] Auto-repair DHCP relay NAT exemption — `ensureDHCPRelayNAT()` inserts `srcnat accept udp 67→67` before masquerade rules on bridges with DHCP relays. Runs on network provisioning and every 5 min via infra health. Prevents masquerade from rewriting relay source port.
-- [x] PXE boot fix — moved bmh-operator from gt network (192.168.200.103) to g10 (192.168.10.200) where DHCP nextServer points. Removed conflicting RouterOS bridge IP + NAT rules. TFTP/iPXE boot chain verified working.
-- [x] Micrologs circuit breaker — skip micrologs after 3 failures for 30s cooldown, 2s timeout persistent client
-- [x] Async PVC migration with SSE progress — MigrationTracker, phase-aware copy, SSE streaming, console progress bar
-- [x] Agent 24h container cleanup retention — stopped build containers and dangling images preserved for a day before pruning. Supports debugging/inspection.
-- [x] Fix gitbackup on deferred NATS boot — deferred NATS path now initializes gitbackup after store connects
-- [x] Fix deploy to bake device-specific config + deploy-config for volume-mounted config (`/etc/mkube/` is volume-mounted from device, overriding image-baked config)
-- [x] Git-backed config state backup (`pkg/gitbackup/`) — rust4git State API, incremental pushes, debounce, store multi-hook, status/trigger API
-- [x] DNS config snapshotter — debounced per-network microdns snapshots to git on every mutation (DHCP pools/reservations, DNS records/forwarders, network updates, BMH changes)
+- [x] Native API migration — RouterOS client migrated from REST API to native binary protocol (port 8728) via `go-routeros/routeros/v3`. Eliminates REST session leak bug. Lazy connect with auto-reconnect. HTTP retained only for UploadFile.
+- [x] Pod Worker + DNS recovery — serialized pod lifecycle queue, mount filter fix, DNS pods stable. 42 zombie REST sessions remain from pre-migration but no new ones created.
+- [x] PVC mount preservation — `ReconcileMounts` never auto-deletes PVC-backed mounts, preventing data loss on container recreation.
+- [x] Git-backed config state backup (`pkg/gitbackup/`) — rust4git State API, incremental pushes, debounce, DNS config snapshotter.
+- [x] IPMI boot device control — `pkg/bmc/` package. Install images auto-set PXE boot, then switch to disk after DHCP lease detected.
+- [x] Secret resource support — AES-256-GCM encrypted-at-rest in NATS. Volume mounts, env var injection, cluster sync, YAML export/import.
+- [x] iSCSI-backed PVC provisioning — Rust prototype + Go integration (`pkg/provider/pvc_iscsi.go`).
+- [x] Auto-repair DHCP relay NAT exemption — `ensureDHCPRelayNAT()` inserts `srcnat accept` before masquerade rules.
+- [x] PXE boot fix — bmh-operator moved to g10 network where DHCP nextServer points.
+- [x] Async PVC migration with SSE progress — MigrationTracker, phase-aware copy, console progress bar.
