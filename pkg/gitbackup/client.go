@@ -31,9 +31,20 @@ type rust4gitClient struct {
 	client    *http.Client
 }
 
-func newClient(baseURL, repoName, branch, author, email, username, password string, passwordFile string, insecureTLS bool) *rust4gitClient {
+func newClient(baseURL, repoName, branch, author, email, username, password, tokenFile string, insecureTLS bool) *rust4gitClient {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecureTLS},
+	}
+	// Read saved Bearer token from file (if available).
+	token := ""
+	if tokenFile != "" {
+		if data, err := readFileContent(tokenFile); err == nil {
+			token = strings.TrimSpace(string(data))
+		}
+	}
+	// If no token from file, try password as initial Bearer token
+	if token == "" {
+		token = password
 	}
 	return &rust4gitClient{
 		baseURL:   strings.TrimRight(baseURL, "/"),
@@ -42,9 +53,9 @@ func newClient(baseURL, repoName, branch, author, email, username, password stri
 		author:    author,
 		email:     email,
 		username:  username,
-		password:  password,
-		token:     password, // try password as Bearer token first
-		tokenFile: passwordFile,
+		password:  password, // plaintext password for Basic auth fallback
+		token:     token,    // Bearer token (from file or password)
+		tokenFile: tokenFile,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,

@@ -41,12 +41,10 @@ type dnsChange struct {
 // NewDNSSnapshotter creates a new DNS config snapshotter.
 // It reuses the rust4git connection settings from GitBackupConfig.
 func NewDNSSnapshotter(cfg config.GitBackupConfig, dnsClient *dns.Client, log *zap.SugaredLogger) *DNSSnapshotter {
-	password := resolvePassword(cfg)
-
 	client := newClient(
 		cfg.RepoURL, "", cfg.Branch,
 		cfg.CommitAuthor, cfg.CommitEmail,
-		cfg.Username, password, cfg.PasswordFile,
+		cfg.Username, cfg.Password, cfg.PasswordFile,
 		cfg.InsecureTLS,
 	)
 

@@ -59,12 +59,10 @@ func New(cfg config.GitBackupConfig, s *store.Store, log *zap.SugaredLogger) (*M
 		cfg.CommitEmail = "mkube@gt.lo"
 	}
 
-	password := resolvePassword(cfg)
-
 	client := newClient(
 		cfg.RepoURL, cfg.RepoName, cfg.Branch,
 		cfg.CommitAuthor, cfg.CommitEmail,
-		cfg.Username, password, cfg.PasswordFile,
+		cfg.Username, cfg.Password, cfg.PasswordFile,
 		cfg.InsecureTLS,
 	)
 

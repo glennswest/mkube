@@ -205,6 +205,7 @@ gitBackup:
   repoName: "mkube/configstate"
   branch: "main"
   username: "mkube"
+  password: "mkube-rest"
   passwordFile: "/data/mkube/git-token"
   intervalSeconds: 300
   debounceSeconds: 30
