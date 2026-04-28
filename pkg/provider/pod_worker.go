@@ -2,8 +2,6 @@ package provider
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -11,122 +9,84 @@ import (
 	"github.com/glennswest/mkube/pkg/safemap"
 )
 
-// podWork is a unit of work for the PodWorker queue.
-type podWork struct {
-	key    string                           // "namespace/name" for dedup
-	reason string                           // human-readable reason for logging
-	fn     func(ctx context.Context) error  // the actual work to execute
-}
-
-// PodWorker serializes pod lifecycle operations (create, recreate, delete+create)
-// in a single goroutine so the reconcile loop stays fast and the RouterOS REST API
-// is not overwhelmed by concurrent heavy operations.
+// PodWorker dispatches pod lifecycle operations as concurrent goroutines and
+// remembers when each pod was last created so health checks can grant a
+// startup grace period. The earlier serialized-queue implementation existed
+// to protect the RouterOS REST API from concurrent session pile-up — with
+// the native API in use, tag-multiplexing handles concurrent commands
+// natively, so each lifecycle operation runs in its own goroutine.
+//
+// The Enqueue / IsPendingOrProcessing / CreatedAt method signatures are kept
+// for compatibility with existing call sites; "Enqueue" no longer queues —
+// it runs the function immediately in a goroutine, with a per-key in-flight
+// guard to drop duplicates.
 type PodWorker struct {
-	queue      chan podWork
-	pending    *safemap.Map[string, bool]
-	processing atomic.Value // current key being processed (string)
-	logger     *zap.SugaredLogger
-
-	// createdAt tracks when each pod key was last successfully created by the worker.
-	// Used by health checks to skip newly created pods that haven't finished starting.
-	createdAt   *safemap.Map[string, time.Time]
-
-	mu          sync.Mutex
-	queuedItems []podWork // overflow when channel is full
+	inflight  *safemap.Map[string, bool]
+	createdAt *safemap.Map[string, time.Time]
+	logger    *zap.SugaredLogger
+	ctx       context.Context
 }
 
-const podWorkerQueueSize = 64
-
-// NewPodWorker creates a PodWorker ready to accept work items.
+// NewPodWorker creates a PodWorker. Run must be called once with the
+// long-lived application context before Enqueue is invoked, to wire up the
+// context that goroutines will see.
 func NewPodWorker(logger *zap.SugaredLogger) *PodWorker {
-	pw := &PodWorker{
-		queue:     make(chan podWork, podWorkerQueueSize),
-		pending:   safemap.New[string, bool](),
-		logger:    logger,
+	return &PodWorker{
+		inflight:  safemap.New[string, bool](),
 		createdAt: safemap.New[string, time.Time](),
+		logger:    logger,
+		ctx:       context.Background(),
 	}
-	pw.processing.Store("")
-	return pw
 }
 
-// Enqueue adds a work item for the given pod key. Non-blocking.
-// Duplicate keys (already pending or currently processing) are silently dropped.
-// If the queue is full, the item is dropped — reconcile will re-enqueue next cycle.
+// Run wires up the long-lived context and blocks until it is cancelled.
+// Existing callers do `go pw.Run(ctx)`; that pattern stays unchanged so the
+// goroutine sits idle until shutdown without any other side effects.
+func (pw *PodWorker) Run(ctx context.Context) {
+	pw.ctx = ctx
+	pw.logger.Info("pod-worker: started (concurrent dispatch)")
+	<-ctx.Done()
+	pw.logger.Info("pod-worker: shutting down")
+}
+
+// Enqueue runs fn in its own goroutine if no other operation for the same
+// key is already in flight. Duplicate enqueues for an in-flight key are
+// dropped silently — reconcile will re-trigger on the next cycle if the work
+// is still needed.
 func (pw *PodWorker) Enqueue(key, reason string, fn func(ctx context.Context) error) {
-	// Dedup: skip if already pending or being processed right now
-	if pw.IsPendingOrProcessing(key) {
-		pw.logger.Debugw("pod-worker: skipping duplicate enqueue", "pod", key, "reason", reason)
+	if !pw.inflight.SetIfAbsent(key, true) {
+		pw.logger.Debugw("pod-worker: skipping duplicate", "pod", key, "reason", reason)
 		return
 	}
 
-	pw.pending.Set(key, true)
-
-	item := podWork{key: key, reason: reason, fn: fn}
-	select {
-	case pw.queue <- item:
-		pw.logger.Infow("pod-worker: enqueued", "pod", key, "reason", reason, "depth", len(pw.queue))
-	default:
-		// Queue full — drop. Reconcile will re-enqueue next cycle.
-		pw.pending.Delete(key)
-		pw.logger.Warnw("pod-worker: queue full, dropping", "pod", key, "reason", reason)
-	}
+	go func() {
+		defer pw.inflight.Delete(key)
+		start := time.Now()
+		pw.logger.Infow("pod-worker: starting", "pod", key, "reason", reason)
+		err := fn(pw.ctx)
+		elapsed := time.Since(start)
+		if err != nil {
+			pw.logger.Errorw("pod-worker: failed", "pod", key, "reason", reason,
+				"error", err, "elapsed", elapsed)
+			return
+		}
+		pw.logger.Infow("pod-worker: completed", "pod", key, "reason", reason,
+			"elapsed", elapsed)
+		pw.createdAt.Set(key, time.Now())
+	}()
 }
 
-// IsPendingOrProcessing returns true if the key is queued or currently being worked on.
+// IsPendingOrProcessing returns true if a goroutine for key is currently running.
 func (pw *PodWorker) IsPendingOrProcessing(key string) bool {
-	if pw.pending.Has(key) {
-		return true
-	}
-	if cur, ok := pw.processing.Load().(string); ok && cur == key {
-		return true
-	}
-	return false
+	return pw.inflight.Has(key)
 }
 
-// QueueDepth returns the number of items waiting in the queue.
+// QueueDepth reports the number of in-flight operations.
 func (pw *PodWorker) QueueDepth() int {
-	return pw.pending.Len()
+	return pw.inflight.Len()
 }
 
-// CreatedAt returns when a pod was last successfully created by the worker.
-// Returns zero time and false if the pod has no recorded creation.
+// CreatedAt returns when fn last completed successfully for key.
 func (pw *PodWorker) CreatedAt(key string) (time.Time, bool) {
 	return pw.createdAt.Get(key)
-}
-
-// Run is the main worker loop. Call as a goroutine: go pw.Run(ctx).
-// Processes one item at a time until ctx is cancelled.
-func (pw *PodWorker) Run(ctx context.Context) {
-	pw.logger.Info("pod-worker: started")
-	for {
-		select {
-		case <-ctx.Done():
-			pw.logger.Info("pod-worker: shutting down")
-			return
-		case item := <-pw.queue:
-			pw.processItem(ctx, item)
-		}
-	}
-}
-
-func (pw *PodWorker) processItem(ctx context.Context, item podWork) {
-	pw.processing.Store(item.key)
-	pw.pending.Delete(item.key)
-
-	start := time.Now()
-	pw.logger.Infow("pod-worker: processing", "pod", item.key, "reason", item.reason)
-
-	err := item.fn(ctx)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		pw.logger.Errorw("pod-worker: failed", "pod", item.key, "reason", item.reason,
-			"error", err, "elapsed", elapsed)
-	} else {
-		pw.logger.Infow("pod-worker: completed", "pod", item.key, "reason", item.reason,
-			"elapsed", elapsed)
-		pw.createdAt.Set(item.key, time.Now())
-	}
-
-	pw.processing.Store("")
 }
