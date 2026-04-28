@@ -155,6 +155,14 @@ func main() {
 			Transport: loadRegistryTransport(log),
 			Timeout:   30 * time.Second,
 		},
+		rosHTTP: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+				DisableKeepAlives: true,
+				MaxConnsPerHost:   4,
+			},
+			Timeout: 30 * time.Second,
+		},
 	}
 
 	// Ensure tarball staging directory exists
@@ -195,7 +203,8 @@ type Updater struct {
 	cfg      Config
 	log      *zap.SugaredLogger
 	digests  map[string]string // "repo:tag" → last seen digest
-	http     *http.Client
+	http     *http.Client      // for registry calls (keep-alive OK)
+	rosHTTP  *http.Client      // for RouterOS REST calls (no keep-alive to prevent session leaks)
 	kickPoll chan struct{}     // SSE-triggered immediate poll
 }
 
@@ -1283,8 +1292,9 @@ func (u *Updater) rosGET(ctx context.Context, path string, result interface{}) e
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Accept", "application/json")
+	req.Close = true // prevent RouterOS session accumulation
 
-	resp, err := u.http.Do(req)
+	resp, err := u.rosHTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1309,8 +1319,9 @@ func (u *Updater) rosPost(ctx context.Context, path string, body interface{}) er
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Content-Type", "application/json")
+	req.Close = true // prevent RouterOS session accumulation
 
-	resp, err := u.http.Do(req)
+	resp, err := u.rosHTTP.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1446,8 +1457,9 @@ func (u *Updater) rosCreateScript(ctx context.Context, name, source string) (str
 	}
 	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
 	req.Header.Set("Content-Type", "application/json")
+	req.Close = true // prevent RouterOS session accumulation
 
-	resp, err := u.http.Do(req)
+	resp, err := u.rosHTTP.Do(req)
 	if err != nil {
 		return "", err
 	}

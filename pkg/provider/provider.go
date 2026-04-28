@@ -2605,6 +2605,18 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	p.ReconcileISCSIDiskTargets(ctx)
 	log.Debugw("RECONCILE: step 10 storage refresh", "ms", time.Since(stepStart).Milliseconds())
 
+	// 11. Monitor RouterOS REST session count for leak detection
+	if rosClient := p.getRouterOSClient(); rosClient != nil {
+		if sessions := rosClient.ActiveSessionCount(ctx); sessions >= 0 {
+			if sessions > 20 {
+				log.Warnw("RouterOS REST session leak detected",
+					"activeSessions", sessions)
+			} else {
+				log.Debugw("RECONCILE: RouterOS sessions", "activeSessions", sessions)
+			}
+		}
+	}
+
 	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", p.pods.Len())
 	return nil
 }

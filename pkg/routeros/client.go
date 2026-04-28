@@ -183,6 +183,26 @@ func (c *Client) EnsureMaxSessions(ctx context.Context, minSessions int) {
 	}
 }
 
+// ActiveSessionCount returns the number of active REST API user sessions on
+// RouterOS. Used for monitoring session leaks. Returns -1 on error.
+func (c *Client) ActiveSessionCount(ctx context.Context) int {
+	type activeUser struct {
+		ID  string `json:".id"`
+		Via string `json:"via"`
+	}
+	var users []activeUser
+	if err := c.restGET(ctx, "/user/active", &users); err != nil {
+		return -1
+	}
+	count := 0
+	for _, u := range users {
+		if u.Via == "rest-api" {
+			count++
+		}
+	}
+	return count
+}
+
 // ─── Container Operations ───────────────────────────────────────────────────
 
 // containerCacheTTL controls how long ListContainers results are cached.
