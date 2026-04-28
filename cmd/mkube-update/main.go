@@ -1417,10 +1417,25 @@ func (u *Updater) buildContainerAddCLI(spec map[string]string) string {
 	// Optional fields
 	for _, key := range []string{"mountlists", "cmd", "entrypoint", "workdir", "hostname", "dns", "user", "envlist", "logging", "start-on-boot"} {
 		if v, ok := spec[key]; ok && v != "" {
-			parts = append(parts, key+"="+v)
+			parts = append(parts, key+"="+rosCLIValue(key, v))
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// rosCLIValue converts REST API values to RouterOS CLI syntax.
+// Boolean fields use yes/no in CLI but true/false in REST API.
+func rosCLIValue(key, value string) string {
+	switch key {
+	case "logging", "start-on-boot":
+		switch value {
+		case "true":
+			return "yes"
+		case "false":
+			return "no"
+		}
+	}
+	return value
 }
 
 func (u *Updater) rosCreateScript(ctx context.Context, name, source string) (string, error) {

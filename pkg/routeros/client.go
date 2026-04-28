@@ -217,12 +217,25 @@ func buildContainerAddCLI(spec ContainerSpec) string {
 		parts = append(parts, "envlist="+spec.Envlist)
 	}
 	if spec.Logging != "" {
-		parts = append(parts, "logging="+spec.Logging)
+		parts = append(parts, "logging="+rosBool(spec.Logging))
 	}
 	if spec.StartOnBoot != "" {
-		parts = append(parts, "start-on-boot="+spec.StartOnBoot)
+		parts = append(parts, "start-on-boot="+rosBool(spec.StartOnBoot))
 	}
 	return strings.Join(parts, " ")
+}
+
+// rosBool converts REST API boolean strings (true/false) to RouterOS CLI
+// syntax (yes/no). Passes through values that are already in CLI format.
+func rosBool(v string) string {
+	switch v {
+	case "true":
+		return "yes"
+	case "false":
+		return "no"
+	default:
+		return v
+	}
 }
 
 // ─── Script Helpers ─────────────────────────────────────────────────────────

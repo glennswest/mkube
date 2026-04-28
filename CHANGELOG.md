@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-04-27
+- **fix:** Script-based container creation syntax error — RouterOS CLI uses `yes`/`no` for booleans but REST API returns `true`/`false`. `buildContainerAddCLI` now converts boolean values for `logging` and `start-on-boot`. Fixed in both mkube-update and pkg/routeros.
 - **fix:** mkube-update SSE connection to registry management API — management API on port 5001 is plain HTTP, but mkube-update inherited the `https://` scheme from the registry URL. Now forces `http://` when constructing the management URL.
 - **fix:** Registry port 5000 now serves both HTTP and HTTPS — uses connection peeking to detect TLS ClientHello vs plain HTTP on the same port. External clients without the registry CA cert can now pull over plain HTTP instead of getting TLS handshake errors.
 - **fix:** RouterOS container/add REST session timeout — replaced direct REST POST with script-based creation. Creates a temporary RouterOS script containing the `/container/add` CLI command, runs it via `/system/script/run` (returns immediately), then polls until the container appears. Avoids the session timeout that occurs when tarball extraction blocks the REST handler.
