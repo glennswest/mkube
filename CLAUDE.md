@@ -89,6 +89,7 @@ go test ./...                                    # Run tests
 - **Image updates**: `vkube.io/image-policy: auto` — digest check, rolling update on change
 - **DNS**: Automatic registration via microdns REST API
 - **RouterOS**: Use `remote-image` for container creation (NOT `tag`)
+- **RouterOS transport**: Native API (port 8728) via go-routeros/v3, HTTP only for file uploads
 - **Scratch containers**: No system root CAs — use local registry only
 - **API access**: `kubectl` hangs — use `curl` with JSON or `mk` alias
 
@@ -125,6 +126,7 @@ Known test failures (pre-existing):
 10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
+13. **Migrate mkube-update to native API**: `cmd/mkube-update/main.go` still has its own REST HTTP helpers (`rosGET`, `rosPost`, `rosCreateScript`). Should import `pkg/routeros.Client` instead.
 
 ### Completed (recent)
 - [x] IPMI boot device control — `pkg/bmc/` package with pure-Go IPMI client. Install images auto-set PXE boot, then switch to disk after DHCP lease detected. Prevents infinite reinstall loop.
@@ -138,6 +140,7 @@ Known test failures (pre-existing):
 - [ ] (started 2026-04-28) **Pod Worker deployed, DNS recovery in progress** — Pod worker + mount filter fix pushed and live. Waiting for mkube-update to restart mkube. RouterOS has ~69 orphaned mounts from prior flapping; need to clean up via `/container/mounts/remove [find]` once DNS pods stabilize. After DNS is up, clean orphaned RouterOS containers (debian, fedora, g88, g90, duplicate fastregistry).
 
 ### Recently Completed
+- [x] Native API migration — RouterOS client migrated from REST API (HTTP) to native binary protocol (port 8728) via `go-routeros/routeros/v3`. Single persistent TCP connection with tag-based multiplexing. Eliminates REST session leak bug that caused DNS outages. Lazy connect with auto-reconnect. HTTP retained only for UploadFile.
 - [x] Pod Worker — serialized pod lifecycle queue (`pkg/provider/pod_worker.go`). Reconcile loop enqueues create/recreate operations; worker processes one at a time. 90s health check grace period for newly created pods.
 - [x] Mount REST query filter — `ReconcileMounts`/`RemoveMountsByList` now use `?list=<name>` to fetch only relevant mounts instead of all mounts. Fixes timeout with 69+ orphaned mounts on ARM64 router.
 - [x] PVC mount preservation across container recreation — `ReconcileMounts` replaces destructive `RemoveMountsByList` + `CreateMount` pattern. PVC-backed mounts (src containing `/pvc/`) are never auto-deleted, preventing data loss when reconcile loop recreates containers.

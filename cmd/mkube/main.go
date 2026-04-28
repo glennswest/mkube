@@ -143,12 +143,9 @@ func runRouterOS(ctx context.Context, cfg *config.Config, log *zap.SugaredLogger
 	defer rosClient.Close()
 	log.Infow("BOOT: RouterOS connected", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
 
-	// Cleanup zombie REST sessions from prior runs and ensure session headroom.
-	// RouterOS accumulates "active user" entries that never expire if TCP
-	// connections weren't closed cleanly (crash, keep-alive, etc.).
-	rosClient.CleanupStaleSessions(ctx)
-	rosClient.EnsureMaxSessions(ctx, 1000)
-	log.Info("BOOT: RouterOS session cleanup done")
+	// Native API (port 8728) uses a single persistent TCP connection with
+	// proper session semantics — no zombie sessions to clean up.
+	log.Info("BOOT: RouterOS native API connected")
 
 	rt := runtime.NewRouterOSRuntime(rosClient)
 

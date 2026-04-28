@@ -2,47 +2,74 @@ package routeros
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	rosapi "github.com/go-routeros/routeros/v3"
+	"github.com/go-routeros/routeros/v3/proto"
 	"github.com/glennswest/mkube/pkg/config"
 )
 
-func newTestClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
+// newTestClient creates a Client with a mock exec function.
+// Tests override c.exec to provide expected responses.
+func newTestClient(t *testing.T) *Client {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	client, err := NewClient(config.RouterOSConfig{
-		RESTURL: server.URL,
-		User:    "admin",
-	})
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
+	return &Client{
+		cfg: config.RouterOSConfig{
+			RESTURL:  "https://192.168.200.1",
+			User:     "admin",
+			Password: "",
+			Address:  "192.168.200.1:8728",
+		},
+		exec: func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+			t.Fatalf("unexpected exec call: %v", words)
+			return nil, nil
+		},
 	}
-	return client, server
+}
+
+// makeReply constructs a rosapi.Reply with the given !re sentence maps.
+func makeReply(sentences ...map[string]string) *rosapi.Reply {
+	reply := &rosapi.Reply{
+		Done: &proto.Sentence{Word: "!done"},
+	}
+	for _, m := range sentences {
+		reply.Re = append(reply.Re, &proto.Sentence{
+			Word: "!re",
+			Map:  m,
+		})
+	}
+	return reply
+}
+
+// makeAddReply constructs a rosapi.Reply for /add commands with a ret value.
+func makeAddReply(ret string) *rosapi.Reply {
+	return &rosapi.Reply{
+		Done: &proto.Sentence{
+			Word: "!done",
+			Map:  map[string]string{"ret": ret},
+		},
+	}
+}
+
+// makeDoneReply constructs a rosapi.Reply with just !done (no data).
+func makeDoneReply() *rosapi.Reply {
+	return &rosapi.Reply{
+		Done: &proto.Sentence{Word: "!done"},
+	}
 }
 
 func TestListContainers(t *testing.T) {
-	containers := []Container{
-		{ID: "*1", Name: "test-container", Running: "true"},
-		{ID: "*2", Name: "another", Stopped: "true"},
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		if words[0] != "/container/print" {
+			t.Errorf("unexpected command: %v", words)
+		}
+		return makeReply(
+			map[string]string{".id": "*1", "name": "test-container", "running": "true"},
+			map[string]string{".id": "*2", "name": "another", "stopped": "true"},
+		), nil
 	}
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/container" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(containers)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
 
 	result, err := client.ListContainers(context.Background())
 	if err != nil {
@@ -57,18 +84,13 @@ func TestListContainers(t *testing.T) {
 }
 
 func TestGetContainer(t *testing.T) {
-	containers := []Container{
-		{ID: "*1", Name: "target", Running: "true"},
-		{ID: "*2", Name: "other", Stopped: "true"},
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		return makeReply(
+			map[string]string{".id": "*1", "name": "target", "running": "true"},
+			map[string]string{".id": "*2", "name": "other", "stopped": "true"},
+		), nil
 	}
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(containers)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
 
 	ct, err := client.GetContainer(context.Background(), "target")
 	if err != nil {
@@ -89,43 +111,43 @@ func TestCreateContainer(t *testing.T) {
 	var scriptCreated, scriptRun, scriptRemoved bool
 	containerReady := false
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		cmd := words[0]
 		switch {
-		case r.URL.Path == "/system/script" && r.Method == http.MethodGet:
+		case cmd == "/system/script/print":
 			// cleanupStaleScripts lists existing scripts
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]scriptEntry{})
-		case r.URL.Path == "/system/script/add":
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			scriptSource = body["source"]
-			scriptName = body["name"]
+			return makeReply(), nil // empty list
+		case cmd == "/system/script/add":
 			scriptCreated = true
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{"ret": "*A1"})
-		case r.URL.Path == "/system/script/run":
+			for _, w := range words[1:] {
+				if strings.HasPrefix(w, "=name=") {
+					scriptName = strings.TrimPrefix(w, "=name=")
+				}
+				if strings.HasPrefix(w, "=source=") {
+					scriptSource = strings.TrimPrefix(w, "=source=")
+				}
+			}
+			return makeAddReply("*A1"), nil
+		case cmd == "/system/script/run":
 			scriptRun = true
 			containerReady = true // simulate async extraction completing
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/system/script/remove":
+			return makeDoneReply(), nil
+		case cmd == "/system/script/remove":
 			scriptRemoved = true
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/container":
-			w.Header().Set("Content-Type", "application/json")
+			return makeDoneReply(), nil
+		case cmd == "/container/print":
 			if containerReady {
-				_ = json.NewEncoder(w).Encode([]Container{
-					{ID: "*1", Name: "new-container", Stopped: "true"},
-				})
-			} else {
-				_ = json.NewEncoder(w).Encode([]Container{})
+				return makeReply(
+					map[string]string{".id": "*1", "name": "new-container", "stopped": "true"},
+				), nil
 			}
+			return makeReply(), nil
 		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected command: %v", words)
+			return makeDoneReply(), nil
 		}
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	}
 
 	spec := ContainerSpec{
 		Name:      "new-container",
@@ -161,43 +183,40 @@ func TestCreateContainerCleansUpStaleScripts(t *testing.T) {
 	var removedIDs []string
 	containerReady := false
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		cmd := words[0]
 		switch {
-		case r.URL.Path == "/system/script" && r.Method == http.MethodGet:
-			// Return stale scripts from prior runs
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]scriptEntry{
-				{ID: "*S1", Name: "mkube-task-000001"},
-				{ID: "*S2", Name: "mkube-task-000002"},
-				{ID: "*S3", Name: "user-script"}, // should NOT be removed
-			})
-		case r.URL.Path == "/system/script/add":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{"ret": "*A1"})
-		case r.URL.Path == "/system/script/run":
+		case cmd == "/system/script/print":
+			return makeReply(
+				map[string]string{".id": "*S1", "name": "mkube-task-000001"},
+				map[string]string{".id": "*S2", "name": "mkube-task-000002"},
+				map[string]string{".id": "*S3", "name": "user-script"},
+			), nil
+		case cmd == "/system/script/add":
+			return makeAddReply("*A1"), nil
+		case cmd == "/system/script/run":
 			containerReady = true
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/system/script/remove":
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			removedIDs = append(removedIDs, body[".id"])
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/container":
-			w.Header().Set("Content-Type", "application/json")
-			if containerReady {
-				_ = json.NewEncoder(w).Encode([]Container{
-					{ID: "*1", Name: "test-ct", Stopped: "true"},
-				})
-			} else {
-				_ = json.NewEncoder(w).Encode([]Container{})
+			return makeDoneReply(), nil
+		case cmd == "/system/script/remove":
+			for _, w := range words[1:] {
+				if strings.HasPrefix(w, "=.id=") {
+					removedIDs = append(removedIDs, strings.TrimPrefix(w, "=.id="))
+				}
 			}
+			return makeDoneReply(), nil
+		case cmd == "/container/print":
+			if containerReady {
+				return makeReply(
+					map[string]string{".id": "*1", "name": "test-ct", "stopped": "true"},
+				), nil
+			}
+			return makeReply(), nil
 		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected command: %v", words)
+			return makeDoneReply(), nil
 		}
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	}
 
 	spec := ContainerSpec{
 		Name:      "test-ct",
@@ -255,40 +274,36 @@ func TestBuildContainerAddCLI(t *testing.T) {
 }
 
 func TestStartStopContainer(t *testing.T) {
-	var lastPath string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lastPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	var lastCmd string
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		lastCmd = words[0]
+		return makeDoneReply(), nil
+	}
 
 	if err := client.StartContainer(context.Background(), "*1"); err != nil {
 		t.Fatalf("start error: %v", err)
 	}
-	if lastPath != "/container/start" {
-		t.Errorf("expected /container/start, got %s", lastPath)
+	if lastCmd != "/container/start" {
+		t.Errorf("expected /container/start, got %s", lastCmd)
 	}
 
 	if err := client.StopContainer(context.Background(), "*1"); err != nil {
 		t.Fatalf("stop error: %v", err)
 	}
-	if lastPath != "/container/stop" {
-		t.Errorf("expected /container/stop, got %s", lastPath)
+	if lastCmd != "/container/stop" {
+		t.Errorf("expected /container/stop, got %s", lastCmd)
 	}
 }
 
 func TestRemoveContainer(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/container/remove" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		if words[0] != "/container/remove" {
+			t.Errorf("unexpected command: %s", words[0])
 		}
-		w.WriteHeader(http.StatusOK)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+		return makeDoneReply(), nil
+	}
 
 	if err := client.RemoveContainer(context.Background(), "*1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -296,53 +311,56 @@ func TestRemoveContainer(t *testing.T) {
 }
 
 func TestCreateVeth(t *testing.T) {
-	var body map[string]string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/interface/veth":
+	var addWords []string
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		switch words[0] {
+		case "/interface/veth/print":
 			// ListVeths — return empty list so CreateVeth proceeds to add
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte("[]"))
+			return makeReply(), nil
 		case "/interface/veth/add":
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			w.WriteHeader(http.StatusOK)
+			addWords = words
+			return makeDoneReply(), nil
 		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected command: %v", words)
+			return makeDoneReply(), nil
 		}
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	}
 
 	if err := client.CreateVeth(context.Background(), "veth0", "172.20.0.5/16", "172.20.0.1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if body["name"] != "veth0" {
-		t.Errorf("expected name 'veth0', got %q", body["name"])
+	// Check attribute words contain expected values
+	found := map[string]bool{}
+	for _, w := range addWords {
+		if w == "=name=veth0" || w == "=address=172.20.0.5/16" || w == "=gateway=172.20.0.1" {
+			found[w] = true
+		}
 	}
-	if body["address"] != "172.20.0.5/16" {
-		t.Errorf("expected address '172.20.0.5/16', got %q", body["address"])
+	if !found["=name=veth0"] {
+		t.Error("missing =name=veth0 in add words")
+	}
+	if !found["=address=172.20.0.5/16"] {
+		t.Error("missing =address=172.20.0.5/16 in add words")
 	}
 }
 
 func TestCreateVethIdempotent(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/interface/veth":
-			// Return existing veth with matching config
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]NetworkInterface{
-				{ID: "*1", Name: "veth0", Address: "172.20.0.5/16", Gateway: "172.20.0.1"},
-			})
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		switch words[0] {
+		case "/interface/veth/print":
+			return makeReply(
+				map[string]string{".id": "*1", "name": "veth0", "address": "172.20.0.5/16", "gateway": "172.20.0.1"},
+			), nil
 		case "/interface/veth/add":
 			t.Error("should not call add when veth already exists")
+			return makeDoneReply(), nil
 		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected command: %v", words)
+			return makeDoneReply(), nil
 		}
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	}
 
 	if err := client.CreateVeth(context.Background(), "veth0", "172.20.0.5/16", "172.20.0.1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -350,49 +368,46 @@ func TestCreateVethIdempotent(t *testing.T) {
 }
 
 func TestCreateVethUpdate(t *testing.T) {
-	var setBody map[string]string
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/interface/veth":
-			// Return existing veth with different address
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode([]NetworkInterface{
-				{ID: "*1", Name: "veth0", Address: "172.20.0.99/16", Gateway: "172.20.0.1"},
-			})
+	var setWords []string
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		switch words[0] {
+		case "/interface/veth/print":
+			return makeReply(
+				map[string]string{".id": "*1", "name": "veth0", "address": "172.20.0.99/16", "gateway": "172.20.0.1"},
+			), nil
 		case "/interface/veth/set":
-			_ = json.NewDecoder(r.Body).Decode(&setBody)
-			w.WriteHeader(http.StatusOK)
+			setWords = words
+			return makeDoneReply(), nil
 		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected command: %v", words)
+			return makeDoneReply(), nil
 		}
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+	}
 
 	if err := client.CreateVeth(context.Background(), "veth0", "172.20.0.5/16", "172.20.0.1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if setBody[".id"] != "*1" {
-		t.Errorf("expected .id '*1', got %q", setBody[".id"])
+	// Check set words contain .id and new address
+	found := map[string]bool{}
+	for _, w := range setWords {
+		found[w] = true
 	}
-	if setBody["address"] != "172.20.0.5/16" {
-		t.Errorf("expected address '172.20.0.5/16', got %q", setBody["address"])
+	if !found["=.id=*1"] {
+		t.Error("missing =.id=*1 in set words")
+	}
+	if !found["=address=172.20.0.5/16"] {
+		t.Error("missing =address=172.20.0.5/16 in set words")
 	}
 }
 
 func TestListVeths(t *testing.T) {
-	veths := []NetworkInterface{
-		{ID: "*1", Name: "veth0", Address: "172.20.0.5/16"},
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		return makeReply(
+			map[string]string{".id": "*1", "name": "veth0", "address": "172.20.0.5/16"},
+		), nil
 	}
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(veths)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
 
 	result, err := client.ListVeths(context.Background())
 	if err != nil {
@@ -403,28 +418,180 @@ func TestListVeths(t *testing.T) {
 	}
 }
 
-func TestHTTPErrorHandling(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	})
-
-	client, server := newTestClient(t, handler)
-	defer server.Close()
+func TestErrorHandling(t *testing.T) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		return nil, &rosapi.DeviceError{
+			Sentence: &proto.Sentence{
+				Map: map[string]string{"message": "no such command"},
+			},
+		}
+	}
 
 	_, err := client.ListContainers(context.Background())
 	if err == nil {
-		t.Error("expected error for 500 response")
+		t.Error("expected error for device error response")
 	}
 }
 
 func TestClose(t *testing.T) {
-	client, err := NewClient(config.RouterOSConfig{
-		RESTURL: "https://localhost",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newTestClient(t)
 	if err := client.Close(); err != nil {
 		t.Errorf("unexpected close error: %v", err)
+	}
+}
+
+func TestParseRESTPath(t *testing.T) {
+	tests := []struct {
+		path          string
+		wantBase      string
+		wantQueryLen  int
+		wantFirstWord string
+	}{
+		{"/container", "/container", 0, ""},
+		{"/container/mounts?list=foo", "/container/mounts", 1, "?list=foo"},
+		{"/interface/bridge/port?interface=veth0", "/interface/bridge/port", 1, "?interface=veth0"},
+		{"/file?name=usb1/test", "/file", 1, "?name=usb1/test"},
+	}
+
+	for _, tt := range tests {
+		base, qw := parseRESTPath(tt.path)
+		if base != tt.wantBase {
+			t.Errorf("parseRESTPath(%q): base = %q, want %q", tt.path, base, tt.wantBase)
+		}
+		if len(qw) != tt.wantQueryLen {
+			t.Errorf("parseRESTPath(%q): len(queryWords) = %d, want %d", tt.path, len(qw), tt.wantQueryLen)
+		}
+		if tt.wantQueryLen > 0 && qw[0] != tt.wantFirstWord {
+			t.Errorf("parseRESTPath(%q): queryWords[0] = %q, want %q", tt.path, qw[0], tt.wantFirstWord)
+		}
+	}
+}
+
+func TestBodyToWords(t *testing.T) {
+	words := bodyToWords(map[string]string{
+		"name":    "test",
+		"address": "1.2.3.4",
+	})
+	// Words should be sorted
+	if len(words) != 2 {
+		t.Fatalf("expected 2 words, got %d", len(words))
+	}
+	// After sorting: =address=1.2.3.4, =name=test
+	if words[0] != "=address=1.2.3.4" {
+		t.Errorf("expected =address=1.2.3.4, got %s", words[0])
+	}
+	if words[1] != "=name=test" {
+		t.Errorf("expected =name=test, got %s", words[1])
+	}
+}
+
+func TestDecodeReplySlice(t *testing.T) {
+	reply := makeReply(
+		map[string]string{".id": "*1", "name": "a"},
+		map[string]string{".id": "*2", "name": "b"},
+	)
+
+	var result []struct {
+		ID   string `json:".id"`
+		Name string `json:"name"`
+	}
+	if err := decodeReply(reply, &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(result))
+	}
+	if result[0].ID != "*1" || result[0].Name != "a" {
+		t.Errorf("unexpected first item: %+v", result[0])
+	}
+}
+
+func TestDecodeReplySingle(t *testing.T) {
+	reply := makeReply(
+		map[string]string{"uptime": "3d12h", "version": "7.22.2", "cpu-load": "12"},
+	)
+
+	var result SystemResource
+	if err := decodeReply(reply, &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Uptime != "3d12h" {
+		t.Errorf("expected uptime '3d12h', got %q", result.Uptime)
+	}
+	if result.Version != "7.22.2" {
+		t.Errorf("expected version '7.22.2', got %q", result.Version)
+	}
+}
+
+func TestDecodeReplyEmptySlice(t *testing.T) {
+	reply := makeReply() // no sentences
+
+	var result []Container
+	if err := decodeReply(reply, &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		// JSON unmarshals empty array to nil slice, which is fine
+	}
+}
+
+func TestListMountsByList(t *testing.T) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		// Verify the query filter is passed correctly
+		if words[0] != "/container/mounts/print" {
+			t.Errorf("expected /container/mounts/print, got %s", words[0])
+		}
+		if len(words) < 2 || words[1] != "?list=my-mounts" {
+			t.Errorf("expected ?list=my-mounts filter, got %v", words[1:])
+		}
+		return makeReply(
+			map[string]string{".id": "*1", "list": "my-mounts", "src": "/data/vol", "dst": "/mnt"},
+		), nil
+	}
+
+	mounts, err := client.ListMountsByList(context.Background(), "my-mounts")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if mounts[0].Src != "/data/vol" {
+		t.Errorf("expected src '/data/vol', got %q", mounts[0].Src)
+	}
+}
+
+func TestGetSystemResource(t *testing.T) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		if words[0] != "/system/resource/print" {
+			t.Errorf("expected /system/resource/print, got %s", words[0])
+		}
+		return makeReply(
+			map[string]string{
+				"uptime":            "5d3h",
+				"cpu-count":         "4",
+				"cpu-load":          "15",
+				"free-memory":       "512000000",
+				"total-memory":      "1024000000",
+				"architecture-name": "arm64",
+				"board-name":        "RB5009",
+				"version":           "7.22.2",
+				"platform":          "MikroTik",
+			},
+		), nil
+	}
+
+	res, err := client.GetSystemResource(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Version != "7.22.2" {
+		t.Errorf("expected version '7.22.2', got %q", res.Version)
+	}
+	if res.Architecture != "arm64" {
+		t.Errorf("expected arch 'arm64', got %q", res.Architecture)
 	}
 }

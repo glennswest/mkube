@@ -2605,17 +2605,6 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 	p.ReconcileISCSIDiskTargets(ctx)
 	log.Debugw("RECONCILE: step 10 storage refresh", "ms", time.Since(stepStart).Milliseconds())
 
-	// 11. Monitor RouterOS REST session count.
-	// RouterOS has an unfixed bug where REST sessions never expire.
-	// With keep-alive enabled, sessions are reused on persistent connections,
-	// limiting growth to ~1 new session per connection reset instead of per request.
-	if rosClient := p.getRouterOSClient(); rosClient != nil {
-		if sessions := rosClient.ActiveSessionCount(ctx); sessions > 50 {
-			log.Warnw("RouterOS REST session count high (unfixed MikroTik bug)",
-				"activeSessions", sessions, "maxSessions", 1000)
-		}
-	}
-
 	log.Debugw("RECONCILE: complete", "total_ms", time.Since(reconcileStart).Milliseconds(), "tracked_pods", p.pods.Len())
 	return nil
 }

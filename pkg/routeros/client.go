@@ -5,42 +5,55 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	rosapi "github.com/go-routeros/routeros/v3"
 	"github.com/glennswest/mkube/pkg/config"
 )
 
 // scriptSeq is a monotonically increasing counter for unique script names.
 var scriptSeq atomic.Uint64
 
-// Client wraps both the RouterOS REST API and the RouterOS protocol API.
-// The REST API (available since RouterOS 7.1) is preferred for container
-// management. The protocol API (port 8728) is used for operations not
-// yet exposed via REST.
+// Client wraps the RouterOS native API (TCP port 8728) for container and
+// infrastructure management. A single persistent TCP connection is maintained
+// with automatic reconnect on failure. The native API uses tag-based
+// multiplexing for concurrent requests over one connection, which gives
+// proper session semantics: one TCP connection = one session, cleaned up
+// on TCP close.
 //
-// RouterOS limits concurrent REST sessions (default 20). To stay within
-// this limit, the client caches ListContainers results for a short TTL
-// so that GetContainer calls reuse the cache instead of each making a
-// separate REST request. This eliminates the N+1 query pattern where
-// checking N containers would otherwise require N full list fetches.
+// HTTP is retained solely for UploadFile (the native API has no file
+// transfer facility).
 type Client struct {
-	cfg        config.RouterOSConfig
+	cfg config.RouterOSConfig
+
+	// Native RouterOS API connection (port 8728).
+	conn   *rosapi.Client
+	connMu sync.Mutex
+
+	// exec runs a command on the RouterOS device. Production uses nativeRun
+	// (with automatic reconnect). Tests override this for mocking.
+	exec func(ctx context.Context, words ...string) (*rosapi.Reply, error)
+
+	// httpClient is retained only for UploadFile (native API has no file transfer).
 	httpClient *http.Client
 
 	// containerCache: short-lived cache for ListContainers to avoid
-	// N+1 REST calls (each GetContainer was doing a full list fetch).
+	// repeated /container/print calls during the reconcile loop.
 	containerCacheMu sync.Mutex
 	containerCache   []Container
 	containerCacheAt time.Time
 }
 
-// Container represents a RouterOS container as returned by /rest/container.
+// Container represents a RouterOS container as returned by /container/print.
 type Container struct {
 	ID          string `json:".id"`
 	Name        string `json:"name"`
@@ -101,113 +114,134 @@ type NetworkInterface struct {
 	Bridge  string `json:"bridge"`
 }
 
-// NewClient creates a new RouterOS API client.
+// NewClient creates a new RouterOS API client. The native API connection
+// (port 8728) is established lazily on first command, allowing the client
+// to be created even if RouterOS is temporarily unreachable.
+// File uploads use HTTP via RESTURL.
 func NewClient(cfg config.RouterOSConfig) (*Client, error) {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: cfg.InsecureVerify,
-		},
-		// Keep-alive ENABLED so RouterOS reuses the same session on a
-		// persistent TCP connection (~10 min reuse window). This is critical:
-		// RouterOS has an unfixed bug where each new connection creates an
-		// "active user" session that NEVER auto-expires. With keep-alive,
-		// we get ~1 session per persistent connection instead of 1 per request.
-		// MaxConnsPerHost limits concurrent sessions to a small bounded number.
-		// A periodic janitor uses /user/active/request-logout to clean leaked sessions.
-		MaxIdleConns:        10,
-		MaxIdleConnsPerHost: 4,
-		MaxConnsPerHost:     4,
-		IdleConnTimeout:     5 * time.Minute,
-	}
-
-	return &Client{
+	c := &Client{
 		cfg: cfg,
 		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: cfg.InsecureVerify,
+				},
+			},
+			Timeout: 30 * time.Second,
 		},
-	}, nil
+	}
+	c.exec = c.nativeRun // wire up the production executor
+	// Connection is established lazily on first command via nativeRun.
+	return c, nil
+}
+
+// NewClientForTest creates a Client with a custom command executor for testing.
+// It bypasses the native API connection entirely. External packages that wrap
+// routeros.Client (e.g. network/driver) use this to inject mock responses.
+func NewClientForTest(cfg config.RouterOSConfig, execFn func(ctx context.Context, words ...string) (*rosapi.Reply, error)) *Client {
+	return &Client{
+		cfg:  cfg,
+		exec: execFn,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: cfg.InsecureVerify,
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// dialNative establishes a connection to the RouterOS native API.
+// Authentication (login) is handled internally by the library.
+func (c *Client) dialNative() error {
+	addr := c.cfg.Address
+	if addr == "" {
+		return fmt.Errorf("RouterOS address not configured")
+	}
+
+	var conn *rosapi.Client
+	var err error
+	if c.cfg.UseTLS {
+		tlsCfg := &tls.Config{InsecureSkipVerify: c.cfg.InsecureVerify}
+		conn, err = rosapi.DialTLSTimeout(addr, c.cfg.User, c.cfg.Password, tlsCfg, 10*time.Second)
+	} else {
+		conn, err = rosapi.DialTimeout(addr, c.cfg.User, c.cfg.Password, 10*time.Second)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Enable async mode for concurrent command multiplexing via .tag
+	conn.Async()
+	c.conn = conn
+	return nil
 }
 
 // Close releases resources held by the client.
 func (c *Client) Close() error {
-	c.httpClient.CloseIdleConnections()
+	c.connMu.Lock()
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	c.connMu.Unlock()
+	if c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
 	return nil
 }
 
-// CleanupStaleSessions is a no-op placeholder.
-// RouterOS has an unfixed bug (confirmed in 7.22.2 stable and 7.23 beta2) where
-// REST API sessions accumulate in /user/active and NEVER auto-expire.
-// Neither /user/active/remove, /user/active/request-logout, nor script-based
-// removal works — RouterOS refuses to terminate "active" sessions via any API.
-// The only effective mitigations are:
-//   1. Keep-alive enabled on the HTTP client so RouterOS reuses sessions on
-//      persistent TCP connections (~1 session per connection, not per request)
-//   2. High max-sessions (1000) to provide headroom
-//   3. Periodic router reboot or www service toggle (manual)
-func (c *Client) CleanupStaleSessions(ctx context.Context) {
-	// No-op: RouterOS provides no working API to clear zombie sessions.
-	// Keep-alive + high max-sessions is the mitigation.
-}
+// nativeRun executes a command on the native RouterOS API with automatic
+// reconnect on connection failure. Device errors (RouterOS !trap) are
+// returned without retry since they indicate a command-level problem,
+// not a connection problem.
+func (c *Client) nativeRun(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		c.connMu.Lock()
+		if c.conn == nil {
+			if err := c.dialNative(); err != nil {
+				c.connMu.Unlock()
+				if attempt == 0 {
+					time.Sleep(time.Duration(1<<attempt) * time.Second) // 1s backoff
+					continue
+				}
+				return nil, fmt.Errorf("reconnect failed: %w", err)
+			}
+		}
+		conn := c.conn
+		c.connMu.Unlock()
 
-// EnsureMaxSessions sets the www service max-sessions to at least minSessions.
-// RouterOS defaults to 20, which is too low for mkube + mkube-update.
-func (c *Client) EnsureMaxSessions(ctx context.Context, minSessions int) {
-	type svcEntry struct {
-		ID          string `json:".id"`
-		Name        string `json:"name"`
-		MaxSessions string `json:"max-sessions"`
-	}
-	var services []svcEntry
-	if err := c.restGET(ctx, "/ip/service", &services); err != nil {
-		return // best effort
-	}
-	for _, svc := range services {
-		if svc.Name != "www" {
-			continue
+		reply, err := conn.RunContext(ctx, words...)
+		if err == nil {
+			return reply, nil
 		}
-		var current int
-		fmt.Sscanf(svc.MaxSessions, "%d", &current)
-		if current >= minSessions {
-			return // already high enough
-		}
-		_ = c.restPOST(ctx, fmt.Sprintf("/ip/service/set"), map[string]string{
-			".id":          svc.ID,
-			"max-sessions": fmt.Sprintf("%d", minSessions),
-		}, nil)
-		return
-	}
-}
 
-// ActiveSessionCount returns the number of active REST API user sessions on
-// RouterOS. Used for monitoring session leaks. Returns -1 on error.
-func (c *Client) ActiveSessionCount(ctx context.Context) int {
-	type activeUser struct {
-		ID  string `json:".id"`
-		Via string `json:"via"`
-	}
-	var users []activeUser
-	if err := c.restGET(ctx, "/user/active", &users); err != nil {
-		return -1
-	}
-	count := 0
-	for _, u := range users {
-		if u.Via == "rest-api" {
-			count++
+		// Device errors (RouterOS !trap) are command-level failures — don't retry
+		var devErr *rosapi.DeviceError
+		if errors.As(err, &devErr) {
+			return nil, err
 		}
+
+		// Connection-level error — close and retry
+		c.connMu.Lock()
+		if c.conn == conn { // another goroutine hasn't already reconnected
+			c.conn.Close()
+			c.conn = nil
+		}
+		c.connMu.Unlock()
 	}
-	return count
+	return nil, fmt.Errorf("RouterOS API unreachable after reconnect")
 }
 
 // ─── Container Operations ───────────────────────────────────────────────────
 
 // containerCacheTTL controls how long ListContainers results are cached.
-// RouterOS limits concurrent REST sessions (default 20), so caching avoids
-// the N+1 query pattern where each GetContainer call would list ALL containers.
 const containerCacheTTL = 5 * time.Second
 
 // ListContainers returns all containers on the RouterOS device.
-// Results are cached for containerCacheTTL to reduce REST API pressure.
+// Results are cached for containerCacheTTL to reduce API calls.
 func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 	c.containerCacheMu.Lock()
 	if c.containerCache != nil && time.Since(c.containerCacheAt) < containerCacheTTL {
@@ -242,7 +276,7 @@ func (c *Client) InvalidateContainerCache() {
 }
 
 // GetContainer returns a single container by name.
-// Uses the cached container list to avoid a separate REST call.
+// Uses the cached container list to avoid a separate API call.
 func (c *Client) GetContainer(ctx context.Context, name string) (*Container, error) {
 	containers, err := c.ListContainers(ctx)
 	if err != nil {
@@ -258,7 +292,7 @@ func (c *Client) GetContainer(ctx context.Context, name string) (*Container, err
 
 // CreateContainer creates a new container from a spec.
 // Uses a temporary RouterOS script to run the /container/add CLI command
-// asynchronously, avoiding REST session timeouts during tarball extraction.
+// asynchronously, avoiding blocking during tarball extraction.
 func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error {
 	defer c.InvalidateContainerCache()
 	cmd := buildContainerAddCLI(spec)
@@ -447,7 +481,7 @@ func (c *Client) ListMounts(ctx context.Context) ([]MountEntry, error) {
 }
 
 // ListMountsByList returns only mount entries matching the given list name.
-// Uses RouterOS REST query filtering to avoid fetching all mounts.
+// Uses RouterOS query filtering to avoid fetching all mounts.
 func (c *Client) ListMountsByList(ctx context.Context, listName string) ([]MountEntry, error) {
 	var mounts []MountEntry
 	err := c.restGET(ctx, "/container/mounts?list="+listName, &mounts)
@@ -719,10 +753,9 @@ func (c *Client) ListVeths(ctx context.Context) ([]NetworkInterface, error) {
 // ─── File Operations ────────────────────────────────────────────────────────
 
 // UploadFile uploads a tarball or file to the RouterOS filesystem.
+// This is the one operation that still uses HTTP — the native API has
+// no file transfer facility.
 func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Reader) error {
-	// RouterOS file upload via REST API uses /rest/file
-	// For large tarballs, we use the FTP/SFTP approach or the REST upload endpoint.
-	// This is a simplified version using REST.
 	body, err := io.ReadAll(data)
 	if err != nil {
 		return fmt.Errorf("reading file data: %w", err)
@@ -753,17 +786,25 @@ func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Read
 // ListFiles lists files at a given path on RouterOS.
 func (c *Client) ListFiles(ctx context.Context, path string) ([]map[string]interface{}, error) {
 	var files []map[string]interface{}
-	err := c.restPOST(ctx, "/file/print", map[string]string{
-		".query": fmt.Sprintf("name=%s", path),
-	}, &files)
+	err := c.restGET(ctx, "/file?name="+path, &files)
 	return files, err
 }
 
 // RemoveFile deletes a file from the RouterOS filesystem.
+// Looks up the file by name to get its .id, then removes by .id.
 func (c *Client) RemoveFile(ctx context.Context, path string) error {
-	return c.restPOST(ctx, "/file/remove", map[string]string{
-		"name": path,
-	}, nil)
+	files, err := c.ListFiles(ctx, path)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil // already gone
+	}
+	id, _ := files[0][".id"].(string)
+	if id == "" {
+		return fmt.Errorf("file %q found but missing .id", path)
+	}
+	return c.restPOST(ctx, "/file/remove", map[string]string{".id": id}, nil)
 }
 
 // RemoveDirectory removes a directory and all its contents from the RouterOS
@@ -909,12 +950,12 @@ func (c *Client) DirectoryDiskUsage(ctx context.Context, path string) (int64, er
 }
 
 // FileUsageIndex is a pre-fetched index of file sizes from RouterOS /file.
-// Use it to compute directory disk usage without repeated REST calls.
+// Use it to compute directory disk usage without repeated API calls.
 type FileUsageIndex struct {
-	files []fileEntry
+	files []fileUsageEntry
 }
 
-type fileEntry struct {
+type fileUsageEntry struct {
 	name string
 	size int64
 }
@@ -925,7 +966,7 @@ func (c *Client) FetchFileUsageIndex(ctx context.Context) (*FileUsageIndex, erro
 	if err := c.restGET(ctx, "/file", &allFiles); err != nil {
 		return nil, fmt.Errorf("fetching file index: %w", err)
 	}
-	idx := &FileUsageIndex{files: make([]fileEntry, 0, len(allFiles))}
+	idx := &FileUsageIndex{files: make([]fileUsageEntry, 0, len(allFiles))}
 	for _, f := range allFiles {
 		name, _ := f["name"].(string)
 		if name == "" {
@@ -938,7 +979,7 @@ func (c *Client) FetchFileUsageIndex(ctx context.Context) (*FileUsageIndex, erro
 		case string:
 			fmt.Sscanf(v, "%d", &sz)
 		}
-		idx.files = append(idx.files, fileEntry{name: name, size: sz})
+		idx.files = append(idx.files, fileUsageEntry{name: name, size: sz})
 	}
 	return idx, nil
 }
@@ -1124,10 +1165,21 @@ func (c *Client) CreateEoIPTunnel(ctx context.Context, name, localIP, remoteIP s
 }
 
 // DeleteEoIPTunnel removes an EoIP tunnel interface by name.
+// Looks up the tunnel's .id first, since the native API requires .id for removal.
 func (c *Client) DeleteEoIPTunnel(ctx context.Context, name string) error {
-	return c.restPOST(ctx, "/interface/eoip/remove", map[string]string{
-		"name": name,
-	}, nil)
+	var tunnels []struct {
+		ID   string `json:".id"`
+		Name string `json:"name"`
+	}
+	if err := c.restGET(ctx, "/interface/eoip", &tunnels); err != nil {
+		return fmt.Errorf("listing EoIP tunnels: %w", err)
+	}
+	for _, t := range tunnels {
+		if t.Name == name {
+			return c.restPOST(ctx, "/interface/eoip/remove", map[string]string{".id": t.ID}, nil)
+		}
+	}
+	return nil // already gone
 }
 
 // ─── Bridge VLAN Operations ──────────────────────────────────────────────────
@@ -1401,7 +1453,7 @@ func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
 }
 
 // FileDiskIndex is a pre-fetched index of file-backed disks keyed by file path.
-// Used for batch PVC capacity/usage enrichment without repeated REST calls.
+// Used for batch PVC capacity/usage enrichment without repeated API calls.
 type FileDiskIndex struct {
 	byPath map[string]*FileDisk
 	byID   map[string]*FileDisk
@@ -1478,61 +1530,138 @@ func (c *Client) ListPhysicalDisks(ctx context.Context) ([]PhysicalDisk, error) 
 	return result, nil
 }
 
-// ─── REST Helpers ───────────────────────────────────────────────────────────
+// ─── Native API Transport ───────────────────────────────────────────────────
+//
+// restGET and restPOST implement the internal transport layer using the
+// RouterOS native API (port 8728). Method names are retained from the
+// original REST implementation for minimal diff in method bodies.
+// GET operations translate to /print commands; POST operations are direct
+// command invocations (/add, /remove, /set, /start, /stop, /run).
 
+// restGET runs a /print query on the native API.
+// path may include query parameters: "/container/mounts?list=X" becomes
+// "/container/mounts/print ?list=X" in native API words.
 func (c *Client) restGET(ctx context.Context, path string, result interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.cfg.RESTURL+path, nil)
+	basePath, queryWords := parseRESTPath(path)
+	words := append([]string{basePath + "/print"}, queryWords...)
+
+	reply, err := c.exec(ctx, words...)
 	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("REST GET %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("REST GET %s returned %d: %s", path, resp.StatusCode, string(b))
+		return fmt.Errorf("GET %s: %w", path, err)
 	}
 
-	return json.NewDecoder(resp.Body).Decode(result)
+	return decodeReply(reply, result)
 }
 
+// restPOST runs an action command on the native API.
+// path is the command path (e.g. "/container/add", "/container/remove").
+// body is converted to =key=value attribute words.
 func (c *Client) restPOST(ctx context.Context, path string, body interface{}, result interface{}) error {
-	var bodyReader io.Reader
+	words := []string{path}
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		bodyReader = bytes.NewReader(data)
+		words = append(words, bodyToWords(body)...)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.cfg.RESTURL+path, bodyReader)
+	reply, err := c.exec(ctx, words...)
 	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(c.cfg.User, c.cfg.Password)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("REST POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("REST POST %s returned %d: %s", path, resp.StatusCode, string(b))
+		return fmt.Errorf("POST %s: %w", path, err)
 	}
 
 	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
+		// For /add commands, RouterOS returns the new item ID in !done
+		if reply.Done != nil && len(reply.Done.Map) > 0 {
+			data, err := json.Marshal(reply.Done.Map)
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(data, result)
+		}
+		return decodeReply(reply, result)
 	}
 	return nil
+}
+
+// parseRESTPath splits a path with optional query params into a base path
+// and native API query words.
+// "/container/mounts?list=X" → ("/container/mounts", ["?list=X"])
+// "/container" → ("/container", [])
+func parseRESTPath(path string) (string, []string) {
+	idx := strings.IndexByte(path, '?')
+	if idx < 0 {
+		return path, nil
+	}
+	basePath := path[:idx]
+	qStr := path[idx+1:]
+	var queryWords []string
+	for _, kv := range strings.Split(qStr, "&") {
+		if kv != "" {
+			queryWords = append(queryWords, "?"+kv)
+		}
+	}
+	return basePath, queryWords
+}
+
+// bodyToWords converts a request body (map[string]string or map[string]interface{})
+// to RouterOS native API attribute words (=key=value).
+func bodyToWords(body interface{}) []string {
+	var words []string
+	switch b := body.(type) {
+	case map[string]string:
+		for k, v := range b {
+			words = append(words, "="+k+"="+v)
+		}
+	case map[string]interface{}:
+		for k, v := range b {
+			words = append(words, "="+k+"="+fmt.Sprint(v))
+		}
+	default:
+		// Fallback: JSON round-trip for struct types
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil
+		}
+		for k, v := range m {
+			words = append(words, "="+k+"="+fmt.Sprint(v))
+		}
+	}
+	sort.Strings(words)
+	return words
+}
+
+// decodeReply converts native API reply sentences into Go values.
+// For slice targets, all !re sentences are decoded.
+// For single-value targets (struct, map), only the first sentence is used.
+func decodeReply(reply *rosapi.Reply, result interface{}) error {
+	rv := reflect.ValueOf(result)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("result must be a non-nil pointer")
+	}
+
+	switch rv.Elem().Kind() {
+	case reflect.Slice:
+		// Slice target — decode all sentences
+		items := make([]map[string]string, len(reply.Re))
+		for i, re := range reply.Re {
+			items[i] = re.Map
+		}
+		data, err := json.Marshal(items)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(data, result)
+	default:
+		// Single item — use first sentence
+		if len(reply.Re) == 0 {
+			return fmt.Errorf("no data returned")
+		}
+		data, err := json.Marshal(reply.Re[0].Map)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(data, result)
+	}
 }

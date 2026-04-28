@@ -2,11 +2,11 @@ package driver
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 
+	rosapi "github.com/go-routeros/routeros/v3"
+	"github.com/go-routeros/routeros/v3/proto"
 	"go.uber.org/zap"
 
 	"github.com/glennswest/mkube/pkg/config"
@@ -14,120 +14,84 @@ import (
 	"github.com/glennswest/mkube/pkg/routeros"
 )
 
-// mockRouterOS creates an httptest.Server that simulates RouterOS REST API
-// endpoints used by the driver.
-func mockRouterOS(t *testing.T) *httptest.Server {
+// mockExec creates an exec function that handles the standard RouterOS
+// commands used by the network driver.
+func mockExec(t *testing.T) func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
 	t.Helper()
-
-	mux := http.NewServeMux()
-
-	// GET /rest/interface/bridge — list bridges
-	mux.HandleFunc("/rest/interface/bridge", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+	return func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		cmd := words[0]
+		switch cmd {
+		case "/interface/bridge/print":
+			return &rosapi.Reply{
+				Re: []*proto.Sentence{
+					{Word: "!re", Map: map[string]string{".id": "*1", "name": "bridge"}},
+					{Word: "!re", Map: map[string]string{".id": "*2", "name": "containers"}},
+				},
+				Done: &proto.Sentence{Word: "!done"},
+			}, nil
+		case "/interface/veth/print":
+			return &rosapi.Reply{
+				Re: []*proto.Sentence{
+					{Word: "!re", Map: map[string]string{".id": "*10", "name": "veth-app1", "address": "192.168.200.2/24", "gateway": "192.168.200.1"}},
+				},
+				Done: &proto.Sentence{Word: "!done"},
+			}, nil
+		case "/interface/veth/add":
+			// Verify name is present
+			hasName := false
+			for _, w := range words[1:] {
+				if strings.HasPrefix(w, "=name=") {
+					hasName = true
+				}
+			}
+			if !hasName {
+				return nil, &rosapi.DeviceError{Sentence: &proto.Sentence{Map: map[string]string{"message": "missing name"}}}
+			}
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/veth/remove":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/bridge/port/print":
+			return &rosapi.Reply{
+				Re:   []*proto.Sentence{},
+				Done: &proto.Sentence{Word: "!done"},
+			}, nil
+		case "/interface/bridge/port/add":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/bridge/add":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/bridge/remove":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/eoip/add":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		case "/interface/eoip/print":
+			return &rosapi.Reply{
+				Re:   []*proto.Sentence{},
+				Done: &proto.Sentence{Word: "!done"},
+			}, nil
+		case "/interface/eoip/remove":
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
+		default:
+			t.Errorf("unexpected command: %v", words)
+			return &rosapi.Reply{Done: &proto.Sentence{Word: "!done"}}, nil
 		}
-		_ = json.NewEncoder(w).Encode([]map[string]string{
-			{".id": "*1", "name": "bridge"},
-			{".id": "*2", "name": "containers"},
-		})
-	})
-
-	// GET /rest/interface/veth — list veths
-	mux.HandleFunc("/rest/interface/veth", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		_ = json.NewEncoder(w).Encode([]map[string]string{
-			{".id": "*10", "name": "veth-app1", "address": "192.168.200.2/24", "gateway": "192.168.200.1"},
-		})
-	})
-
-	// POST /rest/interface/veth/add — create veth
-	mux.HandleFunc("/rest/interface/veth/add", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var body map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body["name"] == "" {
-			http.Error(w, `{"error":"missing name"}`, http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	// POST /rest/interface/veth/remove — remove veth
-	mux.HandleFunc("/rest/interface/veth/remove", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-
-	// GET /rest/interface/bridge/port — list bridge ports
-	mux.HandleFunc("/rest/interface/bridge/port", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		_ = json.NewEncoder(w).Encode([]map[string]string{})
-	})
-
-	// POST /rest/interface/bridge/port/add — add bridge port
-	mux.HandleFunc("/rest/interface/bridge/port/add", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	// POST /rest/interface/bridge/add — create bridge
-	mux.HandleFunc("/rest/interface/bridge/add", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-	})
-
-	// POST /rest/interface/bridge/remove — remove bridge
-	mux.HandleFunc("/rest/interface/bridge/remove", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-
-	return httptest.NewServer(mux)
+	}
 }
 
-func newTestDriver(t *testing.T, serverURL string) *RouterOS {
+func newTestDriver(t *testing.T) *RouterOS {
 	t.Helper()
-
-	client, err := routeros.NewClient(config.RouterOSConfig{
-		RESTURL:        serverURL + "/rest",
-		User:           "admin",
-		Password:       "test",
-		InsecureVerify: true,
-	})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
+	cfg := config.RouterOSConfig{
+		Address:  "192.168.200.1:8728",
+		User:     "admin",
+		Password: "test",
+		RESTURL:  "https://192.168.200.1/rest",
 	}
-
+	client := routeros.NewClientForTest(cfg, mockExec(t))
 	log := zap.NewNop().Sugar()
 	return NewRouterOS(client, "test-node", log)
 }
 
 func TestListBridges(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
+	d := newTestDriver(t)
 
 	bridges, err := d.ListBridges(context.Background())
 	if err != nil {
@@ -145,9 +109,7 @@ func TestListBridges(t *testing.T) {
 }
 
 func TestListPorts(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
+	d := newTestDriver(t)
 
 	ports, err := d.ListPorts(context.Background())
 	if err != nil {
@@ -165,10 +127,7 @@ func TestListPorts(t *testing.T) {
 }
 
 func TestCreateAndDeletePort(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
-
+	d := newTestDriver(t)
 	ctx := context.Background()
 
 	if err := d.CreatePort(ctx, "veth-test", "10.0.0.2/24", "10.0.0.1"); err != nil {
@@ -181,9 +140,7 @@ func TestCreateAndDeletePort(t *testing.T) {
 }
 
 func TestAttachPort(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
+	d := newTestDriver(t)
 
 	if err := d.AttachPort(context.Background(), "containers", "veth-test"); err != nil {
 		t.Fatalf("AttachPort: %v", err)
@@ -191,9 +148,7 @@ func TestAttachPort(t *testing.T) {
 }
 
 func TestDetachPortNoOp(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
+	d := newTestDriver(t)
 
 	// DetachPort is a no-op on RouterOS
 	if err := d.DetachPort(context.Background(), "containers", "veth-test"); err != nil {
@@ -202,10 +157,7 @@ func TestDetachPortNoOp(t *testing.T) {
 }
 
 func TestCreateAndDeleteBridge(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
-
+	d := newTestDriver(t)
 	ctx := context.Background()
 
 	if err := d.CreateBridge(ctx, "bridge-g12", network.BridgeOpts{}); err != nil {
@@ -218,10 +170,7 @@ func TestCreateAndDeleteBridge(t *testing.T) {
 }
 
 func TestUnsupportedOperations(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
-
+	d := newTestDriver(t)
 	ctx := context.Background()
 
 	// CreateTunnel with unsupported type should fail
@@ -231,9 +180,7 @@ func TestUnsupportedOperations(t *testing.T) {
 }
 
 func TestNodeNameAndCapabilities(t *testing.T) {
-	srv := mockRouterOS(t)
-	defer srv.Close()
-	d := newTestDriver(t, srv.URL)
+	d := newTestDriver(t)
 
 	if d.NodeName() != "test-node" {
 		t.Errorf("expected node name 'test-node', got %q", d.NodeName())
