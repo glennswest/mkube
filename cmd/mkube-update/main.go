@@ -23,15 +23,16 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
+	nurl "net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/glennswest/mkube/pkg/config"
+	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -44,7 +45,8 @@ var version = "dev"
 // Config is the top-level configuration loaded from YAML.
 type Config struct {
 	RegistryURL      string          `yaml:"registryURL"`
-	RouterOSURL      string          `yaml:"routerosURL"`
+	RouterOSURL      string          `yaml:"routerosURL"`      // legacy REST URL — host is reused for native API when routerosAddress is empty
+	RouterOSAddress  string          `yaml:"routerosAddress"`  // native API endpoint, e.g. "192.168.200.1:8728"
 	RouterOSUser     string          `yaml:"routerosUser"`
 	RouterOSPassword string          `yaml:"routerosPassword"`
 	MkubeAPI         string          `yaml:"mkubeAPI"`
@@ -143,6 +145,25 @@ func main() {
 		cfg.TarballROSPath = "raid1/volumes/mkube-update-updater/data/staging"
 	}
 
+	rosAddr := cfg.RouterOSAddress
+	if rosAddr == "" {
+		rosAddr = deriveNativeAddress(cfg.RouterOSURL)
+	}
+	if rosAddr == "" {
+		log.Fatalw("RouterOS address not configured", "routerosURL", cfg.RouterOSURL, "routerosAddress", cfg.RouterOSAddress)
+	}
+
+	rosClient, err := routeros.NewClient(config.RouterOSConfig{
+		Address:        rosAddr,
+		User:           cfg.RouterOSUser,
+		Password:       cfg.RouterOSPassword,
+		InsecureVerify: true,
+	})
+	if err != nil {
+		log.Fatalw("creating RouterOS client", "address", rosAddr, "error", err)
+	}
+	log.Infow("RouterOS native API client ready", "address", rosAddr)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -151,19 +172,10 @@ func main() {
 		log:      log,
 		digests:  make(map[string]string),
 		kickPoll: make(chan struct{}, 1),
+		ros:      rosClient,
 		http: &http.Client{
 			Transport: loadRegistryTransport(log),
 			Timeout:   30 * time.Second,
-		},
-		rosHTTP: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-				MaxIdleConns:        4,
-				MaxIdleConnsPerHost: 2,
-				MaxConnsPerHost:     2,
-				IdleConnTimeout:     5 * time.Minute,
-			},
-			Timeout: 30 * time.Second,
 		},
 	}
 
@@ -205,8 +217,8 @@ type Updater struct {
 	cfg      Config
 	log      *zap.SugaredLogger
 	digests  map[string]string // "repo:tag" → last seen digest
-	http     *http.Client      // for registry calls
-	rosHTTP  *http.Client      // for RouterOS REST calls (keep-alive enabled to reuse sessions)
+	http     *http.Client      // for registry / mkube API calls
+	ros      *routeros.Client  // native RouterOS API (port 8728), single TCP connection
 	kickPoll chan struct{}     // SSE-triggered immediate poll
 }
 
@@ -348,7 +360,7 @@ func (u *Updater) checkContainerHealth(ctx context.Context) {
 }
 
 func (u *Updater) checkAndRestart(ctx context.Context, name string) {
-	ct, err := u.rosGetContainer(ctx, name)
+	ct, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		// Container doesn't exist — if it's the bootstrap container (mkube),
 		// re-bootstrap it instead of silently skipping.
@@ -361,11 +373,11 @@ func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 		return
 	}
 
-	if ct.isRunning() || !ct.isStopped() {
+	if ct.IsRunning() || !ct.IsStopped() {
 		return
 	}
 
-	comment := ct.comment
+	comment := ct.Comment
 	if comment == "" {
 		comment = "no error detail"
 	}
@@ -373,7 +385,7 @@ func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 	u.log.Warnw("watchdog: container stopped, restarting immediately",
 		"container", name, "comment", comment)
 
-	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
+	if err := u.ros.StartContainer(ctx, ct.ID); err != nil {
 		u.log.Errorw("watchdog: restart failed", "container", name, "error", err)
 		return
 	}
@@ -395,7 +407,7 @@ func (u *Updater) watchMkubeSocket(ctx context.Context) {
 		return
 	}
 
-	parsed, err := url.Parse(u.cfg.MkubeAPI)
+	parsed, err := nurl.Parse(u.cfg.MkubeAPI)
 	if err != nil {
 		u.log.Warnw("watchMkubeSocket: bad mkubeAPI URL", "error", err)
 		return
@@ -778,7 +790,7 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	// Tarball cleanup is handled after health verification — not deferred
 
 	// Step 2: Get current container config
-	ct, err := u.rosGetContainer(ctx, name)
+	ct, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		// Container missing — if it's the bootstrap container, recreate via bootstrap
 		if u.cfg.Bootstrap.Enabled && name == u.cfg.Bootstrap.Container.Name {
@@ -789,9 +801,9 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	}
 
 	// Step 3: Stop if running
-	if ct.isRunning() {
+	if ct.IsRunning() {
 		log.Info("stopping container")
-		if err := u.rosPost(ctx, "/container/stop", map[string]string{".id": ct.ID}); err != nil {
+		if err := u.ros.StopContainer(ctx, ct.ID); err != nil {
 			return fmt.Errorf("stopping: %w", err)
 		}
 		if err := u.waitForStopped(ctx, name); err != nil {
@@ -801,51 +813,39 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 
 	// Step 4: Remove old container
 	log.Info("removing container")
-	if err := u.rosPost(ctx, "/container/remove", map[string]string{".id": ct.ID}); err != nil {
+	if err := u.ros.RemoveContainer(ctx, ct.ID); err != nil {
 		return fmt.Errorf("removing: %w", err)
 	}
 	time.Sleep(2 * time.Second)
 
 	// Step 5: Remove old root-dir to force fresh extraction.
-	// MUST use recursive removal — simple /file/remove fails silently on
-	// non-empty directories. If root-dir survives, RouterOS skips extraction
-	// and reuses the old binary.
-	if ct.rootDir != "" {
-		log.Infow("cleaning root-dir for fresh extraction", "rootDir", ct.rootDir)
-		u.rosRemoveDirectory(ctx, ct.rootDir)
+	// If root-dir survives, RouterOS skips extraction and reuses the old binary.
+	if ct.RootDir != "" {
+		log.Infow("cleaning root-dir for fresh extraction", "rootDir", ct.RootDir)
+		if err := u.ros.RemoveDirectory(ctx, ct.RootDir); err != nil {
+			log.Warnw("failed to remove root-dir, continuing", "rootDir", ct.RootDir, "error", err)
+		}
 		time.Sleep(time.Second)
 	}
 
 	// Step 6: Create new container from pre-staged tarball
-	spec := map[string]string{
-		"name":          name,
-		"file":          rosPath,
-		"interface":     ct.iface,
-		"root-dir":      ct.rootDir,
-		"logging":       ct.logging,
-		"start-on-boot": ct.startOnBoot,
-	}
-	if ct.mountLists != "" {
-		spec["mountlists"] = ct.mountLists
-	}
-	if ct.cmd != "" {
-		spec["cmd"] = ct.cmd
-	}
-	if ct.entrypoint != "" {
-		spec["entrypoint"] = ct.entrypoint
-	}
-	if ct.hostname != "" {
-		spec["hostname"] = ct.hostname
-	}
-	if ct.dns != "" {
-		spec["dns"] = ct.dns
-	}
-	if ct.workDir != "" {
-		spec["workdir"] = ct.workDir
+	spec := routeros.ContainerSpec{
+		Name:        name,
+		File:        rosPath,
+		Interface:   ct.Interface,
+		RootDir:     ct.RootDir,
+		MountLists:  ct.MountLists,
+		Cmd:         ct.Cmd,
+		Entrypoint:  ct.Entrypoint,
+		WorkDir:     ct.WorkDir,
+		Hostname:    ct.Hostname,
+		DNS:         ct.DNS,
+		Logging:     ct.Logging,
+		StartOnBoot: ct.StartOnBoot,
 	}
 
 	log.Infow("creating container from tarball", "rosPath", rosPath)
-	if err := u.rosCreateContainer(ctx, spec); err != nil {
+	if err := u.ros.CreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("creating: %w", err)
 	}
 
@@ -854,13 +854,13 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 		return err
 	}
 
-	newCt, err := u.rosGetContainer(ctx, name)
+	newCt, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		return fmt.Errorf("getting new container: %w", err)
 	}
 
 	log.Info("starting container")
-	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": newCt.ID}); err != nil {
+	if err := u.ros.StartContainer(ctx, newCt.ID); err != nil {
 		return fmt.Errorf("starting: %w", err)
 	}
 
@@ -931,14 +931,14 @@ func (u *Updater) verifyHealth(ctx context.Context, name string, duration time.D
 		case <-time.After(2 * time.Second):
 		}
 
-		ct, err := u.rosGetContainer(ctx, name)
+		ct, err := u.ros.GetContainer(ctx, name)
 		if err != nil {
 			return fmt.Errorf("health check: container disappeared: %w", err)
 		}
-		if ct.isStopped() {
+		if ct.IsStopped() {
 			return fmt.Errorf("health check: container stopped (crashed) during verification")
 		}
-		if !ct.isRunning() {
+		if !ct.IsRunning() {
 			return fmt.Errorf("health check: container in unexpected state")
 		}
 	}
@@ -949,11 +949,11 @@ func (u *Updater) verifyHealth(ctx context.Context, name string, duration time.D
 
 // restartContainer starts a stopped container and waits for it to be running.
 func (u *Updater) restartContainer(ctx context.Context, name string) error {
-	ct, err := u.rosGetContainer(ctx, name)
+	ct, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		return fmt.Errorf("getting container for restart: %w", err)
 	}
-	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
+	if err := u.ros.StartContainer(ctx, ct.ID); err != nil {
 		return fmt.Errorf("starting container: %w", err)
 	}
 	return u.waitForRunning(ctx, name)
@@ -962,58 +962,46 @@ func (u *Updater) restartContainer(ctx context.Context, name string) error {
 // rollbackContainer stops the current (failed) container, removes it, cleans
 // the root-dir, and recreates from the previous tarball. Verifies health after
 // rollback with up to 3 restart retries if the initial health check fails.
-func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *rosContainerFull, prevROSPath string, healthDuration time.Duration) error {
+func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *routeros.Container, prevROSPath string, healthDuration time.Duration) error {
 	log := u.log.With("container", name)
 
 	// Stop and remove the failing container
-	ct, err := u.rosGetContainer(ctx, name)
+	ct, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		log.Warnw("rollback: could not find container to stop", "error", err)
 	} else {
-		if ct.isRunning() {
-			_ = u.rosPost(ctx, "/container/stop", map[string]string{".id": ct.ID})
+		if ct.IsRunning() {
+			_ = u.ros.StopContainer(ctx, ct.ID)
 			_ = u.waitForStopped(ctx, name)
 		}
-		_ = u.rosPost(ctx, "/container/remove", map[string]string{".id": ct.ID})
+		_ = u.ros.RemoveContainer(ctx, ct.ID)
 		time.Sleep(2 * time.Second)
 	}
 
 	// Clean root-dir
-	if origSpec.rootDir != "" {
-		u.rosRemoveDirectory(ctx, origSpec.rootDir)
+	if origSpec.RootDir != "" {
+		_ = u.ros.RemoveDirectory(ctx, origSpec.RootDir)
 		time.Sleep(time.Second)
 	}
 
 	// Create from previous tarball
-	spec := map[string]string{
-		"name":          name,
-		"file":          prevROSPath,
-		"interface":     origSpec.iface,
-		"root-dir":      origSpec.rootDir,
-		"logging":       origSpec.logging,
-		"start-on-boot": origSpec.startOnBoot,
-	}
-	if origSpec.mountLists != "" {
-		spec["mountlists"] = origSpec.mountLists
-	}
-	if origSpec.cmd != "" {
-		spec["cmd"] = origSpec.cmd
-	}
-	if origSpec.entrypoint != "" {
-		spec["entrypoint"] = origSpec.entrypoint
-	}
-	if origSpec.hostname != "" {
-		spec["hostname"] = origSpec.hostname
-	}
-	if origSpec.dns != "" {
-		spec["dns"] = origSpec.dns
-	}
-	if origSpec.workDir != "" {
-		spec["workdir"] = origSpec.workDir
+	spec := routeros.ContainerSpec{
+		Name:        name,
+		File:        prevROSPath,
+		Interface:   origSpec.Interface,
+		RootDir:     origSpec.RootDir,
+		MountLists:  origSpec.MountLists,
+		Cmd:         origSpec.Cmd,
+		Entrypoint:  origSpec.Entrypoint,
+		WorkDir:     origSpec.WorkDir,
+		Hostname:    origSpec.Hostname,
+		DNS:         origSpec.DNS,
+		Logging:     origSpec.Logging,
+		StartOnBoot: origSpec.StartOnBoot,
 	}
 
 	log.Infow("rollback: creating container from previous tarball", "rosPath", prevROSPath)
-	if err := u.rosCreateContainer(ctx, spec); err != nil {
+	if err := u.ros.CreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("rollback create failed: %w", err)
 	}
 
@@ -1021,13 +1009,13 @@ func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *
 		return fmt.Errorf("rollback extraction failed: %w", err)
 	}
 
-	newCt, err := u.rosGetContainer(ctx, name)
+	newCt, err := u.ros.GetContainer(ctx, name)
 	if err != nil {
 		return fmt.Errorf("rollback: getting container: %w", err)
 	}
 
 	log.Info("rollback: starting container")
-	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": newCt.ID}); err != nil {
+	if err := u.ros.StartContainer(ctx, newCt.ID); err != nil {
 		return fmt.Errorf("rollback start failed: %w", err)
 	}
 
@@ -1105,12 +1093,12 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 	bc := u.cfg.Bootstrap
 	log := u.log.With("bootstrap", bc.Container.Name)
 
-	// Check if container already exists — retry a few times since the REST API
+	// Check if container already exists — retry a few times since RouterOS
 	// may not be reachable immediately after container start.
-	var ct *rosContainerFull
+	var ct *routeros.Container
 	for attempt := 0; attempt < 5; attempt++ {
 		var err error
-		ct, err = u.rosGetContainer(ctx, bc.Container.Name)
+		ct, err = u.ros.GetContainer(ctx, bc.Container.Name)
 		if err == nil {
 			break
 		}
@@ -1119,13 +1107,13 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 	}
 	if ct != nil {
 		// Container exists
-		if ct.isRunning() {
+		if ct.IsRunning() {
 			log.Info("mkube already running, skipping bootstrap")
 			return nil
 		}
 		// Exists but stopped — start it
 		log.Info("mkube exists but stopped, starting")
-		if err := u.rosPost(ctx, "/container/start", map[string]string{".id": ct.ID}); err != nil {
+		if err := u.ros.StartContainer(ctx, ct.ID); err != nil {
 			return fmt.Errorf("starting existing mkube: %w", err)
 		}
 		if err := u.waitForRunning(ctx, bc.Container.Name); err != nil {
@@ -1152,22 +1140,20 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 	}
 
 	// Create container from tarball
-	spec := map[string]string{
-		"name":          bc.Container.Name,
-		"file":          rosPath,
-		"interface":     bc.Container.Interface,
-		"root-dir":      bc.Container.RootDir,
-		"hostname":      bc.Container.Hostname,
-		"dns":           bc.Container.DNS,
-		"logging":       bc.Container.Logging,
-		"start-on-boot": bc.Container.StartOnBoot,
-	}
-	if bc.Container.MountLists != "" {
-		spec["mountlists"] = bc.Container.MountLists
+	spec := routeros.ContainerSpec{
+		Name:        bc.Container.Name,
+		File:        rosPath,
+		Interface:   bc.Container.Interface,
+		RootDir:     bc.Container.RootDir,
+		MountLists:  bc.Container.MountLists,
+		Hostname:    bc.Container.Hostname,
+		DNS:         bc.Container.DNS,
+		Logging:     bc.Container.Logging,
+		StartOnBoot: bc.Container.StartOnBoot,
 	}
 
-	log.Infow("creating mkube container from tarball", "spec", spec)
-	if err := u.rosCreateContainer(ctx, spec); err != nil {
+	log.Infow("creating mkube container from tarball", "name", spec.Name, "rosPath", rosPath)
+	if err := u.ros.CreateContainer(ctx, spec); err != nil {
 		return fmt.Errorf("creating container: %w", err)
 	}
 
@@ -1178,13 +1164,13 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 	}
 
 	// Start the container
-	newCt, err := u.rosGetContainer(ctx, bc.Container.Name)
+	newCt, err := u.ros.GetContainer(ctx, bc.Container.Name)
 	if err != nil {
 		return fmt.Errorf("getting new container: %w", err)
 	}
 
 	log.Info("starting mkube container")
-	if err := u.rosPost(ctx, "/container/start", map[string]string{".id": newCt.ID}); err != nil {
+	if err := u.ros.StartContainer(ctx, newCt.ID); err != nil {
 		return fmt.Errorf("starting container: %w", err)
 	}
 
@@ -1206,301 +1192,18 @@ func (u *Updater) waitForExtraction(ctx context.Context, name string) error {
 		default:
 		}
 		time.Sleep(time.Second)
-		ct, err := u.rosGetContainer(ctx, name)
+		ct, err := u.ros.GetContainer(ctx, name)
 		if err != nil {
 			continue
 		}
-		if ct.isStopped() {
+		if ct.IsStopped() {
 			return nil
 		}
-		// Check for extraction failure
-		if ct.status == "error" {
-			return fmt.Errorf("container %s extraction failed: %s", name, ct.comment)
-		}
+		// Extraction failure surfaces in Comment (e.g. "could not acquire interface").
+		// Container.Stopped will eventually be true even on failure; we rely on that
+		// path plus the timeout. The Comment is logged by checkAndRestart on watchdog.
 	}
 	return fmt.Errorf("container %s not extracted within 120s", name)
-}
-
-// ─── RouterOS REST helpers ──────────────────────────────────────────────────
-
-// rosContainerFull has all fields we need to preserve during replacement.
-type rosContainerFull struct {
-	ID          string `json:".id"`
-	Name        string `json:"name"`
-	Tag         string `json:"tag"`
-	Running     string `json:"running,omitempty"`
-	Stopped     string `json:"stopped,omitempty"`
-	iface       string
-	rootDir     string
-	mountLists  string
-	cmd         string
-	entrypoint  string
-	workDir     string
-	hostname    string
-	dns         string
-	logging     string
-	startOnBoot string
-	status      string
-	comment     string
-}
-
-func (c rosContainerFull) isRunning() bool { return c.Running == "true" }
-func (c rosContainerFull) isStopped() bool { return c.Stopped == "true" }
-
-func (u *Updater) rosGetContainer(ctx context.Context, name string) (*rosContainerFull, error) {
-	var containers []map[string]interface{}
-	if err := u.rosGET(ctx, "/container", &containers); err != nil {
-		return nil, err
-	}
-
-	for _, c := range containers {
-		n, _ := c["name"].(string)
-		if n != name {
-			continue
-		}
-		ct := &rosContainerFull{
-			Name:    n,
-			Running: strVal(c, "running"),
-			Stopped: strVal(c, "stopped"),
-		}
-		ct.ID = strVal(c, ".id")
-		ct.Tag = strVal(c, "tag")
-		ct.iface = strVal(c, "interface")
-		ct.rootDir = strVal(c, "root-dir")
-		ct.mountLists = strVal(c, "mountlists")
-		ct.cmd = strVal(c, "cmd")
-		ct.entrypoint = strVal(c, "entrypoint")
-		ct.workDir = strVal(c, "workdir")
-		ct.hostname = strVal(c, "hostname")
-		ct.dns = strVal(c, "dns")
-		ct.logging = strVal(c, "logging")
-		ct.startOnBoot = strVal(c, "start-on-boot")
-		ct.status = strVal(c, "status")
-		ct.comment = strVal(c, "comment")
-		return ct, nil
-	}
-	return nil, fmt.Errorf("container %q not found", name)
-}
-
-func strVal(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func (u *Updater) rosGET(ctx context.Context, path string, result interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", u.cfg.RouterOSURL+path, nil)
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
-	req.Header.Set("Accept", "application/json")
-
-
-	resp, err := u.rosHTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GET %s: %d: %s", path, resp.StatusCode, string(b))
-	}
-	return json.NewDecoder(resp.Body).Decode(result)
-}
-
-func (u *Updater) rosPost(ctx context.Context, path string, body interface{}) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", u.cfg.RouterOSURL+path, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
-	req.Header.Set("Content-Type", "application/json")
-
-
-	resp, err := u.rosHTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST %s: %d: %s", path, resp.StatusCode, string(b))
-	}
-	return nil
-}
-
-// rosRemoveDirectory recursively removes a directory from the RouterOS filesystem.
-// Simple /file/remove fails silently on non-empty directories — RouterOS then
-// skips tarball extraction and reuses the old binary. This method lists all
-// children and removes them deepest-first before removing the parent.
-func (u *Updater) rosRemoveDirectory(ctx context.Context, path string) {
-	path = strings.TrimPrefix(path, "/")
-	if path == "" {
-		return
-	}
-
-	// Try simple removal first (works on newer RouterOS 7.x for dirs)
-	if err := u.rosPost(ctx, "/file/remove", map[string]string{".id": path}); err == nil {
-		return
-	}
-
-	// Fallback: list all files, collect children, remove deepest-first
-	var files []map[string]interface{}
-	if err := u.rosGET(ctx, "/file", &files); err != nil {
-		u.log.Warnw("failed to list files for recursive root-dir removal", "path", path, "error", err)
-		return
-	}
-
-	type entry struct {
-		id, name string
-		depth    int
-	}
-	prefix := path + "/"
-	var children []entry
-	for _, f := range files {
-		name, _ := f["name"].(string)
-		id, _ := f[".id"].(string)
-		if name == path || strings.HasPrefix(name, prefix) {
-			children = append(children, entry{id: id, name: name, depth: strings.Count(name, "/")})
-		}
-	}
-
-	// Sort deepest-first
-	for i := 0; i < len(children); i++ {
-		for j := i + 1; j < len(children); j++ {
-			if children[i].depth < children[j].depth {
-				children[i], children[j] = children[j], children[i]
-			}
-		}
-	}
-
-	for _, child := range children {
-		_ = u.rosPost(ctx, "/file/remove", map[string]string{".id": child.id})
-	}
-	u.log.Infow("recursive root-dir removal", "path", path, "files_removed", len(children))
-}
-
-// ─── Script-based container creation ─────────────────────────────────────────
-
-// rosScriptSeq is a monotonically increasing counter for unique script names.
-var rosScriptSeq atomic.Uint64
-
-// rosCreateContainer creates a container via a temporary RouterOS script,
-// avoiding the REST session timeout that occurs during tarball extraction.
-// The script runs the /container/add CLI command asynchronously. The caller
-// should use waitForExtraction() to poll for completion.
-func (u *Updater) rosCreateContainer(ctx context.Context, spec map[string]string) error {
-	// Clean up stale mkube-task-* scripts from prior runs
-	u.rosCleanupStaleScripts(ctx)
-
-	cmd := u.buildContainerAddCLI(spec)
-	scriptName := fmt.Sprintf("mkube-task-%06d", rosScriptSeq.Add(1))
-
-	// Create temporary script
-	scriptID, err := u.rosCreateScript(ctx, scriptName, cmd)
-	if err != nil {
-		return fmt.Errorf("creating script for container add: %w", err)
-	}
-	defer func() { _ = u.rosRemoveScript(ctx, scriptID) }()
-
-	// Run script (returns immediately, extraction happens in background)
-	if err := u.rosRunScript(ctx, scriptID); err != nil {
-		return fmt.Errorf("running script for container add: %w", err)
-	}
-
-	return nil
-}
-
-// buildContainerAddCLI constructs the RouterOS CLI command for /container/add.
-func (u *Updater) buildContainerAddCLI(spec map[string]string) string {
-	parts := []string{"/container/add"}
-	// Required fields first
-	for _, key := range []string{"name", "file", "remote-image", "interface", "root-dir"} {
-		if v, ok := spec[key]; ok && v != "" {
-			parts = append(parts, key+"="+v)
-		}
-	}
-	// Optional fields
-	for _, key := range []string{"mountlists", "cmd", "entrypoint", "workdir", "hostname", "dns", "user", "envlist", "logging", "start-on-boot"} {
-		if v, ok := spec[key]; ok && v != "" {
-			parts = append(parts, key+"="+rosCLIValue(key, v))
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
-// rosCLIValue converts REST API values to RouterOS CLI syntax.
-// Boolean fields use yes/no in CLI but true/false in REST API.
-func rosCLIValue(key, value string) string {
-	switch key {
-	case "logging", "start-on-boot":
-		switch value {
-		case "true":
-			return "yes"
-		case "false":
-			return "no"
-		}
-	}
-	return value
-}
-
-func (u *Updater) rosCreateScript(ctx context.Context, name, source string) (string, error) {
-	data, _ := json.Marshal(map[string]string{"name": name, "source": source})
-	req, err := http.NewRequestWithContext(ctx, "POST", u.cfg.RouterOSURL+"/system/script/add", bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth(u.cfg.RouterOSUser, u.cfg.RouterOSPassword)
-	req.Header.Set("Content-Type", "application/json")
-
-
-	resp, err := u.rosHTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("script/add: %d: %s", resp.StatusCode, string(b))
-	}
-	var result struct {
-		Ret string `json:"ret"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-	return result.Ret, nil
-}
-
-func (u *Updater) rosRunScript(ctx context.Context, id string) error {
-	return u.rosPost(ctx, "/system/script/run", map[string]string{".id": id})
-}
-
-func (u *Updater) rosRemoveScript(ctx context.Context, id string) error {
-	return u.rosPost(ctx, "/system/script/remove", map[string]string{".id": id})
-}
-
-func (u *Updater) rosCleanupStaleScripts(ctx context.Context) {
-	var scripts []struct {
-		ID   string `json:".id"`
-		Name string `json:"name"`
-	}
-	if err := u.rosGET(ctx, "/system/script", &scripts); err != nil {
-		return
-	}
-	for _, s := range scripts {
-		if strings.HasPrefix(s.Name, "mkube-task-") {
-			_ = u.rosRemoveScript(ctx, s.ID)
-		}
-	}
 }
 
 // ─── Wait helpers ───────────────────────────────────────────────────────────
@@ -1508,40 +1211,47 @@ func (u *Updater) rosCleanupStaleScripts(ctx context.Context) {
 func (u *Updater) waitForStopped(ctx context.Context, name string) error {
 	for i := 0; i < 60; i++ {
 		time.Sleep(500 * time.Millisecond)
-		ct, err := u.rosGetContainer(ctx, name)
+		ct, err := u.ros.GetContainer(ctx, name)
 		if err != nil {
 			continue
 		}
-		if ct.isStopped() {
+		if ct.IsStopped() {
 			return nil
 		}
 	}
 	return fmt.Errorf("container %s did not stop within 30s", name)
 }
 
-func (u *Updater) waitForExists(ctx context.Context, name string) error {
-	for i := 0; i < 60; i++ {
-		time.Sleep(time.Second)
-		_, err := u.rosGetContainer(ctx, name)
-		if err == nil {
-			return nil
-		}
-	}
-	return fmt.Errorf("container %s not found after 60s", name)
-}
-
 func (u *Updater) waitForRunning(ctx context.Context, name string) error {
 	for i := 0; i < 60; i++ {
 		time.Sleep(500 * time.Millisecond)
-		ct, err := u.rosGetContainer(ctx, name)
+		ct, err := u.ros.GetContainer(ctx, name)
 		if err != nil {
 			continue
 		}
-		if ct.isRunning() {
+		if ct.IsRunning() {
 			return nil
 		}
 	}
 	return fmt.Errorf("container %s did not start within 30s", name)
+}
+
+// deriveNativeAddress derives a host:8728 native API address from a legacy
+// REST URL (e.g. "http://192.168.200.1/rest" → "192.168.200.1:8728"). Returns
+// "" if the URL cannot be parsed; the caller should treat that as fatal.
+func deriveNativeAddress(restURL string) string {
+	if restURL == "" {
+		return ""
+	}
+	parsed, err := nurl.Parse(restURL)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return ""
+	}
+	return host + ":8728"
 }
 
 /// loadRegistryTransport returns an HTTP transport that trusts the registry CA.

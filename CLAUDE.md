@@ -114,23 +114,23 @@ Known test failures (pre-existing):
 ### Current Version: `v6.0.0`
 
 ### TODO (priority order)
-1. **Migrate mkube-update to native API**: `cmd/mkube-update/main.go` still has its own REST HTTP helpers (`rosGET`, `rosPost`, `rosCreateScript`). Should import `pkg/routeros.Client` instead. Currently leaking REST sessions.
-2. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
-3. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
-4. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
-5. **Track external microdns instances**: gw DNS on pvex needs proper sync.
-6. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
-7. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
-8. **microdns resilience**: DNS containers must survive mkube failures independently.
-9. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
-10. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
-11. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
-12. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
+1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
+2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
+3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
+4. **Track external microdns instances**: gw DNS on pvex needs proper sync.
+5. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
+6. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
+7. **microdns resilience**: DNS containers must survive mkube failures independently.
+8. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
+9. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
+10. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
+11. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
 
 ### Recently Completed
+- [x] mkube-update native API migration — `cmd/mkube-update/main.go` now uses `pkg/routeros.Client` directly. Removes the local rosGET/rosPost/rosCreateScript helpers and the dedicated REST HTTP client. Single TCP connection on port 8728 with auto-reconnect. Stops the last source of REST session pile-up on rose1 (mkube-update was the only remaining REST consumer after the mkube migration).
 - [x] Native API migration — RouterOS client migrated from REST API to native binary protocol (port 8728) via `go-routeros/routeros/v3`. Eliminates REST session leak bug. Lazy connect with auto-reconnect. HTTP retained only for UploadFile.
 - [x] Pod Worker + DNS recovery — serialized pod lifecycle queue, mount filter fix, DNS pods stable. 42 zombie REST sessions remain from pre-migration but no new ones created.
 - [x] PVC mount preservation — `ReconcileMounts` never auto-deletes PVC-backed mounts, preventing data loss on container recreation.
