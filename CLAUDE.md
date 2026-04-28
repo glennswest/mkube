@@ -137,6 +137,7 @@ Known test failures (pre-existing):
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
 
 ### Recently Completed
+- [x] Pod Worker — serialized pod lifecycle queue (`pkg/provider/pod_worker.go`). Reconcile loop enqueues create/recreate operations; worker processes one at a time. 90s health check grace period for newly created pods.
 - [x] PVC mount preservation across container recreation — `ReconcileMounts` replaces destructive `RemoveMountsByList` + `CreateMount` pattern. PVC-backed mounts (src containing `/pvc/`) are never auto-deleted, preventing data loss when reconcile loop recreates containers.
 - [x] mkube-update SSE timeout fix — dedicated `sseClient` without timeout for long-lived SSE connections.
 - [x] Registry dual-protocol HTTP+HTTPS on port 5000 (Closes #10).

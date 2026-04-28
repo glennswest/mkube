@@ -186,9 +186,20 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 	}
 
 	ihNets := p.networks.Values()
+	now := time.Now()
 
 	for _, netObj := range ihNets {
 		if netObj.Spec.ExternalDNS || netObj.Spec.DNS.Zone == "" || netObj.Spec.DNS.Server == "" {
+			continue
+		}
+
+		// Skip health checks for DNS pods that were recently created or are being created.
+		// Probing a container that hasn't finished starting produces false-positive failures.
+		dnsPodKey := netObj.Name + "/dns"
+		if created, ok := p.podWorker.CreatedAt(dnsPodKey); ok && now.Sub(created) < podCreationGracePeriod {
+			continue
+		}
+		if p.podWorker.IsPendingOrProcessing(dnsPodKey) {
 			continue
 		}
 
@@ -236,21 +247,24 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 				p.recordEvent(pod, "DNSCriticalFailure",
 					fmt.Sprintf("DNS fully dead for %d consecutive checks, forcing recreation", failures),
 					"Warning")
-				if err := p.DeletePod(ctx, pod); err != nil {
-					p.deps.Logger.Errorw("failed to delete dead DNS pod for recreation",
-						"pod", podKey, "error", err)
-					continue
-				}
-				if p.deps.Store != nil {
-					storeKey := netObj.Name + ".dns"
-					var storePod corev1.Pod
-					if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err == nil {
-						if err := p.CreatePod(ctx, &storePod); err != nil {
-							p.deps.Logger.Errorw("failed to recreate DNS pod",
-								"pod", podKey, "error", err)
+				podCopy := pod.DeepCopy()
+				capturedKey := podKey
+				p.podWorker.Enqueue(podKey, "DNS critical failure", func(ctx context.Context) error {
+					if err := p.DeletePod(ctx, podCopy); err != nil {
+						p.deps.Logger.Errorw("worker: failed to delete dead DNS pod",
+							"pod", capturedKey, "error", err)
+					}
+					if p.deps.Store != nil {
+						storeKey := netObj.Name + ".dns"
+						var storePod corev1.Pod
+						if _, err := p.deps.Store.Pods.GetJSON(ctx, storeKey, &storePod); err == nil {
+							createErr := p.CreatePod(ctx, &storePod)
+							p.updateCreateResult(capturedKey, &storePod, createErr)
+							return createErr
 						}
 					}
-				}
+					return nil
+				})
 			}
 
 			infraMu.Lock()
@@ -285,12 +299,28 @@ func (p *MicroKubeProvider) checkInfraHealth(ctx context.Context) {
 // triggering a container restart for non-DNS pods with unreachable ports.
 const podHealthFailureThreshold = 3
 
+// podCreationGracePeriod is the duration after a pod is created by the worker
+// during which health checks are skipped. This prevents false-positive health
+// failures from killing containers that haven't finished starting.
+const podCreationGracePeriod = 90 * time.Second
+
 // checkPodPortHealth probes declared TCP ports on all tracked running pods.
 // On consecutive failures, restarts the container.
 func (p *MicroKubeProvider) checkPodPortHealth(ctx context.Context) {
 	phSnap := p.pods.Values()
+	now := time.Now()
 
 	for _, pod := range phSnap {
+		// Skip pods recently created by the worker — give them time to start
+		key := podKey(pod)
+		if created, ok := p.podWorker.CreatedAt(key); ok && now.Sub(created) < podCreationGracePeriod {
+			continue
+		}
+		// Skip pods currently being created by the worker
+		if p.podWorker.IsPendingOrProcessing(key) {
+			continue
+		}
+
 		for i, c := range pod.Spec.Containers {
 			tcpPorts := collectTCPPorts(c)
 			if len(tcpPorts) == 0 {

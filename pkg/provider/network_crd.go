@@ -202,10 +202,12 @@ func (p *MicroKubeProvider) LoadNetworksFromStore(ctx context.Context) {
 	}
 }
 
-// reconcileManagedDNSPods checks all managed networks and recreates DNS pods
-// that are missing (e.g. deleted manually or lost during restart).
+// reconcileManagedDNSPods checks all managed networks and enqueues DNS pod
+// creation for any that are missing. The PodWorker serializes creation so the
+// RouterOS REST API is not overwhelmed by back-to-back heavy operations.
+// The createBackoff map (checked before enqueue in the worker result callback)
+// handles retry delays for repeated failures.
 func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
-	// Snapshot networks and pods (SafeMap handles locking internally)
 	mdnNets := p.networks.Values()
 	podKeysSlice := p.pods.Keys()
 	podKeys := make(map[string]bool, len(podKeysSlice))
@@ -219,12 +221,51 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 		}
 		podMapKey := net.Name + "/dns"
 		if podKeys[podMapKey] {
-			continue // pod tracked in memory
+			continue
 		}
-		p.deps.Logger.Infow("managed network missing DNS pod, recreating", "network", net.Name)
-		if err := p.deployManagedDNS(ctx, net); err != nil {
-			p.deps.Logger.Warnw("failed to recreate managed DNS pod", "network", net.Name, "error", err)
+		// Skip if already queued or being created
+		if p.podWorker.IsPendingOrProcessing(podMapKey) {
+			continue
 		}
+		// Check creation backoff
+		cbs, _ := p.createBackoff.Get(podMapKey)
+		if cbs != nil && cbs.backoff > 0 && time.Since(cbs.lastAttempt) < cbs.backoff {
+			continue
+		}
+
+		netCopy := *net // shallow copy for closure safety
+		capturedKey := podMapKey
+		p.deps.Logger.Infow("managed network missing DNS pod, enqueuing creation", "network", net.Name)
+		p.podWorker.Enqueue(podMapKey, "managed DNS missing", func(ctx context.Context) error {
+			err := p.deployManagedDNS(ctx, &netCopy)
+			if err != nil {
+				// Use updateCreateResult to track backoff for the DNS pod key
+				// (deployManagedDNS calls CreatePod internally, but we need
+				// backoff on the outer key the reconcile loop checks)
+				p.deps.Logger.Warnw("worker: failed to deploy managed DNS", "network", netCopy.Name, "error", err)
+				cbs, _ := p.createBackoff.Get(capturedKey)
+				if cbs == nil {
+					cbs = &containerRestartState{}
+				}
+				cbs.attempts++
+				cbs.lastAttempt = time.Now()
+				if cbs.attempts > createBackoffThreshold {
+					if cbs.backoff == 0 {
+						cbs.backoff = createInitialBackoff
+					} else {
+						cbs.backoff *= 2
+						if cbs.backoff > createMaxBackoff {
+							cbs.backoff = createMaxBackoff
+						}
+					}
+				}
+				p.createBackoff.Set(capturedKey, cbs)
+			} else {
+				p.createBackoff.Delete(capturedKey)
+				p.createFailures.Delete(capturedKey)
+			}
+			return err
+		})
 	}
 }
 

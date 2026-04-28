@@ -205,6 +205,8 @@ func (p *MicroKubeProvider) RunWatchReconciler(ctx context.Context) error {
 
 	log.Info("watch-driven reconciler starting")
 
+	go p.podWorker.Run(ctx)
+
 	for {
 		if err := p.runWatchLoop(ctx); err != nil {
 			log.Warnw("watch loop error, retrying in 5s", "error", err)

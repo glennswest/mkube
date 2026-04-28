@@ -138,6 +138,8 @@ type MicroKubeProvider struct {
 	micrologsClient    *http.Client                          // persistent HTTP client for micrologs (2s timeout)
 	migrationTracker   *MigrationTracker                     // tracks in-flight PVC/disk migrations
 	lastNATCheck       time.Time                              // last DHCP relay NAT exemption check
+	dnsPodCooldown     *safemap.Map[string, time.Time]        // network name → earliest retry time for managed DNS pod
+	podWorker          *PodWorker                             // serialized pod lifecycle queue
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.
@@ -414,6 +416,8 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 			},
 		},
 		migrationTracker: newMigrationTracker(),
+		dnsPodCooldown:   safemap.New[string, time.Time](),
+		podWorker:        NewPodWorker(deps.Logger),
 	}
 
 	// Initialize BMC controller for IPMI power management
@@ -1933,6 +1937,8 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 	log := p.deps.Logger
 	log.Info("standalone reconciler starting")
 
+	go p.podWorker.Run(ctx)
+
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -2297,6 +2303,11 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			log.Debugw("skipping pod during redeploy", "pod", key)
 			continue
 		}
+		// Skip pods already queued in the pod worker
+		if p.podWorker.IsPendingOrProcessing(key) {
+			log.Debugw("skipping pod already in worker queue", "pod", key)
+			continue
+		}
 
 		// Check if all containers for this pod exist on RouterOS
 		allExist := true
@@ -2310,11 +2321,6 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 
 		if !allExist {
 			// Check creation backoff — skip if we're still in cooldown from prior failures
-			const (
-				createBackoffThreshold = 3               // retries before backoff kicks in
-				createInitialBackoff   = 30 * time.Second
-				createMaxBackoff       = 5 * time.Minute
-			)
 			cbs, _ := p.createBackoff.Get(key)
 			if cbs != nil && cbs.backoff > 0 && time.Since(cbs.lastAttempt) < cbs.backoff {
 				log.Debugw("pod creation in backoff, skipping",
@@ -2334,35 +2340,14 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vn)
 				}
 			}
-			log.Infow("creating missing pod", "pod", key, "priorFailures", priorFailures)
-			// CreatePod manages its own p.pods lock internally — no external lock
-			if err := p.CreatePod(ctx, pod); err != nil {
-				failures := safemap.Increment(p.createFailures, key, 1)
-				log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", failures)
-				p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
-
-				// Track backoff state for exponential cooldown
-				if cbs == nil {
-					cbs = &containerRestartState{}
-				}
-				cbs.attempts++
-				cbs.lastAttempt = time.Now()
-				if cbs.attempts > createBackoffThreshold {
-					if cbs.backoff == 0 {
-						cbs.backoff = createInitialBackoff
-					} else {
-						cbs.backoff *= 2
-						if cbs.backoff > createMaxBackoff {
-							cbs.backoff = createMaxBackoff
-						}
-					}
-					p.recordEvent(pod, "BackOff", fmt.Sprintf("Back-off creating pod, next retry in %s (attempt %d)", cbs.backoff, cbs.attempts), "Warning")
-				}
-				p.createBackoff.Set(key, cbs)
-			} else {
-				p.createFailures.Delete(key)
-				p.createBackoff.Delete(key)
-			}
+			// Enqueue to pod worker — serialized creation outside the reconcile loop
+			podCopy := pod.DeepCopy()
+			capturedKey := key
+			p.podWorker.Enqueue(key, "missing containers", func(ctx context.Context) error {
+				err := p.CreatePod(ctx, podCopy)
+				p.updateCreateResult(capturedKey, podCopy, err)
+				return err
+			})
 		} else {
 			// Track already-existing pods
 			p.pods.Set(key, pod.DeepCopy())
@@ -2429,13 +2414,16 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		for _, c := range pod.Spec.Containers {
 			name := sanitizeName(pod, c.Name)
 			if _, exists := actualByName[name]; !exists {
-				log.Warnw("tracked pod has missing container, recreating",
+				log.Warnw("tracked pod has missing container, enqueuing recreation",
 					"pod", key, "container", name)
 				p.pods.Delete(key)
-				if err := p.CreatePod(ctx, pod); err != nil {
-					log.Errorw("failed to recreate pod with missing container",
-						"pod", key, "error", err)
-				}
+				podCopy := pod.DeepCopy()
+				capturedKey := key
+				p.podWorker.Enqueue(key, "missing container (orphan)", func(ctx context.Context) error {
+					err := p.CreatePod(ctx, podCopy)
+					p.updateCreateResult(capturedKey, podCopy, err)
+					return err
+				})
 				break
 			}
 		}
@@ -2536,16 +2524,20 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				continue
 			}
 			if ip != staticIP {
-				log.Warnw("static IP mismatch on tracked pod, recreating",
+				log.Warnw("static IP mismatch on tracked pod, enqueuing recreation",
 					"pod", key, "expected", staticIP, "actual", ip, "veth", veth)
 				p.pods.Delete(key)
-				if err := p.DeletePod(ctx, pod); err != nil {
-					log.Errorw("failed to delete pod for static IP repair", "pod", key, "error", err)
-				}
-				if err := p.CreatePod(ctx, pod); err != nil {
-					log.Errorw("failed to recreate pod for static IP repair", "pod", key, "error", err)
-				}
-				break // pod has been recreated, move to next pod
+				podCopy := pod.DeepCopy()
+				capturedKey := key
+				p.podWorker.Enqueue(key, "static IP mismatch", func(ctx context.Context) error {
+					if err := p.DeletePod(ctx, podCopy); err != nil {
+						log.Errorw("worker: delete for IP repair failed", "pod", capturedKey, "error", err)
+					}
+					err := p.CreatePod(ctx, podCopy)
+					p.updateCreateResult(capturedKey, podCopy, err)
+					return err
+				})
+				break // move to next pod
 			}
 		}
 	}
@@ -3837,6 +3829,47 @@ func extractPriority(pod *corev1.Pod, index int) int {
 }
 
 const maxEvents = 256
+
+// Pod creation backoff constants (used by reconcile loop + pod worker).
+const (
+	createBackoffThreshold = 3               // retries before backoff kicks in
+	createInitialBackoff   = 30 * time.Second
+	createMaxBackoff       = 5 * time.Minute
+)
+
+// updateCreateResult updates backoff/failure tracking after a pod creation attempt.
+// On success, clears both createFailures and createBackoff for the key.
+// On failure, increments failures, records events, and updates exponential backoff.
+func (p *MicroKubeProvider) updateCreateResult(key string, pod *corev1.Pod, err error) {
+	log := p.deps.Logger
+	if err != nil {
+		failures := safemap.Increment(p.createFailures, key, 1)
+		log.Errorw("failed to create pod", "pod", key, "error", err, "consecutiveFailures", failures)
+		p.recordEvent(pod, "CreateFailed", fmt.Sprintf("Failed to create pod: %v", err), "Warning")
+
+		cbs, _ := p.createBackoff.Get(key)
+		if cbs == nil {
+			cbs = &containerRestartState{}
+		}
+		cbs.attempts++
+		cbs.lastAttempt = time.Now()
+		if cbs.attempts > createBackoffThreshold {
+			if cbs.backoff == 0 {
+				cbs.backoff = createInitialBackoff
+			} else {
+				cbs.backoff *= 2
+				if cbs.backoff > createMaxBackoff {
+					cbs.backoff = createMaxBackoff
+				}
+			}
+			p.recordEvent(pod, "BackOff", fmt.Sprintf("Back-off creating pod, next retry in %s (attempt %d)", cbs.backoff, cbs.attempts), "Warning")
+		}
+		p.createBackoff.Set(key, cbs)
+	} else {
+		p.createFailures.Delete(key)
+		p.createBackoff.Delete(key)
+	}
+}
 
 // recordEvent appends a Kubernetes event to the in-memory ring buffer.
 func (p *MicroKubeProvider) recordEvent(pod *corev1.Pod, reason, message, eventType string) {

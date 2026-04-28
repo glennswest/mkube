@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-04-28
+- **feat:** Pod Worker — serialized pod lifecycle queue. Pod creation/recreation is now enqueued to a single-goroutine worker instead of running inline in the reconcile loop. Prevents overwhelming the RouterOS REST API when multiple pods need creation (e.g. 5 DNS pods after restart). The reconcile loop stays fast (enqueue-and-move-on, ~ms) while the worker processes one pod at a time.
+- **feat:** Health check grace period — newly created pods are exempt from port health checks and DNS health checks for 90 seconds after creation. Prevents false-positive failures from killing containers that haven't finished starting (the OpenShift-style "container must be reachable before health checks begin" pattern).
+- **refactor:** Extract `updateCreateResult` helper — pod creation backoff tracking logic extracted from inline reconcile code into a reusable method used by both the reconcile loop and the pod worker.
+- **refactor:** Route managed DNS pod creation through pod worker — removes `dnsPodCooldown` map and one-per-cycle rate limiting in favor of the worker's sequential processing. All managed DNS pods can be enqueued in a single cycle.
+
 ### 2026-04-27
 - **fix:** Mount loss during image-policy auto-updates — `UpdatePod` fallback path called `DeletePod` which destroys ALL mount entries via `RemoveMountsByList`, then `CreatePod`'s `ReconcileMounts` silently failed (error only warned, not propagated), leaving containers running without config or PVC mounts. Fixed by: (1) new `teardownForUpdate` method that removes containers and veths but preserves mount entries, (2) `ReconcileMounts` errors are now fatal — `CreatePod` fails and gets retried by the reconcile loop instead of creating broken containers without mounts.
 - **fix:** Remove `RemoveMountsByList` from restart failure recovery and orphaned veth cleanup — these paths destroyed PVC mount entries during crash loops (e.g. rust4git liveness failures causing repeated restart failures). PVC mounts now survive container recreation; `ReconcileMounts` during the subsequent `CreatePod` handles stale non-PVC cleanup.
