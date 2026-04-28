@@ -5,5 +5,9 @@ COPY iscsi-pvc /usr/local/bin/iscsi-pvc
 COPY deploy/stormd-config.toml /etc/stormd/config.toml
 VOLUME ["/data"]
 EXPOSE 8082/tcp 9080/tcp 22/tcp
+# Suppress stormd's per-call "sysctl set" DEBUG noise on every container
+# start — they show as a wall of routine kernel knob settings in the device
+# log and aren't useful for operations.
+ENV RUST_LOG=info
 ENTRYPOINT ["/stormd"]
 CMD ["--config", "/etc/stormd/config.toml"]
