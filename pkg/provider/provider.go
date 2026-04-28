@@ -988,7 +988,8 @@ func (p *MicroKubeProvider) forceReleaseVeth(ctx context.Context, vethName strin
 			log.Warnw("found container holding orphaned veth, removing",
 				"container", ct.Name, "veth", vethName, "id", ct.ID)
 			p.stopAndRemoveContainer(ctx, ct.Name, ct.ID)
-			_ = p.deps.Runtime.RemoveMountsByList(ctx, ct.Name)
+			// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive.
+			// ReconcileMounts during the subsequent CreatePod handles stale cleanup.
 			break
 		}
 	}
@@ -2143,12 +2144,13 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			}
 		}
 
-		// Restart failed — destroy container, veths, mounts so step 3 recreates
+		// Restart failed — destroy container, veths so step 3 recreates.
+		// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive.
+		// ReconcileMounts during recreation (step 3) handles stale cleanup.
 		log.Warnw("RECOVERY: restart failed, destroying for full recreation",
 			"container", name, "comment", comment, "attempt", rs.attempts)
 		globalStats.RecordRestart(false, name, comment)
 		removed := p.stopAndRemoveContainer(ctx, name, ct.ID)
-		_ = p.deps.Runtime.RemoveMountsByList(ctx, name)
 
 		// Release this container's veth + staging veth so IPAM is freed before recreation.
 		// Find the container index to derive the correct veth name.
