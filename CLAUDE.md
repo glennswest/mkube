@@ -137,7 +137,7 @@ Known test failures (pre-existing):
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
-- [ ] (started 2026-04-28) **Pod Worker deployed, DNS recovery in progress** — Pod worker + mount filter fix pushed and live. Waiting for mkube-update to restart mkube. RouterOS has ~69 orphaned mounts from prior flapping; need to clean up via `/container/mounts/remove [find]` once DNS pods stabilize. After DNS is up, clean orphaned RouterOS containers (debian, fedora, g88, g90, duplicate fastregistry).
+- [x] (completed 2026-04-28) **Pod Worker deployed, DNS recovered** — Pod worker + mount filter fix deployed. Native API migration eliminated REST session leak. DNS pods stable, 16/18 containers running. 42 zombie REST sessions remain from pre-migration (will never expire due to RouterOS bug) but no new ones created.
 
 ### Recently Completed
 - [x] Native API migration — RouterOS client migrated from REST API (HTTP) to native binary protocol (port 8728) via `go-routeros/routeros/v3`. Single persistent TCP connection with tag-based multiplexing. Eliminates REST session leak bug that caused DNS outages. Lazy connect with auto-reconnect. HTTP retained only for UploadFile.
