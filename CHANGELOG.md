@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-05-13
+- **docs:** Fix stale CLAUDE.md note that described gw DNS as external on pvex — it has been an mkube-managed `gw/dns` microdns container for some time. Removed the orphan TODO #4 ("Track external microdns instances") that was based on the same false premise.
+
 ### 2026-04-28
 - **refactor:** PodWorker dispatches concurrently. The serialized single-goroutine queue (channel of size 64, sequential `processItem`) was protecting the REST API from concurrent-session pile-up — that concern is gone with the native async RouterOS API, where tag-multiplexing handles concurrent commands on a single TCP connection. `Enqueue` now spawns a goroutine immediately, with a per-key in-flight set that still drops duplicate enqueues (the pod-level invariant: at most one lifecycle operation per pod at a time). Method surface (`Enqueue`, `IsPendingOrProcessing`, `CreatedAt`, `Run`, `QueueDepth`) preserved so call sites are unchanged. Removed the channel, the overflow `queuedItems` slice, and the per-cycle "queue full, dropping" log line. `Run` now just stashes the long-lived context and blocks until shutdown.
 - **chore:** Set `RUST_LOG=info` in the mkube container image (Dockerfile.scratch) so stormd's per-startup "sysctl set" DEBUG lines no longer flood the RouterOS device log on every container boot. They were routine kernel knob assignments and added no operational value.

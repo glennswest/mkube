@@ -79,7 +79,7 @@ go test ./...                                    # Run tests
 | gt | 192.168.200.199 | gt.lo |
 | g10 | 192.168.10.252 | g10.lo |
 | g11 | 192.168.11.252 | g11.lo |
-| gw | 192.168.1.252 | gw.lo (external, on pvex) |
+| gw | 192.168.1.252 | gw.lo (mkube container `gw/dns`, microdns) |
 
 ## Key Patterns
 
@@ -117,14 +117,13 @@ Known test failures (pre-existing):
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
 3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling.
-4. **Track external microdns instances**: gw DNS on pvex needs proper sync.
-5. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
-6. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
-7. **microdns resilience**: DNS containers must survive mkube failures independently.
-8. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
-9. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
-10. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
-11. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
+4. **Fix storage test failures**: `TestEnsureImageCacheHit` and `TestProvisionVolume`.
+5. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
+6. **microdns resilience**: DNS containers must survive mkube failures independently.
+7. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
+8. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
+9. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
+10. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
