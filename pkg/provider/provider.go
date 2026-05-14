@@ -2365,12 +2365,14 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				for _, c := range pod.Spec.Containers {
 					changed, alreadyChecked := bootCheckedImages[c.Image]
 					if !alreadyChecked {
-						_, changed, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
+						_, freshChanged, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
 						if err != nil {
 							log.Warnw("failed to check image freshness", "pod", key, "image", c.Image, "error", err)
 							bootCheckedImages[c.Image] = false
+							changed = false
 						} else {
-							bootCheckedImages[c.Image] = changed
+							bootCheckedImages[c.Image] = freshChanged
+							changed = freshChanged
 						}
 					}
 					if changed {
@@ -2456,12 +2458,14 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			changed, alreadyChecked := checkedImages[c.Image]
 			if !alreadyChecked {
 				deployedDigest := pod.Annotations[annotationImageDigest]
-				_, changed, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
+				_, freshChanged, err := p.deps.StorageMgr.RefreshImageWithHint(ctx, c.Image, deployedDigest)
 				if err != nil {
 					log.Warnw("image freshness check failed", "pod", key, "image", c.Image, "error", err)
 					checkedImages[c.Image] = false
+					changed = false
 				} else {
-					checkedImages[c.Image] = changed
+					checkedImages[c.Image] = freshChanged
+					changed = freshChanged
 				}
 			}
 			if changed {

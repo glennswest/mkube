@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-05-14
+- **fix:** Image-policy=auto avalanche on DNS pods. In `provider.go` step 3c (reconcile loop) and step 3 (boot-time check), the `RefreshImageWithHint` result was assigned to a `:=`-declared inner `changed` that shadowed the outer one used by the `if changed { … }` guard a few lines later. The first pod iterated for a given image stamp was therefore never queued for update — so its stale `vkube.io/image-digest` annotation persisted across cycles, kept making `checkedImages[image] = true`, and the remaining pods sharing that image got killed-and-recreated every reconcile cycle in rotation. Observed in production as DNS pod uptimes of 2–10 minutes for every namespace except whichever DNS pod happened to be iterated first repeatedly (here: `g9/dns` with a stale annotation never re-stamped, while gw/g8/g10/g11/gt/dns flapped every ~2.5 minutes for hours). Fix renames the inner result to `freshChanged` and explicitly assigns into the outer `changed` (and to `false` on error), so the iterating pod is now subject to the same update gate as the rest.
+
 ### 2026-05-13
 - **docs:** Fix stale CLAUDE.md note that described gw DNS as external on pvex — it has been an mkube-managed `gw/dns` microdns container for some time. Removed the orphan TODO #4 ("Track external microdns instances") that was based on the same false premise.
 

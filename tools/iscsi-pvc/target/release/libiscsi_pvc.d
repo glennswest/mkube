@@ -1,0 +1,1 @@
+/Volumes/minihome/gwest/projects/mkube/tools/iscsi-pvc/target/release/libiscsi_pvc.rlib: /Volumes/minihome/gwest/projects/mkube/tools/iscsi-pvc/src/ext4.rs /Volumes/minihome/gwest/projects/mkube/tools/iscsi-pvc/src/iscsi.rs /Volumes/minihome/gwest/projects/mkube/tools/iscsi-pvc/src/lib.rs /Volumes/minihome/gwest/projects/mkube/tools/iscsi-pvc/src/routeros.rs
