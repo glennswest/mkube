@@ -17,3 +17,7 @@ dist/
 Dockerfile.agent
 Dockerfile.scratch.nostormd
 deploy/agent-stormd.toml
+
+# Rust build artifacts (e.g. tools/iscsi-pvc/target/)
+target/
+
