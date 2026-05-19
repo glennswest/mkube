@@ -124,6 +124,8 @@ Known test failures (pre-existing):
 8. **Proxmox integration test**: Smoke test `backend: proxmox` against pvex.gw.lo.
 9. **Proxmox PVE 9.1+ native OCI**: Pass OCI ref directly to `pct create`.
 10. **BMH scheduled power on/off**: Honor `bmh.mkube.io/power-on-days`, `power-on-time`, `power-off-days`, `power-off-time` annotations. Reconcile loop should auto-power-on/off hosts based on day-of-week + time-of-day schedule.
+11. **RouterOS native API reconnect race** (`pkg/routeros/client.go`): When the native API connection drops and the client auto-reconnects, the first request after reconnect returns "RouterOS API unreachable after reconnect" instead of succeeding or transparently retrying. Observed 2026-05-15 16:34Z: a transient API drop cascaded into 9 simultaneous CreateFailed events across infra/bmh-operator, g8/dns, gt/minio, infra/configman, gt/nats, infra/stormstar, infra/git, gw/dns, infra/cloudid. Reconnect should drain/retry the in-flight request rather than surface the transient error to callers.
+12. **CreatePod must clean up partial root-dir on failure** (`pkg/provider/provider.go`): When veth/mount allocation or container/add fails mid-CreatePod, the tarball-extracted `/raid1/images/<name>` root-dir is left behind. The next reconcile retry hits RouterOS error `root-dir overlap with /raid1/images/<name>`, requiring manual cleanup or a fallback path. Observed 2026-05-15 16:38Z–16:40Z on g11/ipmiserial, gt/pvc-test, g9/dns, gt/dns immediately following the reconnect race in #11. Failure path should `RemoveDirectory(rootDir)` so retries are idempotent.
 
 ### In Progress
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
