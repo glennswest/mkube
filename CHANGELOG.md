@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-05-19
+- **docs:** TODO #13 — pluggable store backend interface (`pkg/store/`). Abstract NATS JetStream KV behind a `Backend` interface (Get/Put/Delete/Watch/List/CAS) so etcd-compatible implementations (e.g. in-house Rust etcd) can be swapped in via `store.backend: nats|etcd` config without touching call sites. NATS remains the default. Motivation: stack consolidation onto in-house components and a path toward kubectl/k8s tool compatibility. Note: etcd alone does not yield kubectl compat — the kube-apiserver translation layer is separate work and out of scope for this TODO.
 - **docs:** Two new TODO items captured from the 2026-05-15 16:34Z RouterOS native API reconnect incident. (11) native API reconnect race: first request after auto-reconnect returns "RouterOS API unreachable after reconnect" instead of succeeding or transparently retrying — should drain/retry the in-flight request inside `pkg/routeros/client.go`. (12) CreatePod must clean up partial root-dir on failure: when veth/mount allocation fails mid-create, `/raid1/images/<name>` is left behind and subsequent reconcile retries hit RouterOS "root-dir overlap"; failure path should `RemoveDirectory(rootDir)` so retries are idempotent. Cluster self-recovered (~7 min storm) and has been stable 5+ days since; not urgent, but both are concrete root-cause fixes.
 
 ### 2026-05-14
