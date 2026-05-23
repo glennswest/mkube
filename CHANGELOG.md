@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-05-23
+- **docs:** Add missing g8 and g9 DNS servers to the CLAUDE.md DNS Servers table. Both microdns instances exist (192.168.8.252, 192.168.9.252) and have been healthy on v0.1.0 for 9+ days — the table was just incomplete. Reordered by network number for readability.
+
 ### 2026-05-19
 - **docs:** TODO #13 — pluggable store backend interface (`pkg/store/`). Abstract NATS JetStream KV behind a `Backend` interface (Get/Put/Delete/Watch/List/CAS) so etcd-compatible implementations (e.g. in-house Rust etcd) can be swapped in via `store.backend: nats|etcd` config without touching call sites. NATS remains the default. Motivation: stack consolidation onto in-house components and a path toward kubectl/k8s tool compatibility. Note: etcd alone does not yield kubectl compat — the kube-apiserver translation layer is separate work and out of scope for this TODO.
 - **docs:** TODO #14 — switch default store backend to fastetcd (in-house Rust etcd replacement). Depends on #13 and fastetcd production-readiness. Plan: ship opt-in alongside NATS, soak on non-critical instances, provide YAML export/import migration path, flip default once parity is demonstrated. Keep NATS impl in tree for one release after flip as fallback. Out of scope: removing NATS entirely — only the KV role moves; embedded messaging stays.

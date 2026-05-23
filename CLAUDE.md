@@ -76,10 +76,12 @@ go test ./...                                    # Run tests
 ### DNS Servers
 | Network | DNS IP | Zone |
 |---------|--------|------|
-| gt | 192.168.200.199 | gt.lo |
+| gw | 192.168.1.252 | gw.lo (mkube container `gw/dns`, microdns) |
+| g8 | 192.168.8.252 | g8.lo |
+| g9 | 192.168.9.252 | g9.lo |
 | g10 | 192.168.10.252 | g10.lo |
 | g11 | 192.168.11.252 | g11.lo |
-| gw | 192.168.1.252 | gw.lo (mkube container `gw/dns`, microdns) |
+| gt | 192.168.200.199 | gt.lo |
 
 ## Key Patterns
 
