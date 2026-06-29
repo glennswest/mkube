@@ -66,6 +66,7 @@ networks:
       endpoint: "http://192.168.9.252:8080"
       zone: "g9.lo"
       server: "192.168.9.252"
+      loadBalancer: true   # canary: enable microdns health-checked DNS LB on g9 first
       staticRecords:
         - name: rose1
           ip: "192.168.9.1"

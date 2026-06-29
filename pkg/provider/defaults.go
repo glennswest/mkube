@@ -86,6 +86,19 @@ topic_prefix = "microdns"
 url = %q
 `, natsURL)
 
+		// Health-checked DNS load balancer. Opt-in per network so it can be
+		// rolled out one zone at a time — the monitor is a no-op until records
+		// carry a health_check (set via REST by the requesting service).
+		var lbSection string
+		if net.DNS.LoadBalancer {
+			lbSection = `
+[dns.loadbalancer]
+enabled = true
+check_interval_secs = 10
+default_probe = "ping"
+`
+		}
+
 		toml := fmt.Sprintf(`[instance]
 id = "microdns-%s"
 mode = "%s"
@@ -100,7 +113,7 @@ enabled = true
 listen = "0.0.0.0:53"
 
 [dns.recursor.forward_zones]
-
+%s
 [api.rest]
 enabled = true
 listen = "0.0.0.0:8080"
@@ -111,7 +124,7 @@ path = "/data/microdns.redb"
 [logging]
 level = "info"
 format = "text"
-%s%s`, net.Name, dnsMode, net.DNS.Zone, dhcpSection, messagingSection)
+%s%s`, net.Name, dnsMode, net.DNS.Zone, lbSection, dhcpSection, messagingSection)
 
 		cms = append(cms, &corev1.ConfigMap{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},

@@ -148,6 +148,7 @@ type DNSConfig struct {
 	Server        string         `yaml:"server"`   // DNS server IP for containers, e.g. "192.168.200.199"
 	DHCP          DHCPConfig     `yaml:"dhcp"`     // DHCP server config for this network
 	StaticRecords []StaticRecord `yaml:"staticRecords,omitempty"` // infrastructure hosts registered at startup
+	LoadBalancer  bool           `yaml:"loadBalancer,omitempty"`  // emit [dns.loadbalancer] so microdns runs health-checked DNS LB
 }
 
 // DHCPConfig specifies DHCP settings for a MicroDNS instance.

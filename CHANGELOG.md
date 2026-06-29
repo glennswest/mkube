@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-06-29
+- **feat:** Enable MicroDNS health-checked DNS load balancing per network. mkube generates each MicroDNS instance's `microdns.toml`, and that generated config never emitted a `[dns.loadbalancer]` section — so `DnsConfig.loadbalancer` deserialized to `None` on every instance and the LB monitor never started, even though the feature ships enabled-by-default in MicroDNS's own deploy configs. Added an opt-in `dns.loadBalancer` flag to both the static `DNSConfig` (`pkg/config/config.go`) and the `NetworkDNSSpec` CRD (`pkg/provider/network_crd.go`); when set, both TOML generators (`generateDefaultConfigMaps`, `generateMinimalTOML`) emit `[dns.loadbalancer]` with `enabled = true`, `check_interval_secs = 10`, `default_probe = "ping"`. Gated per-network so it can be rolled out one zone at a time (only the changed zone's ConfigMap differs, so `syncConfigMapsToDisk` recreates only that DNS pod). The monitor is a no-op until records carry a `health_check`, which is set via the MicroDNS REST API by the requesting service — mkube only flips the feature on. Canary: enabled on **g9** first (`deploy/rose1-config.yaml`). Added `TestLBGateRendering` to guard that the section appears only for opted-in networks.
+
 ### 2026-05-23
 - **docs:** Add missing g8 and g9 DNS servers to the CLAUDE.md DNS Servers table. Both microdns instances exist (192.168.8.252, 192.168.9.252) and have been healthy on v0.1.0 for 9+ days — the table was just incomplete. Reordered by network number for readability.
 
