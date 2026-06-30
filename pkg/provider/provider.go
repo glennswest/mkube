@@ -352,6 +352,9 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	go p.RunResourceWatchers(context.Background())
 	// Reclaim root-dirs swapped aside by swapRootDirAside, off the reconcile path.
 	go p.runRootDirGC(context.Background())
+	// Pre-stage image tarballs (+ digest sidecars) for tracked pods so pulls stay
+	// off the pod-(re)create critical path. Off the reconcile path.
+	go p.runImageStager(context.Background())
 	// Seed consistency cache after startup settles — delay 30s so the initial
 	// heavy checks (pod liveness, microdns services) don't block API endpoints
 	// during the first page loads after deploy.
@@ -601,6 +604,75 @@ func (p *MicroKubeProvider) reapStaleRootDirs(ctx context.Context) {
 			continue
 		}
 		p.deps.Logger.Infow("reaped stale root-dir", "path", full)
+	}
+}
+
+// runImageStager pre-pulls and stages the tarball (+ .digest sidecar) for every
+// image referenced by a tracked pod, ahead of any CreatePod needing it. This
+// keeps image pulls off the pod-(re)create critical path: after an mkube
+// restart the in-memory image map is empty, so without pre-staging the first
+// (re)create of each image would pull + flatten + upload under the storage
+// mutex — the multi-minute stall that made DNS auto-recovery crawl. The stager
+// warms /raid1/cache in the background while existing containers keep running,
+// so any later recreate is a digest-validated disk-cache hit (~1s untar). Runs
+// once shortly after startup, then on a slow timer. Off the reconcile path.
+func (p *MicroKubeProvider) runImageStager(ctx context.Context) {
+	if p.deps.StorageMgr == nil {
+		return
+	}
+	// Let startup settle so the stager doesn't contend with the first
+	// reconcile's own EnsureImage calls, then do the initial warm.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(45 * time.Second):
+	}
+	p.stageDesiredImages(ctx)
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.stageDesiredImages(ctx)
+		}
+	}
+}
+
+// stageDesiredImages ensures every distinct image referenced by a tracked pod
+// has a staged tarball + digest sidecar. EnsureImage is idempotent and cheap on
+// a cache hit (one registry HEAD); a miss pulls and stages. Each distinct image
+// is touched once per pass. Each op is bounded so a hung registry can't wedge
+// the loop.
+func (p *MicroKubeProvider) stageDesiredImages(ctx context.Context) {
+	seen := make(map[string]struct{})
+	staged := 0
+	for _, pod := range p.pods.Values() {
+		if pod == nil {
+			continue
+		}
+		for _, c := range pod.Spec.Containers {
+			ref := c.Image
+			if ref == "" {
+				continue
+			}
+			if _, ok := seen[ref]; ok {
+				continue
+			}
+			seen[ref] = struct{}{}
+			opCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			if _, err := p.deps.StorageMgr.EnsureImage(opCtx, ref); err != nil {
+				p.deps.Logger.Warnw("image stager: failed to stage", "ref", ref, "error", err)
+			} else {
+				staged++
+			}
+			cancel()
+		}
+	}
+	if len(seen) > 0 {
+		p.deps.Logger.Infow("image stager pass complete", "distinct_images", len(seen), "staged_ok", staged)
 	}
 }
 
