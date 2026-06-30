@@ -276,7 +276,15 @@ const podHealthFailureThreshold = 3
 // podCreationGracePeriod is the duration after a pod is created by the worker
 // during which health checks are skipped. This prevents false-positive health
 // failures from killing containers that haven't finished starting.
-const podCreationGracePeriod = 90 * time.Second
+//
+// Deliberately generous: under RouterOS-API pressure (reconnect race, TODO #11)
+// or a busy device, a recreate — tarball extraction, microdns startup, plus any
+// API retries — can take well over a minute. A too-short window let the DNS
+// health check fire DNSCriticalFailure mid-recreate and destroy the pod, which
+// restarted the recreate and produced a self-feeding destroy loop that took DNS
+// fully down. Five minutes lets even a slow recreate finish before health checks
+// resume.
+const podCreationGracePeriod = 5 * time.Minute
 
 // checkPodPortHealth probes declared TCP ports on all tracked running pods.
 // On consecutive failures, restarts the container.
