@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1103,18 +1104,35 @@ func (p *MicroKubeProvider) forceReleaseVeth(ctx context.Context, vethName strin
 	}
 }
 
+// errStagingFailed marks a blue-green update that failed during the staging
+// (extract-and-verify) phase, before the production container was touched. The
+// caller must NOT fall back to a destructive recreate for this — the old
+// container is still serving and should be left alone (retry on a later
+// reconcile). Only cutover-phase failures, where production is already in
+// flight, warrant the destructive path.
+var errStagingFailed = errors.New("blue-green staging failed")
+
 // UpdatePod handles pod spec updates via blue-green deployment.
-// A staging container extracts the new image while the old container
-// continues serving traffic. After verification, a fast cutover (~5-8s)
-// replaces the old container — avoiding the 120s+ tarball extraction
-// downtime of a destructive delete+create cycle.
+// A staging container extracts the new image (tarball) while the old container
+// continues serving traffic. The new image is NOT started in staging — running
+// it would open the production data volume (e.g. microdns's single-writer redb),
+// which fails; extraction success is the integrity check. After the tarball is
+// verified extracted, a fast cutover (~5-8s) swaps in the pre-extracted root-dir,
+// avoiding the 120s+ extraction downtime of a destructive delete+create.
 func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("updating pod (blue-green)")
 
 	if err := p.blueGreenUpdate(ctx, pod); err != nil {
-		log.Errorw("blue-green update failed, falling back to destructive update", "error", err)
 		p.cleanupStaging(ctx, pod)
+		if errors.Is(err, errStagingFailed) {
+			// New image never staged cleanly (e.g. bad/incomplete tarball). The
+			// old container was never touched — leave it serving and retry later
+			// rather than tearing it down into downtime.
+			log.Warnw("blue-green staging failed, keeping current container running", "error", err)
+			return err
+		}
+		log.Errorw("blue-green cutover failed, falling back to destructive update", "error", err)
 		// Use teardownForUpdate instead of DeletePod to preserve mount entries.
 		// DeletePod calls RemoveMountsByList which destroys PVC and ConfigMap
 		// mounts. teardownForUpdate removes containers and veths but keeps
@@ -1267,7 +1285,7 @@ func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod
 	// Old containers continue serving traffic throughout this phase.
 	for _, stg := range stages {
 		if err := p.stagingExtractAndVerify(ctx, pod, stg, networkName, log); err != nil {
-			return err
+			return fmt.Errorf("%w: %v", errStagingFailed, err)
 		}
 	}
 
@@ -1375,26 +1393,28 @@ func (p *MicroKubeProvider) stagingExtractAndVerify(
 		return fmt.Errorf("creating staging container %s: %w", stg.stgName, err)
 	}
 
-	// Wait for tarball extraction (the slow part — old container still serves)
-	ct, err := p.waitForStopped(ctx, stg.stgName, 120*time.Second)
-	if err != nil {
-		return fmt.Errorf("staging extraction timeout for %s: %w", stg.stgName, err)
+	// Wait for tarball extraction (the slow part — old container still serves).
+	// Reaching "stopped" means /container/add finished extracting cleanly; a bad
+	// or incomplete tarball fails or times out here, so this is our integrity gate.
+	if _, err := p.waitForStopped(ctx, stg.stgName, 120*time.Second); err != nil {
+		return fmt.Errorf("staging extraction failed/timeout for %s: %w", stg.stgName, err)
 	}
 
-	// Start staging container to verify the new image boots
-	if err := p.deps.Runtime.StartContainer(ctx, ct.ID); err != nil {
-		return fmt.Errorf("starting staging container %s: %w", stg.stgName, err)
+	// Do NOT start the staging container. Running the new image here would open
+	// the production data volume (e.g. microdns's single-writer redb) that the
+	// live production container already holds — so a stateful image can never
+	// pass a "does it boot" check in staging. That start+verify step is exactly
+	// what made blue-green fall back to a destructive recreate (and churn) for
+	// stateful pods. Verify the extraction produced a non-empty root-dir instead;
+	// runtime health is checked on the real container after cutover.
+	usage, derr := p.deps.Runtime.DirectoryDiskUsage(ctx, stg.stgRootDir)
+	if derr != nil {
+		return fmt.Errorf("verifying staging extraction for %s: %w", stg.stgName, derr)
 	}
-
-	// Verify container reaches running state
-	if !p.waitForRunning(ctx, stg.stgName, 15*time.Second) {
-		return fmt.Errorf("staging container %s failed to reach running state", stg.stgName)
+	if usage == 0 {
+		return fmt.Errorf("staging extraction produced empty root-dir for %s (bad/incomplete tarball)", stg.stgName)
 	}
-
-	log.Infow("blue-green: staging container verified running", "staging", stg.stgName)
-
-	// Stop staging container (verified, no longer needed)
-	p.stopAndWait(ctx, stg.stgName)
+	log.Infow("blue-green: staging tarball extracted + verified", "staging", stg.stgName, "bytes", usage)
 
 	// Remove staging container (keep root-dir!)
 	if updated, err := p.deps.Runtime.GetContainer(ctx, stg.stgName); err == nil {
