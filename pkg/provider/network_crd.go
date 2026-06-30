@@ -215,13 +215,31 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 		podKeys[k] = true
 	}
 
+	// Rebuild at most one mount-drifted pod per cycle so DNS rolls rather than
+	// all instances restarting at once.
+	driftRepaired := false
 	for _, net := range mdnNets {
 		if !net.Spec.Managed || net.Spec.ExternalDNS || net.Spec.DNS.Zone == "" {
 			continue
 		}
 		podMapKey := net.Name + "/dns"
 		if podKeys[podMapKey] {
-			continue
+			// Pod is tracked, but "tracked" is not the same as "healthy". If its
+			// container lost the config mount (mount-list drifted or was cleared),
+			// the instance is running the default config — no recursor, no forward
+			// zones — and silently fails recursion. Nothing reconciles mounts for
+			// an already-running pod, so it never self-heals. Rebuild it (CreatePod
+			// re-adds mounts and the generated config), one per cycle to stay rolling.
+			if driftRepaired || p.managedDNSPodHealthy(ctx, net.Name) {
+				continue
+			}
+			if p.podWorker.IsPendingOrProcessing(podMapKey) {
+				continue
+			}
+			p.deps.Logger.Warnw("managed DNS pod lost its config mount, rebuilding", "network", net.Name)
+			p.pods.Delete(podMapKey) // untrack so the create path below rebuilds container+mounts+config
+			driftRepaired = true
+			// fall through to the create/enqueue logic
 		}
 		// Skip if already queued or being created
 		if p.podWorker.IsPendingOrProcessing(podMapKey) {
@@ -267,6 +285,30 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 			return err
 		})
 	}
+}
+
+// managedDNSPodHealthy reports whether a tracked managed-DNS pod's container
+// still has its config mount (dst /etc/microdns). A missing config mount means
+// the container is running without its generated TOML — recursion and
+// forward-zones break silently — so reconcileManagedDNSPods rebuilds it. On a
+// non-RouterOS runtime or a transient query error it returns true (assume
+// healthy) so a hiccup never triggers an unnecessary recreate.
+func (p *MicroKubeProvider) managedDNSPodHealthy(ctx context.Context, netName string) bool {
+	cli := p.routerOSClient()
+	if cli == nil {
+		return true
+	}
+	container := netName + "_dns_microdns"
+	mounts, err := cli.ListMountsByList(ctx, container)
+	if err != nil {
+		return true
+	}
+	for _, m := range mounts {
+		if m.Dst == "/etc/microdns" {
+			return true
+		}
+	}
+	return false
 }
 
 // ReconcileNetworkConfigMaps regenerates DNS ConfigMaps from the current
