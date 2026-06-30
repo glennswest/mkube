@@ -68,10 +68,9 @@ type RouterRef struct {
 
 // NetworkDNSSpec defines DNS settings for a network.
 type NetworkDNSSpec struct {
-	Endpoint     string `json:"endpoint,omitempty"`     // microdns REST URL
-	Zone         string `json:"zone"`                   // e.g. "g10.lo"
-	Server       string `json:"server"`                 // DNS server IP
-	LoadBalancer bool   `json:"loadBalancer,omitempty"` // emit [dns.loadbalancer] so microdns runs health-checked DNS LB
+	Endpoint string `json:"endpoint,omitempty"` // microdns REST URL
+	Zone     string `json:"zone"`               // e.g. "g10.lo"
+	Server   string `json:"server"`             // DNS server IP
 }
 
 // NetworkDHCPSpec defines DHCP settings for a network.
@@ -811,18 +810,15 @@ url = %q
 		forwardZones += fmt.Sprintf("%q = [\"%s:53\"]\n", e.zone, e.server)
 	}
 
-	// Health-checked DNS load balancer. Opt-in per network so it can be
-	// rolled out one zone at a time — the monitor is a no-op until records
-	// carry a health_check (set via REST by the requesting service).
-	var lbSection string
-	if net.Spec.DNS.LoadBalancer {
-		lbSection = `
+	// Health-checked DNS load balancer — enabled by default on every microdns
+	// instance. The monitor is a no-op until records carry a health_check (set
+	// via REST by the requesting service).
+	lbSection := `
 [dns.loadbalancer]
 enabled = true
 check_interval_secs = 10
 default_probe = "ping"
 `
-	}
 
 	return fmt.Sprintf(`[instance]
 id = "microdns-%s"

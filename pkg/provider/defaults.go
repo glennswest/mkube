@@ -86,18 +86,15 @@ topic_prefix = "microdns"
 url = %q
 `, natsURL)
 
-		// Health-checked DNS load balancer. Opt-in per network so it can be
-		// rolled out one zone at a time — the monitor is a no-op until records
-		// carry a health_check (set via REST by the requesting service).
-		var lbSection string
-		if net.DNS.LoadBalancer {
-			lbSection = `
+		// Health-checked DNS load balancer — enabled by default on every
+		// microdns instance. The monitor is a no-op until records carry a
+		// health_check (set via REST by the requesting service).
+		lbSection := `
 [dns.loadbalancer]
 enabled = true
 check_interval_secs = 10
 default_probe = "ping"
 `
-		}
 
 		toml := fmt.Sprintf(`[instance]
 id = "microdns-%s"
