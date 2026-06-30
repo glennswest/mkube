@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -33,6 +34,7 @@ import (
 	"github.com/glennswest/mkube/pkg/namespace"
 	"github.com/glennswest/mkube/pkg/network"
 	"github.com/glennswest/mkube/pkg/registry"
+	"github.com/glennswest/mkube/pkg/routeros"
 	"github.com/glennswest/mkube/pkg/runtime"
 	"github.com/glennswest/mkube/pkg/safemap"
 	"github.com/glennswest/mkube/pkg/storage"
@@ -347,6 +349,8 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 		p.bmcController.SetStore(s)
 	}
 	go p.RunResourceWatchers(context.Background())
+	// Reclaim root-dirs swapped aside by swapRootDirAside, off the reconcile path.
+	go p.runRootDirGC(context.Background())
 	// Seed consistency cache after startup settles — delay 30s so the initial
 	// heavy checks (pod liveness, microdns services) don't block API endpoints
 	// during the first page loads after deploy.
@@ -508,6 +512,97 @@ func (p *MicroKubeProvider) notifyDNSSnapshot(networkName, endpoint, zone string
 //  3. Creating volume mounts
 //  4. Registering boot ordering if restartPolicy=Always
 //  5. Creating and starting the RouterOS container
+// rootDirTrashSuffix marks a container root-dir that has been renamed aside and
+// is awaiting lazy deletion by reapStaleRootDirs. The full token is
+// ".trash-<uuid>" so names stay unique under concurrent pod creates.
+const rootDirTrashSuffix = ".trash-"
+
+// routerOSClient returns the underlying RouterOS client when the active runtime
+// is RouterOS, else nil. Used for operations not in the ContainerRuntime
+// interface (notably the atomic directory rename used to swap a root-dir aside).
+func (p *MicroKubeProvider) routerOSClient() *routeros.Client {
+	if r, ok := p.deps.Runtime.(*runtime.RouterOSRuntime); ok {
+		return r.Client()
+	}
+	return nil
+}
+
+// swapRootDirAside renames a container root-dir out of the way via an atomic
+// RouterOS rename so a fresh tarball extraction can proceed without a "root-dir
+// overlap" error (TODO #12). The previous guard — an in-line recursive
+// RemoveDirectory — was slow and could fail/leave a partial dir, wedging
+// retries in a permanent CreateFailed loop. The displaced dir is reclaimed
+// later by reapStaleRootDirs. Falls back to in-place RemoveDirectory when
+// rename is unavailable (non-RouterOS runtime) or fails.
+func (p *MicroKubeProvider) swapRootDirAside(ctx context.Context, rootDir string) {
+	if rootDir == "" {
+		return
+	}
+	if cli := p.routerOSClient(); cli != nil {
+		if exists, err := cli.FileExists(ctx, rootDir); err == nil && !exists {
+			return // nothing to move
+		}
+		trash := fmt.Sprintf("%s%s%s", strings.TrimSuffix(rootDir, "/"), rootDirTrashSuffix, uuid.NewString())
+		if err := cli.MoveDirectory(ctx, rootDir, trash); err == nil {
+			p.deps.Logger.Infow("swapped root-dir aside for lazy GC", "rootDir", rootDir, "trash", trash)
+			return
+		}
+		p.deps.Logger.Warnw("root-dir rename failed, falling back to in-place delete", "rootDir", rootDir)
+	}
+	if err := p.deps.Runtime.RemoveDirectory(ctx, rootDir); err != nil {
+		p.deps.Logger.Debugw("root-dir cleanup (may not exist yet)", "rootDir", rootDir, "error", err)
+	}
+}
+
+// runRootDirGC periodically reclaims root-dirs swapped aside by
+// swapRootDirAside. It runs on its own goroutine — never on the reconcile path —
+// because deleting a large root-dir tree is slow and must not stall pod
+// reconciliation.
+func (p *MicroKubeProvider) runRootDirGC(ctx context.Context) {
+	if p.routerOSClient() == nil {
+		return // rename/trash scheme is RouterOS-only
+	}
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.reapStaleRootDirs(ctx)
+		}
+	}
+}
+
+// reapStaleRootDirs best-effort removes ".trash-*" directories left under the
+// storage base path by swapRootDirAside. Failures are retried on the next tick.
+// Only meaningful for the RouterOS runtime.
+func (p *MicroKubeProvider) reapStaleRootDirs(ctx context.Context) {
+	cli := p.routerOSClient()
+	if cli == nil {
+		return
+	}
+	base := p.deps.Config.Storage.BasePath
+	if base == "" {
+		return
+	}
+	entries, err := cli.ListDirectory(ctx, base)
+	if err != nil {
+		return
+	}
+	for _, name := range entries {
+		if !strings.Contains(name, rootDirTrashSuffix) {
+			continue
+		}
+		full := strings.TrimSuffix(base, "/") + "/" + name
+		if err := cli.RemoveDirectory(ctx, full); err != nil {
+			p.deps.Logger.Debugw("stale root-dir reap deferred", "path", full, "error", err)
+			continue
+		}
+		p.deps.Logger.Infow("reaped stale root-dir", "path", full)
+	}
+}
+
 func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 	log.Infow("creating pod")
@@ -736,13 +831,13 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			startOnBoot = "true"
 		}
 
-		// 5. Remove old root-dir to force tarball re-extraction.
-		// RouterOS skips tarball extraction when root-dir already has content,
-		// so without this, stale images persist across container recreation.
+		// 5. Swap any old root-dir aside (atomic rename) to force tarball
+		// re-extraction. RouterOS skips extraction when root-dir already has
+		// content, so without this stale images persist. Renaming rather than
+		// deleting in-line also avoids the "root-dir overlap" wedge a slow/failed
+		// recursive delete would leave for the next retry (TODO #12).
 		rootDir := fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name)
-		if err := p.deps.Runtime.RemoveDirectory(ctx, rootDir); err != nil {
-			log.Debugw("root-dir cleanup (may not exist yet)", "rootDir", rootDir, "error", err)
-		}
+		p.swapRootDirAside(ctx, rootDir)
 
 		// 6. Create the container
 		tracker.start(PhaseContainerCreate)
@@ -780,7 +875,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 
 		if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
-			log.Warnw("releasing veth after container creation failure", "veth", vethName)
+			log.Warnw("cleaning up partial root-dir and veth after container creation failure", "veth", vethName, "rootDir", rootDir)
+			p.swapRootDirAside(ctx, rootDir)
 			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("creating container %s: %w", name, err)
 		}
@@ -793,6 +889,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		tracker.start(PhaseTarballExtract)
 		ct, err := p.waitForStopped(ctx, name, 120*time.Second)
 		if err != nil {
+			p.swapRootDirAside(ctx, rootDir)
 			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("waiting for container %s to be ready: %w", name, err)
 		}
@@ -823,6 +920,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			}
 		}
 		if startErr != nil {
+			p.swapRootDirAside(ctx, rootDir)
 			_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethName)
 			return fmt.Errorf("starting container %s after %d attempts: %w", name, len(startBackoffs)+1, startErr)
 		}

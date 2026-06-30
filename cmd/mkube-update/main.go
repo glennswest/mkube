@@ -172,9 +172,10 @@ func main() {
 		cfg:      cfg,
 		log:      log,
 		digests:  make(map[string]string),
-		kickPoll: make(chan struct{}, 1),
-		trashCh:  make(chan string, 64),
-		ros:      rosClient,
+		kickPoll:  make(chan struct{}, 1),
+		trashCh:   make(chan string, 64),
+		swapFails: make(map[string]int),
+		ros:       rosClient,
 		http: &http.Client{
 			Transport: loadRegistryTransport(log),
 			Timeout:   30 * time.Second,
@@ -223,6 +224,7 @@ type Updater struct {
 	ros      *routeros.Client  // native RouterOS API (port 8728), single TCP connection
 	kickPoll chan struct{}     // SSE-triggered immediate poll
 	trashCh  chan string       // root-dirs swapped aside (".trash-<uuid>"), pending lazy deletion
+	swapFails map[string]int   // "repo@digest" → consecutive failed swap attempts (circuit-breaker)
 }
 
 func (u *Updater) run(ctx context.Context) {
@@ -306,19 +308,20 @@ func (u *Updater) poll(ctx context.Context) {
 
 		if w.SelfUpdate {
 			// Self-update: ask mkube to replace us
+			failed := false
 			for _, tgt := range targets {
 				if err := u.requestSelfUpdate(ctx, tgt, imageRef); err != nil {
 					u.log.Errorw("self-update request failed", "name", tgt, "error", err)
-					// Revert digest so we retry next poll
-					u.digests[key] = prev
+					failed = true
 				}
 			}
+			u.recordSwapOutcome(key, digest, prev, failed)
 		} else if w.Rolling && len(targets) > 1 {
 			delay := w.RollingDelay
 			if delay == 0 {
 				delay = 5 * time.Second
 			}
-			anyFailed := false
+			failed := false
 			for i, tgt := range targets {
 				if err := u.replaceContainer(ctx, tgt, imageRef); err != nil {
 					// Skip containers that don't exist (e.g. external DNS)
@@ -327,25 +330,55 @@ func (u *Updater) poll(ctx context.Context) {
 						continue
 					}
 					u.log.Errorw("rolling update failed", "name", tgt, "error", err)
-					anyFailed = true
+					failed = true
 					break
 				}
 				if i < len(targets)-1 {
 					time.Sleep(delay)
 				}
 			}
-			if anyFailed {
-				u.digests[key] = prev
-			}
+			u.recordSwapOutcome(key, digest, prev, failed)
 		} else {
+			failed := false
 			for _, tgt := range targets {
 				if err := u.replaceContainer(ctx, tgt, imageRef); err != nil {
 					u.log.Errorw("container replacement failed", "name", tgt, "error", err)
-					u.digests[key] = prev
+					failed = true
 				}
 			}
+			u.recordSwapOutcome(key, digest, prev, failed)
 		}
 	}
+}
+
+// maxSwapAttempts bounds how many times the updater retries a failing image
+// swap for the same digest before giving up.
+const maxSwapAttempts = 3
+
+// recordSwapOutcome is the swap circuit-breaker. On success it clears the
+// failure counter. On failure it reverts the digest so the swap retries next
+// poll — until maxSwapAttempts consecutive failures for the SAME digest, after
+// which it accepts the digest (stops retrying) and leaves the existing
+// container running. This stops a persistently-failing swap from flapping
+// critical infrastructure indefinitely; a genuinely new image (different
+// digest) starts with a fresh attempt budget.
+func (u *Updater) recordSwapOutcome(key, digest, prev string, failed bool) {
+	fkey := key + "@" + digest
+	if !failed {
+		delete(u.swapFails, fkey)
+		return
+	}
+	u.swapFails[fkey]++
+	n := u.swapFails[fkey]
+	if n >= maxSwapAttempts {
+		u.log.Errorw("image swap repeatedly failed — giving up; existing container left running, manual intervention or a new image required",
+			"repo", key, "attempts", n, "digest", digest)
+		u.digests[key] = digest // accept the digest so we stop retrying it
+		return
+	}
+	u.log.Warnw("image swap failed — will retry next poll",
+		"repo", key, "attempt", n, "max", maxSwapAttempts)
+	u.digests[key] = prev
 }
 
 // checkContainerHealth checks all watched containers and restarts any that
