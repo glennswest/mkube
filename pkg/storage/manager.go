@@ -156,10 +156,12 @@ func loadRegistryTransport(caFile, defaultPath string, log *zap.SugaredLogger) h
 }
 
 // EnsureImage makes sure the given OCI image reference is available as a
-// tarball on the RouterOS filesystem. Always pulls fresh from registry.
-// Within a single mkube session, the same image won't be pulled twice
-// (session dedup). On restart, all images are re-pulled to avoid serving
-// corrupted tarballs from disk cache.
+// tarball on the RouterOS filesystem. Reuse is digest-validated at three
+// levels: (1) in-session dedup via m.images; (2) across restarts, the on-disk
+// tarball is reused when its .digest sidecar still matches the registry digest;
+// (3) otherwise a fresh pull. A tarball is only ever reused when its recorded
+// digest matches the registry, so corrupt/partial/stale tarballs always force a
+// fresh pull — avoiding both the post-restart re-pull storm and stale images.
 func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -181,7 +183,33 @@ func (m *Manager) EnsureImage(ctx context.Context, imageRef string) (string, err
 		m.log.Warnw("tarball file missing, re-pulling", "ref", imageRef, "path", tarballPath)
 	}
 
-	// Always pull fresh from registry — no disk cache.
+	// Persistent disk-cache validation. After an mkube restart the in-memory
+	// session map (m.images) is empty, but the tarball and its .digest sidecar
+	// persist on the /raid1 mount. If the on-disk tarball's recorded digest
+	// still matches the registry, reuse it instead of re-pulling + re-flattening
+	// + re-uploading — that re-pull storm was stalling every pod (re)create for
+	// minutes each after a restart. We only trust a tarball whose sidecar digest
+	// matches the registry, so a corrupt/partial/stale tarball still forces a
+	// fresh pull (the original "no blind cache" safety property is preserved).
+	if m.tarballExists(tarballPath) {
+		if diskDigest := m.readTarballDigest(tarballPath); diskDigest != "" {
+			if regDigest, derr := m.getRegistryDigest(ctx, imageRef); derr == nil && regDigest == diskDigest {
+				hostPath := m.HostVisiblePath(tarballPath)
+				m.images[imageRef] = &CachedImage{
+					Ref:         imageRef,
+					TarballPath: hostPath,
+					Digest:      diskDigest,
+					PulledAt:    time.Now(),
+					InUse:       1,
+				}
+				m.log.Infow("image disk-cache hit (digest verified)",
+					"ref", imageRef, "digest", truncDigest(diskDigest), "path", hostPath)
+				return hostPath, nil
+			}
+		}
+	}
+
+	// No valid on-disk tarball — pull fresh from registry.
 	m.log.Infow("pulling image", "ref", imageRef)
 
 	// Remove any stale tarball before pulling fresh
@@ -457,9 +485,14 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 		return fmt.Errorf("pulling image %s: %w", imageRef, err)
 	}
 
-	// Log the pulled image's manifest digest for debugging stale-image issues
-	if pulledDigest, err := img.Digest(); err == nil {
-		m.log.Infow("pulled image manifest digest", "ref", imageRef, "digest", pulledDigest.String())
+	// Log the pulled image's manifest digest for debugging stale-image issues.
+	// Capture it so we can persist a .digest sidecar after the tarball is
+	// written — this lets EnsureImage validate and reuse the on-disk tarball
+	// across mkube restarts instead of re-pulling every image.
+	pulledDigest := ""
+	if d, err := img.Digest(); err == nil {
+		pulledDigest = d.String()
+		m.log.Infow("pulled image manifest digest", "ref", imageRef, "digest", pulledDigest)
 	}
 
 	// Flatten OCI layers into a single uncompressed rootfs tarball,
@@ -509,7 +542,35 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 		}
 	}
 
+	// Persist a .digest sidecar next to the tarball. Written LAST, only after a
+	// complete tarball write, so a partial/crashed write never leaves a matching
+	// sidecar. EnsureImage uses this to validate and reuse the on-disk tarball
+	// across restarts instead of re-pulling. Best-effort: a missing sidecar just
+	// forces a re-pull on the next start (the old, safe behavior).
+	if pulledDigest != "" {
+		m.writeTarballDigest(tarballPath, pulledDigest)
+	}
+
 	return nil
+}
+
+// writeTarballDigest records the manifest digest of a tarball in a sidecar file
+// (<tarball>.digest) so the on-disk tarball can be validated against the
+// registry after an mkube restart without re-pulling.
+func (m *Manager) writeTarballDigest(tarballPath, digest string) {
+	if err := os.WriteFile(tarballPath+".digest", []byte(digest), 0o644); err != nil {
+		m.log.Warnw("failed to write tarball digest sidecar", "path", tarballPath+".digest", "error", err)
+	}
+}
+
+// readTarballDigest reads the manifest digest recorded for a tarball, or ""
+// if no sidecar exists (or it is unreadable).
+func (m *Manager) readTarballDigest(tarballPath string) string {
+	b, err := os.ReadFile(tarballPath + ".digest")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // rewriteLocalhost rewrites image refs that point to the local registry
