@@ -439,25 +439,42 @@ func (c *Client) ReconcileMounts(ctx context.Context, listName string, desired [
 		return err
 	}
 
-	// Index existing mounts for this list by "src→dst"
+	// Index existing mounts for this list by "src→dst" and by dst alone.
+	// The dst index lets us detect a stale/divergent entry: same destination
+	// but a different source (e.g. a leftover whose src diverges by a leading
+	// slash), which would otherwise not match our src→dst key and make the add
+	// below fail with RouterOS "same dst already exists" — the bug that used to
+	// wedge a pod recreate until the mount was cleaned up by hand.
 	type existingMount struct {
 		entry MountEntry
 		seen  bool // true if matched to a desired mount
 	}
 	existing := make(map[string]*existingMount)
+	byDst := make(map[string]*existingMount)
 	for _, m := range mounts {
-		key := m.Src + "→" + m.Dst
-		existing[key] = &existingMount{entry: m}
+		em := &existingMount{entry: m}
+		existing[m.Src+"→"+m.Dst] = em
+		byDst[m.Dst] = em
 	}
 
 	// Add missing mounts
 	for _, d := range desired {
 		key := d.Src + "→" + d.Dst
 		if em, ok := existing[key]; ok {
-			em.seen = true // already exists, keep it
+			em.seen = true // exact match already exists, keep it
 			continue
 		}
-		// Create the missing mount
+		// Self-heal: a different mount already occupies this dst (divergent src).
+		// Remove it so the desired mount can be created, instead of failing the
+		// whole recreate. This is the same dst — we are correcting the src, not
+		// changing where data lives, so it is safe even for PVC-backed mounts.
+		if em, ok := byDst[d.Dst]; ok && !em.seen {
+			if rmErr := c.restPOST(ctx, "/container/mounts/remove",
+				map[string]string{".id": em.entry.ID}, nil); rmErr != nil {
+				return fmt.Errorf("removing conflicting mount for dst %s: %w", d.Dst, rmErr)
+			}
+			em.seen = true // already handled; don't touch it in the cleanup loop
+		}
 		if err := c.CreateMount(ctx, listName, d.Src, d.Dst); err != nil {
 			return fmt.Errorf("creating mount %s→%s: %w", d.Src, d.Dst, err)
 		}
