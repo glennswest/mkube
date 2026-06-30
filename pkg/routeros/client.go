@@ -781,6 +781,33 @@ func (c *Client) RemoveDirectory(ctx context.Context, path string) error {
 	return c.RemoveFile(ctx, path)
 }
 
+// MoveDirectory renames a file or directory on the RouterOS filesystem by
+// assigning it a new name (a full, disk-relative path). Within a single disk
+// this is an atomic O(1) metadata operation — unlike RemoveDirectory, which
+// performs a slow recursive delete. It is used to swap a container root-dir
+// aside instantly so a fresh extraction can proceed without racing a partial
+// delete (the cause of "root-dir overlap" failures on re-create). The displaced
+// directory is reclaimed later by a background sweep.
+func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) error {
+	oldPath = strings.TrimPrefix(oldPath, "/")
+	newPath = strings.TrimPrefix(newPath, "/")
+	if oldPath == "" || newPath == "" {
+		return fmt.Errorf("MoveDirectory: empty source or destination path")
+	}
+	files, err := c.ListFiles(ctx, oldPath)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+	}
+	id, _ := files[0][".id"].(string)
+	if id == "" {
+		return fmt.Errorf("MoveDirectory: source %q found but missing .id", oldPath)
+	}
+	return c.restPOST(ctx, "/file/set", map[string]string{".id": id, "name": newPath}, nil)
+}
+
 // EnsureDirectory ensures a directory exists on the RouterOS filesystem.
 // RouterOS auto-creates intermediate directories when a file is uploaded.
 // We upload a tiny marker file to force directory creation, then verify.

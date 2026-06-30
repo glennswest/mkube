@@ -36,6 +36,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -172,6 +173,7 @@ func main() {
 		log:      log,
 		digests:  make(map[string]string),
 		kickPoll: make(chan struct{}, 1),
+		trashCh:  make(chan string, 64),
 		ros:      rosClient,
 		http: &http.Client{
 			Transport: loadRegistryTransport(log),
@@ -220,6 +222,7 @@ type Updater struct {
 	http     *http.Client      // for registry / mkube API calls
 	ros      *routeros.Client  // native RouterOS API (port 8728), single TCP connection
 	kickPoll chan struct{}     // SSE-triggered immediate poll
+	trashCh  chan string       // root-dirs swapped aside (".trash-<uuid>"), pending lazy deletion
 }
 
 func (u *Updater) run(ctx context.Context) {
@@ -233,6 +236,11 @@ func (u *Updater) run(ctx context.Context) {
 	// Maintains a persistent TCP connection to mkube — when mkube dies,
 	// the socket breaks immediately and we restart it.
 	go u.watchMkubeSocket(ctx)
+
+	// Start the lazy trash collector. Container swaps rename the old root-dir
+	// aside (".trash-<uuid>") instead of deleting it in-line; this goroutine
+	// reclaims those directories one at a time, off the critical path.
+	go u.runTrashGC(ctx)
 
 	// Initial poll immediately
 	u.poll(ctx)
@@ -778,6 +786,103 @@ func tarAddFile(tw *tar.Writer, name, srcPath string, size int64) error {
 
 // replaceContainer pre-pulls the new image as a tarball, then stops, removes,
 // and recreates the container using the local tarball file.
+// trashSuffix marks a container root-dir that has been renamed aside and is
+// awaiting lazy deletion by runTrashGC. The full token is ".trash-<uuid>" so
+// names are unique even when multiple swaps run concurrently.
+const trashSuffix = ".trash-"
+
+// swapRootDirAside renames a container's root-dir out of the way so a fresh
+// extraction can start immediately. A rename is atomic and O(1) on the same
+// disk, whereas an in-line recursive delete is slow and can leave the path
+// partially populated — the cause of "root-dir overlap" failures on re-create
+// (and the resulting mkube-update crash-loops). The displaced directory is
+// queued for the background collector. Falls back to the old best-effort
+// in-place delete only if the rename itself fails.
+func (u *Updater) swapRootDirAside(ctx context.Context, rootDir string) {
+	if rootDir == "" {
+		return
+	}
+	if exists, err := u.ros.FileExists(ctx, rootDir); err == nil && !exists {
+		return // nothing to move
+	}
+	trash := fmt.Sprintf("%s%s%s", strings.TrimSuffix(rootDir, "/"), trashSuffix, uuid.NewString())
+	if err := u.ros.MoveDirectory(ctx, rootDir, trash); err != nil {
+		u.log.Warnw("root-dir rename failed, falling back to in-place delete",
+			"rootDir", rootDir, "error", err)
+		_ = u.ros.RemoveDirectory(ctx, rootDir)
+		return
+	}
+	u.log.Infow("swapped root-dir aside for lazy GC", "rootDir", rootDir, "trash", trash)
+	select {
+	case u.trashCh <- trash:
+	default: // queue full — the periodic pattern sweep will still find it
+	}
+}
+
+// runTrashGC reclaims root-dirs that were swapped aside by swapRootDirAside.
+// It deletes them one at a time (best-effort); any that fail are retried on the
+// next tick. It also rediscovers trash by pattern so directories left behind by
+// a previous process (or a crash mid-swap) are still collected.
+func (u *Updater) runTrashGC(ctx context.Context) {
+	pending := make(map[string]struct{})
+	for _, p := range u.discoverTrashDirs(ctx) {
+		pending[p] = struct{}{}
+	}
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case p := <-u.trashCh:
+			pending[p] = struct{}{}
+		case <-ticker.C:
+			for _, p := range u.discoverTrashDirs(ctx) {
+				pending[p] = struct{}{}
+			}
+			for p := range pending {
+				if err := u.ros.RemoveDirectory(ctx, p); err != nil {
+					u.log.Debugw("trash GC: delete deferred", "path", p, "error", err)
+					continue
+				}
+				u.log.Infow("trash GC: reclaimed", "path", p)
+				delete(pending, p)
+			}
+		}
+	}
+}
+
+// discoverTrashDirs lists ".trash-*" directories sitting alongside the bootstrap
+// container's root-dir. This is the cross-restart safety net for the critical
+// kube.gt.lo case; runtime swaps of other containers are delivered via trashCh.
+func (u *Updater) discoverTrashDirs(ctx context.Context) []string {
+	if !u.cfg.Bootstrap.Enabled || u.cfg.Bootstrap.Container.RootDir == "" {
+		return nil
+	}
+	parent := trashParentDir(u.cfg.Bootstrap.Container.RootDir)
+	entries, err := u.ros.ListDirectory(ctx, parent)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, name := range entries {
+		if strings.Contains(name, trashSuffix) {
+			out = append(out, strings.TrimSuffix(parent, "/")+"/"+name)
+		}
+	}
+	return out
+}
+
+// trashParentDir returns the parent directory of a root-dir path using
+// forward-slash semantics (RouterOS paths are always "/"-separated).
+func trashParentDir(p string) string {
+	p = strings.TrimSuffix(p, "/")
+	if i := strings.LastIndex(p, "/"); i > 0 {
+		return p[:i]
+	}
+	return p
+}
+
 func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) error {
 	log := u.log.With("container", name, "image", imageRef)
 
@@ -818,15 +923,11 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	}
 	time.Sleep(2 * time.Second)
 
-	// Step 5: Remove old root-dir to force fresh extraction.
-	// If root-dir survives, RouterOS skips extraction and reuses the old binary.
-	if ct.RootDir != "" {
-		log.Infow("cleaning root-dir for fresh extraction", "rootDir", ct.RootDir)
-		if err := u.ros.RemoveDirectory(ctx, ct.RootDir); err != nil {
-			log.Warnw("failed to remove root-dir, continuing", "rootDir", ct.RootDir, "error", err)
-		}
-		time.Sleep(time.Second)
-	}
+	// Step 5: Swap the old root-dir aside via atomic rename so extraction
+	// starts from a clean path. This avoids the "root-dir overlap" race that a
+	// slow in-line recursive delete causes; the displaced dir is reclaimed
+	// later by runTrashGC.
+	u.swapRootDirAside(ctx, ct.RootDir)
 
 	// Step 6: Create new container from pre-staged tarball
 	spec := routeros.ContainerSpec{
@@ -978,11 +1079,8 @@ func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *
 		time.Sleep(2 * time.Second)
 	}
 
-	// Clean root-dir
-	if origSpec.RootDir != "" {
-		_ = u.ros.RemoveDirectory(ctx, origSpec.RootDir)
-		time.Sleep(time.Second)
-	}
+	// Swap the old root-dir aside so the rollback extraction starts clean.
+	u.swapRootDirAside(ctx, origSpec.RootDir)
 
 	// Create from previous tarball
 	spec := routeros.ContainerSpec{
@@ -1151,6 +1249,10 @@ func (u *Updater) bootstrap(ctx context.Context) error {
 		Logging:     bc.Container.Logging,
 		StartOnBoot: bc.Container.StartOnBoot,
 	}
+
+	// A previous failed replace can leave a stale root-dir that would make
+	// /container/add fail with "root-dir overlap" — swap it aside first.
+	u.swapRootDirAside(ctx, bc.Container.RootDir)
 
 	log.Infow("creating mkube container from tarball", "name", spec.Name, "rosPath", rosPath)
 	if err := u.ros.CreateContainer(ctx, spec); err != nil {
