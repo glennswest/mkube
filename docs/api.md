@@ -138,6 +138,11 @@ Base URL: `http://192.168.200.2:8082`
 | `POST` | `/api/v1/namespaces/{ns}/baremetalhosts/{name}/refresh` | Refresh single BMH |
 | `POST` | `/api/v1/baremetalhosts/refresh` | Refresh all BMHs |
 
+Secondary NICs (`spec.nics[]`): `{mac, ip, role, network, hostname}` — each gets a
+DHCP reservation with gateway `0.0.0.0` (no default route) and no PXE options,
+plus a DNS A record. `hostname` overrides the default `{spec.hostname}-{role}`
+name (e.g. `server1b` instead of `server1a-b`). `network` defaults to `spec.network`.
+
 ## DNS/DHCP Proxy Resources (namespace = network name, proxied to microdns)
 
 | Method | Endpoint | Purpose |
