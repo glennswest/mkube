@@ -127,10 +127,13 @@ networks:
         bootFile: "pxelinux.0"
         # Reservations managed via BMH objects in NATS + microdns REST API
   # g16 — flat /20 core fabric on dsw1 (g10 physical collapse; see CLAUDE.md).
-  # Bare-metal hosts live at 192.168.16.100–16.120 via BMH-managed reservations:
-  # blades server1–8 as a/b pairs (a = 1G boot NIC w/ PXE at even IPs from .100,
-  # b = Mellanox 40G, no gateway/PXE, odd IPs), storage server9 at .120.
-  # 192.168.31.0/24 is reserved for services (DNS at .252, mkube IPAM below).
+  # Address plan: infra at the bottom (16.1 gw, 16.2 dsw1, 16.3 switch10);
+  # bare-metal hosts from 192.168.16.100 with the whole 16.x–29.x space to grow
+  # into (48-port fabric): blades server1–8 as a/b pairs (a = 1G boot NIC w/
+  # PXE at even IPs from .100, b = Mellanox 40G, no gateway/PXE, odd IPs),
+  # storage server9 (R730xd) at .120. Dynamic DHCP is only 192.168.30.0/24.
+  # Services live at the top in 192.168.31.0/24: mkube pod IPAM 31.10–31.199,
+  # pxe/bmh-operator 31.200, fastregistry 31.201, DNS 31.252.
   - name: g16
     type: data
     bridge: bridge-g16
@@ -149,15 +152,17 @@ networks:
           ip: "192.168.31.252"
         - name: dsw1
           ip: "192.168.16.2"
+        - name: pxe
+          ip: "192.168.31.200"
+        - name: fastregistry
+          ip: "192.168.31.201"
       dhcp:
         enabled: true
-        # Dynamic range sits above the static host block (16.100–16.199 reserved
-        # for bare metal, 17.x–19.x headroom for future statics).
-        rangeStart: "192.168.20.1"
+        rangeStart: "192.168.30.1"
         rangeEnd: "192.168.30.254"
         leaseTime: 600
-        # TFTP served by bmh-operator (pxe.g10.lo) — routed from the /20 via rose1.
-        nextServer: "192.168.10.200"
+        # TFTP served by bmh-operator (pxe.g16.lo, 31.200) — fabric-local.
+        nextServer: "192.168.31.200"
         bootFile: "undionly.kpxe"
         bootFileEfi: "ipxe.efi"
         # Reservations managed via BMH objects in NATS + microdns REST API
@@ -230,7 +235,7 @@ console:
   cloudidURL: "http://192.168.200.20:8090"
 
 bmh:
-  pxeManagerURL: "http://pxe.g10.lo:8080"
+  pxeManagerURL: "http://pxe.g16.lo:8080"
   dhcpLeaseURL: "http://192.168.11.252:8080"
   watchInterval: 30
 
