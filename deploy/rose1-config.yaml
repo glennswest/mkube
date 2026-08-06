@@ -126,6 +126,41 @@ networks:
         nextServer: "192.168.10.9"
         bootFile: "pxelinux.0"
         # Reservations managed via BMH objects in NATS + microdns REST API
+  # g16 — flat /20 core fabric on dsw1 (g10 physical collapse; see CLAUDE.md).
+  # Bare-metal hosts live at 192.168.16.100–16.120 via BMH-managed reservations:
+  # blades server1–8 as a/b pairs (a = 1G boot NIC w/ PXE at even IPs from .100,
+  # b = Mellanox 40G, no gateway/PXE, odd IPs), storage server9 at .120.
+  # 192.168.31.0/24 is reserved for services (DNS at .252, mkube IPAM below).
+  - name: g16
+    type: data
+    bridge: bridge-g16
+    cidr: "192.168.16.0/20"
+    gateway: "192.168.16.1"
+    ipamStart: "192.168.31.10"
+    ipamEnd: "192.168.31.199"
+    dns:
+      endpoint: "http://192.168.31.252:8080"
+      zone: "g16.lo"
+      server: "192.168.31.252"
+      staticRecords:
+        - name: rose1
+          ip: "192.168.16.1"
+        - name: dns
+          ip: "192.168.31.252"
+        - name: dsw1
+          ip: "192.168.16.2"
+      dhcp:
+        enabled: true
+        # Dynamic range sits above the static host block (16.100–16.199 reserved
+        # for bare metal, 17.x–19.x headroom for future statics).
+        rangeStart: "192.168.20.1"
+        rangeEnd: "192.168.30.254"
+        leaseTime: 600
+        # TFTP served by bmh-operator (pxe.g10.lo) — routed from the /20 via rose1.
+        nextServer: "192.168.10.200"
+        bootFile: "undionly.kpxe"
+        bootFileEfi: "ipxe.efi"
+        # Reservations managed via BMH objects in NATS + microdns REST API
   - name: gw
     bridge: bridge-g1
     cidr: "192.168.1.0/24"

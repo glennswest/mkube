@@ -54,10 +54,11 @@ type BMHSpec struct {
 // Secondary NICs get DHCP reservations with no default gateway and no PXE
 // options, preventing competing routes and accidental PXE boot.
 type BMHNICSpec struct {
-	MAC     string `json:"mac"`
-	IP      string `json:"ip,omitempty"`
-	Role    string `json:"role"`              // "data", "mgmt", "storage"
-	Network string `json:"network,omitempty"` // defaults to spec.network
+	MAC      string `json:"mac"`
+	IP       string `json:"ip,omitempty"`
+	Role     string `json:"role"`               // "data", "mgmt", "storage"
+	Network  string `json:"network,omitempty"`  // defaults to spec.network
+	Hostname string `json:"hostname,omitempty"` // DHCP/DNS hostname; defaults to "{spec.hostname}-{role}"
 }
 
 type BMCDetails struct {
@@ -681,7 +682,7 @@ func (p *MicroKubeProvider) syncBMHToNetwork(ctx context.Context, bmh *BareMetal
 		}
 
 		hostname := firstNonEmpty(bmh.Spec.Hostname, bmh.Name)
-		nicHostname := hostname + "-" + nic.Role
+		nicHostname := firstNonEmpty(nic.Hostname, hostname+"-"+nic.Role)
 
 		res := NetworkDHCPReservation{
 			MAC:      nic.MAC,
@@ -751,7 +752,7 @@ func (p *MicroKubeProvider) cleanRemovedNICs(ctx context.Context, oldBMH, newBMH
 
 		if nicNetwork != "" && nic.IP != "" {
 			hostname := firstNonEmpty(oldBMH.Spec.Hostname, oldBMH.Name)
-			nicHostname := hostname + "-" + nic.Role
+			nicHostname := firstNonEmpty(nic.Hostname, hostname+"-"+nic.Role)
 			if err := p.deps.NetworkMgr.DeregisterDNS(ctx, nicNetwork, nicHostname, nic.IP); err != nil {
 				p.deps.Logger.Warnw("removed NIC DNS deregistration failed",
 					"bmh", oldBMH.Name, "nic", nic.MAC, "error", err)
