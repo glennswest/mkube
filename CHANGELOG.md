@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+<!-- New unreleased changes go here -->
+
+## [v6.1.0] — 2026-08-06
 
 ### 2026-08-06
 - **feat:** `BMHNICSpec` gains `hostname` override — secondary-NIC reservations/DNS can be named explicitly (e.g. `server1b`) instead of the forced `{hostname}-{role}`. Deployed; blades server1–8 + storage server9 now carry `spec.nics[]` b-ports owned by BMH sync (a/b pairs 192.168.16.100–115, server9 16.120/121).

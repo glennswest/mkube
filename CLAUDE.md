@@ -141,7 +141,7 @@ Known test failures (pre-existing):
 
 ## Work Plan
 
-### Current Version: `v6.0.0`
+### Current Version: `v6.1.0`
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
@@ -165,7 +165,7 @@ Known test failures (pre-existing):
 18. **Overlayfs image catalog (zero-copy recreate)** (`pkg/storage/`, `pkg/runtime/routeros.go`): Eliminate the per-pod tarball untar on `CreatePod`/recreate by sharing a single read-only golden rootfs per image digest as an overlay *lower*, with a per-pod writable *upper* — so a recreate is a mount, not a copy. This is the "avoid it all" endgame for the prepull→pre-extract→catalog plan. **Owner has a solution built (not yet integrated — deferred, 2026-06-30).** Context already shipped: (Tier 1) `runImageStager` prepull keeps pulls off the recreate critical path, and the digest-validated cache (`<tarball>.digest` sidecar) reuses staged tarballs across restarts — together these drop a cold recreate to a ~1s untar. The catalog's *clone-per-pod* variant (reflink a golden dir) is **ruled out on current storage**: `/raid1` is **ext4** (confirmed live via `/api/v1/storagepools`), which has no reflink/FICLONE, so a clone is a full byte copy ≈ the untar it would replace — no win. Overlayfs sidesteps this (no copy at all, shared page cache across pods of the same image). Hard dependency: **RouterOS overlay/layered-image support** for container `root-dir` (a pre-extracted lower + writable upper) — confirm what ROS exposes, or back it with stormfs. Alternative path if overlay is unavailable: reformat `/raid1` to a reflink-capable fs (XFS-reflink/btrfs/ZFS) to reopen the clone-catalog approach. A capability probe (RouterOS accepting a container created against a pre-populated `root-dir` with no `file=`/`remote-image=`) is still untested — gate integration on it. Maps to the `[[borg-pattern-at-vfs-layer]]` VFS-layer materialization model.
 
 ### In Progress
-- [ ] (2026-08-06) **g16 follow-ups**: `fedora-siov` (Mellanox b8:59:9f:52:23:46) identified as the **pvex Mellanox card** (SR-IOV Fedora guest on the Proxmox node) — assign it a static below 16.100 when renumbering hosts down; discover server7's b-port MAC and fill the reserved 192.168.16.113; TODO #16 (network-annotation strand bug) and #17 (failover DNS per server, prefer lower IP).
+- [ ] (2026-08-06) **g16 follow-ups**: `fedora-siov` (Mellanox b8:59:9f:52:23:46) identified as the **pvex Mellanox card** — an SR-IOV test VM on the Proxmox node; owner will convert it to a plain Linux NIC (MAC will change), then give it a static below 16.100; discover server7's b-port MAC and fill the reserved 192.168.16.113; TODO #16 (network-annotation strand bug) and #17 (failover DNS per server, prefer lower IP).
 - [ ] (started 2026-03-25) End-to-end iSCSI PVC test — deploy a pod with `storageClassName: iscsi` PVC and verify data persistence
 
 ### Recently Completed
