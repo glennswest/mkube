@@ -156,6 +156,11 @@ networks:
           ip: "192.168.31.200"
         - name: fastregistry
           ip: "192.168.31.201"
+        # Console server (ipmiserial) lives on g11; aliased here for fabric-side use.
+        - name: console
+          ip: "192.168.11.200"
+        - name: ipmiserial
+          ip: "192.168.11.200"
       dhcp:
         enabled: true
         rangeStart: "192.168.30.1"

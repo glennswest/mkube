@@ -1,7 +1,9 @@
 # Changelog
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-06
+- **feat:** g16.lo aliases `console` and `ipmiserial` → 192.168.11.200 (console server on g11), added to g16 staticRecords + live zone.
 
 ## [v6.1.0] — 2026-08-06
 
