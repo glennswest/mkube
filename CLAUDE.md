@@ -82,6 +82,34 @@ go test ./...                                    # Run tests
 | g10 | 192.168.10.252 | g10.lo |
 | g11 | 192.168.11.252 | g11.lo |
 | gt | 192.168.200.199 | gt.lo |
+| g16 | 192.168.31.252 | g16.lo (flat /20 core fabric via dsw1 — see below) |
+
+### g10 → g16 physical collapse (planning reference, 2026-08-06)
+
+The Dell core switch `dsw1` (`../dellsw`) now carries a flat **`192.168.16.0/20`**
+fabric. In the "g10 collapse", the 40G switch (`switch10`/CRS326) and the
+bare-metal nodes behind it moved **off** rose1's `bridge-g10` (`qsfp28-2-1`)
+**onto** dsw1, so those physical nodes are now L2-adjacent to the /20, not g10.
+
+rose1's `bridge-g10` and its mkube containers (incl. `g10_dns_microdns`) are
+**unchanged** — only the physical nodes moved. **The g10 entry in
+`deploy/rose1-config.yaml` is retained on purpose as the migration reference**;
+do not delete it until the code changes below are planned and done.
+
+Mapping to work through when repointing the bare-metal/PXE path to g16:
+
+| Concern | g10 (current config, kept as reference) | g16 (new physical home) |
+|---|---|---|
+| CIDR / gw | `192.168.10.0/24` / `192.168.10.1` | `192.168.16.0/20` / `192.168.16.1` |
+| DNS/DHCP | `192.168.10.252` (g10.lo) | `192.168.31.252` (g16.lo), relay `relay-g16` |
+| DHCP range | `192.168.10.100–199` | hosts from `.16.10`; DHCP `.16.100+` |
+| IPAM | `192.168.10.200–250` | TBD in a g16 `networks:` entry |
+| PXE `nextServer` | `192.168.10.200` / `192.168.10.9` | must be provided on g16 |
+| `pxeManagerURL` | `http://pxe.g10.lo:8080` | `pxe.g16.lo` equivalent, TBD |
+| `iscsiPortalIP` | `192.168.10.1` (node-local on g10) | still routable via rose1, no longer node-local |
+
+Open decision: give g16 a full `networks:` entry (IPAM/DHCP/PXE) mirroring g10,
+or repoint g10's. Not decided/changed — flagged for the owner. See CHANGELOG.
 
 ## Key Patterns
 
