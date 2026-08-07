@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-08-07
+- **docs:** stormblock-registry spec moved to its own project (github.com/glennswest/stormblock-registry, `docs/spec.md`); engine profile implemented as github.com/glennswest/stormblockmk (Rust, composes stormblock unmodified). `enhancements/stormblock-registry.md` removed.
+
+### 2026-08-07
 - **docs:** New enhancement spec `enhancements/stormblock-registry.md` — sbregistry + stormblockmk in one stormd-supervised container on rose1: file-backed StormBlock slabs on /raid1 (GEM CoW bypasses ext4 no-reflink), golden volume per image digest, CoW clone per pod root-dir / PVC / PXE install medium, loopback iSCSI to the RouterOS initiator, push webhook + mkube supervision (registry starts/restarts mkube). Supersedes TODO #3 and #18; retires mkube-update and the standalone registry when complete. Phase 0 = RouterOS capability probe (loopback initiator re-attach, pre-populated root-dir without file=, LUN count, in-container mkfs).
 
 ### 2026-08-06
