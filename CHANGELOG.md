@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-08-06
+- **fix:** Pod PATCH is now a real merge patch (TODO #16 root cause). `handlePatchPod` decoded the body into an *empty* pod and persisted it as a full replace — an annotations-only patch stored a pod with no containers (container torn down, nothing left for the reconciler to recreate → stranded until manual delete/re-create; boot resync also "tracked" the gutted pod since zero containers trivially "all exist"), and a spec-only patch wiped `vkube.io/network`/`static-ip` (observed: ipmiserial recreated on the wrong network with an IPAM address). Patch body is now overlaid onto a deep copy of the existing pod, same as `handlePatchConfigMap`.
+- **fix:** `UpdatePod` gets an explicit network/static-ip change path. Blue-green reuses the existing veth/IP so it can never move a pod across networks — it cut over on the old network and the pod was later torn down and stranded. A network or static-ip change now tears down using the OLD pod (cleanup targets the old network) and runs `CreatePod` on the new network.
 - **feat:** g16.lo aliases `console` and `ipmiserial` → 192.168.11.200 (console server on g11), added to g16 staticRecords + live zone.
 
 ## [v6.1.0] — 2026-08-06

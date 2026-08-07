@@ -1274,7 +1274,13 @@ func (p *MicroKubeProvider) enrichPod(ctx context.Context, pod *corev1.Pod) {
 	}
 }
 
-// handlePatchPod applies a patch (treated as full replace) to a pod.
+// handlePatchPod applies a merge patch to a pod. The patch body is overlaid
+// onto a deep copy of the existing pod (same approach as handlePatchConfigMap):
+// fields absent from the patch keep their existing values, annotation maps
+// merge key-by-key. The previous "treated as full replace" behavior persisted
+// a pod containing ONLY the patched fields — an annotations-only patch stored
+// a pod with no containers (stranding it: nothing left for the reconciler to
+// create), and a spec-only patch silently wiped vkube.io/network/static-ip.
 func (p *MicroKubeProvider) handlePatchPod(w http.ResponseWriter, r *http.Request) {
 	ns := r.PathValue("namespace")
 	name := r.PathValue("name")
@@ -1285,35 +1291,35 @@ func (p *MicroKubeProvider) handlePatchPod(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var patch corev1.Pod
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+	merged := existing.DeepCopy()
+	if err := json.NewDecoder(r.Body).Decode(merged); err != nil {
 		http.Error(w, fmt.Sprintf("invalid patch JSON: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	// Preserve identity and creation time from existing pod
-	patch.Namespace = ns
-	patch.Name = name
-	if patch.CreationTimestamp.IsZero() {
-		patch.CreationTimestamp = existing.CreationTimestamp
+	merged.Namespace = ns
+	merged.Name = name
+	if merged.CreationTimestamp.IsZero() {
+		merged.CreationTimestamp = existing.CreationTimestamp
 	}
 
 	// Persist and update
 	if p.deps.Store != nil {
 		storeKey := ns + "." + name
-		if _, err := p.deps.Store.Pods.PutJSON(r.Context(), storeKey, &patch); err != nil {
+		if _, err := p.deps.Store.Pods.PutJSON(r.Context(), storeKey, merged); err != nil {
 			http.Error(w, fmt.Sprintf("persisting pod patch: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if err := p.UpdatePod(r.Context(), &patch); err != nil {
+	if err := p.UpdatePod(r.Context(), merged); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	patch.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
-	podWriteJSON(w, http.StatusOK, &patch)
+	merged.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+	podWriteJSON(w, http.StatusOK, merged)
 }
 
 // handleUpdateConfigMap replaces a ConfigMap (PUT).

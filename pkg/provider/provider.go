@@ -1193,6 +1193,28 @@ var errStagingFailed = errors.New("blue-green staging failed")
 // avoiding the 120s+ extraction downtime of a destructive delete+create.
 func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
+
+	// Explicit network/static-ip change path. Blue-green reuses the existing
+	// veth and IP, so it can never move a pod to another network — the old
+	// implicit path cut over on the OLD network, then the reconciler tore the
+	// container down and the pod was stranded. Tear down using the OLD pod
+	// (so veth/alias/DNS cleanup targets the old network), then create fresh
+	// on the new one.
+	if old, ok := p.pods.Get(podKey(pod)); ok {
+		oldNet := old.Annotations[annotationNetwork]
+		newNet := pod.Annotations[annotationNetwork]
+		oldIP := old.Annotations[annotationStaticIP]
+		newIP := pod.Annotations[annotationStaticIP]
+		if (newNet != "" && newNet != oldNet) || (newIP != "" && oldIP != "" && newIP != oldIP) {
+			log.Infow("pod network/static-ip changed — destructive recreate on new network",
+				"oldNetwork", oldNet, "newNetwork", newNet, "oldIP", oldIP, "newIP", newIP)
+			p.recordEvent(pod, "NetworkChange",
+				fmt.Sprintf("Recreating pod %s/%s on network %s (%s)", pod.Namespace, pod.Name, newNet, newIP), "Normal")
+			p.teardownForUpdate(ctx, old)
+			return p.CreatePod(ctx, pod)
+		}
+	}
+
 	log.Infow("updating pod (blue-green)")
 
 	if err := p.blueGreenUpdate(ctx, pod); err != nil {
