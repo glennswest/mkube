@@ -116,6 +116,7 @@ type MicroKubeProvider struct {
 	redeploying     *safemap.Map[string, bool]                           // pod keys currently being redeployed
 	createFailures  *safemap.Map[string, int]                            // pod key -> consecutive CreatePod failures
 	createBackoff   *safemap.Map[string, *containerRestartState]         // pod key -> creation backoff tracking
+	dnsHealthFails  *safemap.Map[string, int]                            // network -> consecutive failed DNS health queries
 	networkFailures *safemap.Map[string, int]                            // pod key -> consecutive network health failures
 	restartBackoff  *safemap.Map[string, *containerRestartState]         // container name -> restart backoff tracking
 	cleanupTickCounter  int                                  // scheduler tick counter for auto-cleanup
@@ -407,6 +408,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		redeploying:      safemap.New[string, bool](),
 		createFailures:   safemap.New[string, int](),
 		createBackoff:    safemap.New[string, *containerRestartState](),
+		dnsHealthFails:   safemap.New[string, int](),
 		networkFailures:  safemap.New[string, int](),
 		restartBackoff:   safemap.New[string, *containerRestartState](),
 		jobLogBuf:        newJobLogStore(),

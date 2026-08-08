@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### 2026-08-07
+- **fix:** Managed-DNS health is now measured by ANSWERING QUERIES, not RouterOS mount-list inspection. The old check treated a missing `/etc/microdns` mount as fatal drift and rebuilt the pod — but microdns is database-driven (TOML mount is bootstrap-only), and flaky mount queries produced false verdicts that SIGTERMed healthy DNS servers (2026-08-07: g8/dns killed while serving, 11-minute outage that took the owner's workstation off `.lo` resolution; g9/g11/g16 rolled the same way on prior days). `managedDNSPodHealthy` now resolves `dns.<zone>` against the instance (UDP :53, 2s timeout) and declares unhealthy only after 3 consecutive failed cycles.
+- **fix(infra):** g8 DHCP pool now hands out a secondary DNS (192.168.1.252/gw) after 192.168.8.252, so a g8-dns outage degrades instead of taking clients offline (applied via microdns API, database-driven).
+
+### 2026-08-07
 - **docs:** stormblock-registry spec moved to its own project (github.com/glennswest/stormblock-registry, `docs/spec.md`); engine profile implemented as github.com/glennswest/stormblockmk (Rust, composes stormblock unmodified). `enhancements/stormblock-registry.md` removed.
 
 ### 2026-08-07

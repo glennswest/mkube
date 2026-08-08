@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	gonet "net"
 	"net/http"
 	"sort"
 	"strings"
@@ -224,19 +225,22 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 		}
 		podMapKey := net.Name + "/dns"
 		if podKeys[podMapKey] {
-			// Pod is tracked, but "tracked" is not the same as "healthy". If its
-			// container lost the config mount (mount-list drifted or was cleared),
-			// the instance is running the default config — no recursor, no forward
-			// zones — and silently fails recursion. Nothing reconciles mounts for
-			// an already-running pod, so it never self-heals. Rebuild it (CreatePod
-			// re-adds mounts and the generated config), one per cycle to stay rolling.
+			// Pod is tracked, but "tracked" is not the same as "healthy".
+			// Health = the instance ANSWERS DNS QUERIES. microdns is
+			// database-driven (the TOML mount is bootstrap-only, historical),
+			// so mount-list inspection is both obsolete and dangerous: flaky
+			// RouterOS mount queries caused false "drift" verdicts that tore
+			// down perfectly healthy DNS pods (observed 2026-08-07: g8/dns
+			// SIGTERMed while serving, 11-minute outage; g9/g11/g16 rolled the
+			// same way on prior days). A pod is rebuilt only after it fails to
+			// answer real queries for several consecutive cycles.
 			if driftRepaired || p.managedDNSPodHealthy(ctx, net.Name) {
 				continue
 			}
 			if p.podWorker.IsPendingOrProcessing(podMapKey) {
 				continue
 			}
-			p.deps.Logger.Warnw("managed DNS pod lost its config mount, rebuilding", "network", net.Name)
+			p.deps.Logger.Warnw("managed DNS pod not answering queries, rebuilding", "network", net.Name)
 			p.pods.Delete(podMapKey) // untrack so the create path below rebuilds container+mounts+config
 			driftRepaired = true
 			// fall through to the create/enqueue logic
@@ -287,29 +291,50 @@ func (p *MicroKubeProvider) reconcileManagedDNSPods(ctx context.Context) {
 	}
 }
 
-// managedDNSPodHealthy reports whether a tracked managed-DNS pod's container
-// still has its config mount (dst /etc/microdns). A missing config mount means
-// the container is running without its generated TOML — recursion and
-// forward-zones break silently — so reconcileManagedDNSPods rebuilds it. On a
-// non-RouterOS runtime or a transient query error it returns true (assume
-// healthy) so a hiccup never triggers an unnecessary recreate.
+// managedDNSPodHealthy reports whether a tracked managed-DNS pod is actually
+// serving: it queries the instance for the zone's own "dns" record (a
+// mkube-seeded static record every managed network carries). An answer means
+// healthy — regardless of what the RouterOS mount list claims (microdns is
+// database-driven; the config mount is bootstrap-only). To keep one dropped
+// packet from destroying a serving pod, unhealthy is declared only after
+// dnsHealthFailThreshold consecutive cycles of query failure.
 func (p *MicroKubeProvider) managedDNSPodHealthy(ctx context.Context, netName string) bool {
-	cli := p.routerOSClient()
-	if cli == nil {
+	network, ok := p.networks.Get(netName)
+	if !ok || network.Spec.DNS.Server == "" || network.Spec.DNS.Zone == "" {
 		return true
 	}
-	container := netName + "_dns_microdns"
-	mounts, err := cli.ListMountsByList(ctx, container)
-	if err != nil {
+	server := network.Spec.DNS.Server
+	resolver := &gonet.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (gonet.Conn, error) {
+			d := gonet.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, "udp", gonet.JoinHostPort(server, "53"))
+		},
+	}
+	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	name := "dns." + strings.TrimSuffix(network.Spec.DNS.Zone, ".")
+	if _, err := resolver.LookupHost(qctx, name); err == nil {
+		p.dnsHealthFails.Delete(netName)
 		return true
+	} else {
+		p.deps.Logger.Debugw("managed DNS health query failed", "network", netName, "query", name, "error", err)
 	}
-	for _, m := range mounts {
-		if m.Dst == "/etc/microdns" {
-			return true
-		}
+	fails, _ := p.dnsHealthFails.Get(netName)
+	fails++
+	if fails >= dnsHealthFailThreshold {
+		p.dnsHealthFails.Delete(netName)
+		p.deps.Logger.Warnw("managed DNS failed consecutive health queries",
+			"network", netName, "fails", fails, "query", name)
+		return false
 	}
-	return false
+	p.dnsHealthFails.Set(netName, fails)
+	return true
 }
+
+// dnsHealthFailThreshold is how many consecutive reconcile cycles a managed
+// DNS pod must fail real queries before it is declared unhealthy and rebuilt.
+const dnsHealthFailThreshold = 3
 
 // ReconcileNetworkConfigMaps regenerates DNS ConfigMaps from the current
 // Network CRD state. Call after loading both networks and configmaps from
