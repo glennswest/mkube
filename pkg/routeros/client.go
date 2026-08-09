@@ -1318,6 +1318,13 @@ type FileDisk struct {
 	Free           string `json:"free,omitempty"`
 	ISCSIExport    string `json:"iscsi-export"`
 	ISCSIServerIQN string `json:"iscsi-server-iqn,omitempty"`
+	// Populated for disks that are *consumed* from a remote target rather
+	// than exported by this device (type=iscsi / type=nvme-tcp).
+	ISCSIAddress   string `json:"iscsi-address,omitempty"`
+	ISCSIIQN       string `json:"iscsi-iqn,omitempty"`
+	NVMeTCPAddress string `json:"nvme-tcp-address,omitempty"`
+	NVMeTCPNQN     string `json:"nvme-tcp-nqn,omitempty"`
+	BlockDevice    string `json:"block-device,omitempty"`
 }
 
 // CreateISCSITarget creates a file-backed disk and enables iSCSI export.
@@ -1449,6 +1456,79 @@ func (c *Client) CreateFileDisk(ctx context.Context, filePath string, sizeBytes 
 		}
 	}
 	return "", fmt.Errorf("created file disk for %s but could not find it", rosPath)
+}
+
+// AttachNetworkDisk attaches a REMOTE block target as a local disk, the
+// opposite direction to CreateFileDisk (which exports a local file).
+//
+// `transport` is "iscsi" or "nvme-tcp"; `target` is the IQN or NQN. RouterOS
+// takes no LUN/namespace argument, which is why stormblockmk gives every
+// volume its own target — one target, one volume, nothing to select.
+//
+// Idempotent: an existing disk for the same (address, target) is returned
+// rather than duplicated, because attaching the same target twice yields two
+// disk entries for one volume and, if both get mounted, two independent ext4
+// journals over the same blocks.
+func (c *Client) AttachNetworkDisk(ctx context.Context, transport, address, target string) (string, error) {
+	if existing, err := c.FindNetworkDisk(ctx, transport, address, target); err == nil && existing != nil {
+		return existing.ID, nil
+	}
+
+	params := map[string]string{"type": transport}
+	switch transport {
+	case "nvme-tcp":
+		params["nvme-tcp-address"] = address
+		params["nvme-tcp-nqn"] = target
+	case "iscsi":
+		params["iscsi-address"] = address
+		params["iscsi-iqn"] = target
+	default:
+		return "", fmt.Errorf("unsupported disk transport %q", transport)
+	}
+	if err := c.restPOST(ctx, "/disk/add", params, nil); err != nil {
+		return "", fmt.Errorf("attaching %s target %s at %s: %w", transport, target, address, err)
+	}
+
+	// RouterOS assigns the slot and id; find what it just created.
+	disk, err := c.FindNetworkDisk(ctx, transport, address, target)
+	if err != nil {
+		return "", err
+	}
+	if disk == nil {
+		return "", fmt.Errorf("attached %s target %s but could not find the disk entry", transport, target)
+	}
+	return disk.ID, nil
+}
+
+// FindNetworkDisk locates an attached remote target by transport + address +
+// target name. Returns (nil, nil) when there is no such disk.
+func (c *Client) FindNetworkDisk(ctx context.Context, transport, address, target string) (*FileDisk, error) {
+	var disks []FileDisk
+	if err := c.restGET(ctx, "/disk", &disks); err != nil {
+		return nil, fmt.Errorf("listing disks: %w", err)
+	}
+	for i := range disks {
+		d := &disks[i]
+		if d.Type != transport {
+			continue
+		}
+		switch transport {
+		case "nvme-tcp":
+			if d.NVMeTCPNQN == target && (address == "" || strings.HasPrefix(d.NVMeTCPAddress, address)) {
+				return d, nil
+			}
+		case "iscsi":
+			if d.ISCSIIQN == target && (address == "" || strings.HasPrefix(d.ISCSIAddress, address)) {
+				return d, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// RemoveDisk removes any disk entry by id (file-backed or attached target).
+func (c *Client) RemoveDisk(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/disk/remove", map[string]string{".id": id}, nil)
 }
 
 // RemoveFileDisk removes a file-backed disk entry.

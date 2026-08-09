@@ -267,10 +267,39 @@ type StorageConfig struct {
 	// If empty, falls back to the first network's gateway.
 	ISCSIPortalIP string `yaml:"iscsiPortalIP,omitempty"`
 
+	// stormblockmk — backs PVCs with `storageClassName: stormblock`.
+	Stormblock StormblockConfig `yaml:"stormblock,omitempty"`
+
 	// Garbage collection
 	GCIntervalMinutes int  `yaml:"gcIntervalMinutes"`
 	GCKeepLastN       int  `yaml:"gcKeepLastN"` // keep last N unused images
 	GCDryRun          bool `yaml:"gcDryRun"`    // log only, don't delete
+}
+
+// StormblockConfig points mkube at a stormblockmk instance for thin,
+// copy-on-write PVC volumes.
+type StormblockConfig struct {
+	// Management API base, e.g. "http://192.168.200.21:9090". Empty disables
+	// stormblock PVCs (a claim asking for the class then fails loudly rather
+	// than silently getting a plain directory).
+	Endpoint string `yaml:"endpoint,omitempty"`
+
+	// Bearer token for that API. stormblockmk generates one into
+	// /data/meta/api-token on first boot unless it runs insecure, so prefer
+	// TokenFile and mount the same PVC read-only, or set the token explicitly
+	// on both sides.
+	Token     string `yaml:"token,omitempty"`
+	TokenFile string `yaml:"tokenFile,omitempty"`
+
+	// Filesystem template to clone new volumes from ("mkfs once"). When set,
+	// a PVC is a CoW clone of a pre-formatted filesystem and no format runs
+	// per claim. Empty means format each new volume.
+	Template string `yaml:"template,omitempty"`
+
+	// Preferred transport for attaching volumes: "iscsi" (default) or
+	// "nvme-tcp". RouterOS 7.22 supports both; NVMe-TCP keeps a persistent
+	// controller and is the faster path.
+	Transport string `yaml:"transport,omitempty"`
 }
 
 // MountMapping maps a container-internal path to its host-visible path.

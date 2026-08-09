@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-08-09
+- **feat:** `storageClassName: stormblock` PVCs (`pkg/provider/pvc_stormblock.go`). A claim now provisions a **thin CoW volume from stormblockmk** — `POST /mk/v1/volumes {name, size_bytes, export: true, from_template?}` — which mkube attaches with the RouterOS initiator over whichever transport the export reports (iSCSI or **NVMe-TCP**), then mounts and records idempotently through the same annotations/`waitForDiskMount` path the `iscsi` class already uses. With `storage.stormblock.template` set the volume is a clone of a pre-formatted filesystem, so no `mkfs` runs per claim. Deleting with `?purge=true` detaches the disk and hands the volume back (`DELETE /mk/v1/volumes/{id}`), so exports, portals and space are not leaked; a failed attach rolls the volume back.
+- **feat:** `pkg/routeros`: `AttachNetworkDisk`/`FindNetworkDisk`/`RemoveDisk` — attach a **remote** target as a local disk (the opposite direction to `CreateFileDisk`), for both `iscsi` and `nvme-tcp`. Idempotent by (transport, address, target) because attaching one target twice yields two disk entries for one volume, and two mounts over the same blocks means two independent ext4 journals. `FileDisk` gained the consumed-target fields.
+- **feat:** `storage.stormblock` config: `endpoint`, `token`/`tokenFile` (mkube#15 — stormblockmk requires a bearer token), `template`, `transport`.
+
 ### 2026-08-07
 - **fix:** Managed-DNS health is now measured by ANSWERING QUERIES, not RouterOS mount-list inspection. The old check treated a missing `/etc/microdns` mount as fatal drift and rebuilt the pod — but microdns is database-driven (TOML mount is bootstrap-only), and flaky mount queries produced false verdicts that SIGTERMed healthy DNS servers (2026-08-07: g8/dns killed while serving, 11-minute outage that took the owner's workstation off `.lo` resolution; g9/g11/g16 rolled the same way on prior days). `managedDNSPodHealthy` now resolves `dns.<zone>` against the instance (UDP :53, 2s timeout) and declares unhealthy only after 3 consecutive failed cycles.
 - **fix(infra):** g8 DHCP pool now hands out a secondary DNS (192.168.1.252/gw) after 192.168.8.252, so a g8-dns outage degrades instead of taking clients offline (applied via microdns API, database-driven).

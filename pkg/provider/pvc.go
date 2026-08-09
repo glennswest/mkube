@@ -64,6 +64,18 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 			pvc = newPVC
 		}
 
+		// stormblock-backed PVC: a thin CoW volume from stormblockmk, attached
+		// over iSCSI or NVMe-TCP and mounted by RouterOS.
+		if isStormblockPVC(pvc) {
+			hostPath, err := p.provisionStormblockPVC(ctx, pvc)
+			if err != nil {
+				p.deps.Logger.Errorw("failed to provision stormblock PVC",
+					"pvc", key, "error", err)
+				return "", false
+			}
+			return hostPath, true
+		}
+
 		// iSCSI-backed PVC: uses file-backed disk with ext4, mounted by RouterOS
 		if isISCSIPVC(pvc) {
 			hostPath, err := p.resolveISCSIPVCVolume(ctx, pvc)
@@ -357,6 +369,12 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 		if isISCSIPVC(pvc) {
 			if err := p.cleanupISCSIPVC(r.Context(), pvc); err != nil {
 				p.deps.Logger.Warnw("failed to cleanup iSCSI PVC", "pvc", key, "error", err)
+			}
+		} else if isStormblockPVC(pvc) {
+			// Detach the disk, then hand the volume back to stormblockmk —
+			// otherwise the thin volume, its export and its portal all leak.
+			if err := p.deprovisionStormblockPVC(r.Context(), pvc); err != nil {
+				p.deps.Logger.Warnw("failed to cleanup stormblock PVC", "pvc", key, "error", err)
 			}
 		} else {
 			hostPath := p.pvcHostPath(pvc)
