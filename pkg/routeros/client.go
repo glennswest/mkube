@@ -215,7 +215,18 @@ const nativeRunAttempts = 4
 // assume a half-open TCP session and force a reconnect.
 const timeoutStreakLimit = 3
 
+// defaultRunTimeout caps a single native-API request when the caller's
+// context carries no deadline. Without it, a lost reply (however caused)
+// blocks the calling goroutine forever — observed 2026-08-09 wedging all 16
+// concurrent CreatePod workers for 25+ minutes.
+const defaultRunTimeout = 3 * time.Minute
+
 func (c *Client) nativeRun(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultRunTimeout)
+		defer cancel()
+	}
 	var lastErr error
 	for attempt := 0; attempt < nativeRunAttempts; attempt++ {
 		if ctx.Err() != nil {
