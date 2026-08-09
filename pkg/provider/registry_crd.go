@@ -53,14 +53,6 @@ type RegistryStatus struct {
 	Alive      bool   `json:"alive,omitempty"`
 	PodCount   int    `json:"podCount,omitempty"`
 	ImageCount int    `json:"imageCount,omitempty"`     // number of repositories in catalog
-	// TLSCert is the PEM certificate this registry serves, recorded here so
-	// the pull path can trust it. It is deliberately kept on the Registry
-	// object rather than read back out of the registry's ConfigMap: Registry
-	// objects load before ConfigMaps do, so a ConfigMap lookup during the
-	// startup sync finds nothing and the trust pool comes up without the
-	// certificate — every pull then fails "certificate signed by unknown
-	// authority" until something happens to re-sync.
-	TLSCert string `json:"tlsCert,omitempty"`
 }
 
 // RegistryList is a list of Registry objects.
@@ -150,13 +142,7 @@ func (p *MicroKubeProvider) syncLocalRegistries() {
 		if ip := reg.Spec.StaticIP; ip != "" {
 			addrs = append(addrs, net.JoinHostPort(ip, port))
 		}
-		// Prefer the copy on the Registry object — it is loaded before
-		// ConfigMaps are, so it is the only source available during the
-		// startup sync. Fall back to the ConfigMap for registries recorded
-		// before the certificate was tracked here.
-		if reg.Status.TLSCert != "" {
-			cas = append(cas, reg.Status.TLSCert)
-		} else if cert, _, ok := p.existingRegistryTLS("registry-"+reg.Name+"-config", reg.Spec.Network); ok {
+		if cert, _, ok := p.existingRegistryTLS("registry-"+reg.Name+"-config", reg.Spec.Network); ok {
 			cas = append(cas, cert)
 		}
 	}
@@ -784,26 +770,13 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 	// would invalidate the copy mkube already trusts.
 	if cert, key, ok := p.existingRegistryTLS(cmName, reg.Spec.Network); ok {
 		data["tls.crt"], data["tls.key"] = cert, key
-		reg.Status.TLSCert = cert
 	} else if cert, key, err := generateRegistryTLS(reg.Spec.Hostname, reg.Spec.StaticIP); err == nil {
 		data["tls.crt"], data["tls.key"] = cert, key
-		reg.Status.TLSCert = cert
 		log.Infow("generated registry TLS certificate",
 			"hostname", reg.Spec.Hostname, "ip", reg.Spec.StaticIP)
 	} else {
 		log.Warnw("could not generate registry TLS cert — registry will serve plaintext only",
 			"error", err)
-	}
-
-	// Persist the certificate on the Registry object so the startup sync can
-	// trust it without depending on ConfigMaps having loaded yet.
-	if reg.Status.TLSCert != "" {
-		p.registries.Set(reg.Name, reg)
-		if p.deps.Store != nil && p.deps.Store.Registries != nil {
-			if _, err := p.deps.Store.Registries.PutJSON(ctx, reg.Name, reg); err != nil {
-				log.Warnw("persisting registry TLS cert", "error", err)
-			}
-		}
 	}
 
 	cm := corev1.ConfigMap{

@@ -325,6 +325,16 @@ func (mt *MigrationTracker) Unsubscribe(id int) {
 func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.deps.Store = s
 	p.deps.Logger.Infow("NATS store attached to provider")
+	// ConfigMaps and Secrets load FIRST: almost everything else depends on
+	// them. Pods mount them, deployments reference them, and a managed
+	// registry keeps its TLS certificate in one — LoadRegistriesFromStore
+	// syncs that certificate into the image-pull trust pool as it loads.
+	// Loaded after their dependents, the dependents come up referencing
+	// objects that are not in memory yet: the registry case surfaced as every
+	// pull failing "certificate signed by unknown authority", because the
+	// trust pool was built 9ms before the ConfigMap holding the cert arrived.
+	p.LoadConfigMapsFromStore(context.Background())
+	p.LoadSecretsFromStore(context.Background())
 	p.LoadBMHFromStore(context.Background())
 	p.LoadDeploymentsFromStore(context.Background())
 	p.LoadPVCsFromStore(context.Background())
@@ -335,12 +345,6 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.dhcpMu.Unlock()
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
-	p.LoadConfigMapsFromStore(context.Background())
-	// Registries loaded above, but their TLS certs live in ConfigMaps that were
-	// not in memory yet — re-sync now so the pull path trusts them from the
-	// first attempt rather than after the next registry write.
-	p.syncLocalRegistries()
-	p.LoadSecretsFromStore(context.Background())
 	p.ReconcileNetworkConfigMaps(context.Background())
 	p.LoadISCSICdromsFromStore(context.Background())
 	p.LoadISCSIDisksFromStore(context.Background())
