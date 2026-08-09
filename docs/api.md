@@ -47,6 +47,8 @@ Base URL: `http://192.168.200.2:8082`
 | `GET` | `/api/v1/namespaces/{ns}/persistentvolumeclaims` | List PVCs in namespace |
 | `GET` | `/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}` | Get PVC |
 | `POST` | `/api/v1/namespaces/{ns}/persistentvolumeclaims` | Create PVC |
+| `PUT` | `/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}` | Update PVC |
+| `DELETE` | `/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}` | Delete PVC |
 
 Storage classes (`spec.storageClassName`, or the `vkube.io/pvc-type` annotation):
 
@@ -55,8 +57,6 @@ Storage classes (`spec.storageClassName`, or the `vkube.io/pvc-type` annotation)
 | *(pool name / empty)* | directory under a storage pool | default; `vkube.io/storage-pool` or the class name selects the pool |
 | `iscsi` | RouterOS file-backed disk, exported and mounted locally | `pkg/provider/pvc_iscsi.go` |
 | `stormblock` | **thin CoW volume from stormblockmk**, attached over iSCSI or NVMe-TCP | needs `storage.stormblock.endpoint` + token; CoW snapshots, clone-from-template (no mkfs per PVC), thin overcommit. Delete with `?purge=true` to release the volume. |
-| `PUT` | `/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}` | Update PVC |
-| `DELETE` | `/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}` | Delete PVC |
 
 ## Networks (cluster-scoped)
 
