@@ -537,7 +537,17 @@ func runSharedServices(
 	log.Infow("BOOT: provider created", "phase_ms", time.Since(phaseStart).Milliseconds(), "total_ms", time.Since(bootStart).Milliseconds())
 
 	// ── Load resources from store ────────────────────────────────────
+	// ConfigMaps and Secrets FIRST: nearly everything else references them.
+	// A managed registry's TLS certificate lives in its ConfigMap and
+	// LoadRegistriesFromStore syncs it into the image-pull trust pool as it
+	// loads — ordered the other way, the pool is built from an empty
+	// ConfigMap set and every pull from that registry fails "certificate
+	// signed by unknown authority". The stormblock PVC token likewise lives
+	// in a Secret. (provider.SetStore has a twin of this sequence, already
+	// ordered this way — keep them in step until they are deduplicated.)
 	if kvStore != nil {
+		p.LoadConfigMapsFromStore(ctx)
+		p.LoadSecretsFromStore(ctx)
 		p.LoadBMHFromStore(ctx)
 		p.LoadDeploymentsFromStore(ctx)
 		p.LoadPVCsFromStore(ctx)
@@ -545,7 +555,6 @@ func runSharedServices(
 		p.MigrateNetworkConfig(ctx)
 		p.LoadRegistriesFromStore(ctx)
 		p.MigrateRegistryConfig(ctx)
-		p.LoadConfigMapsFromStore(ctx)
 		p.LoadISCSICdromsFromStore(ctx)
 		p.LoadISCSIDisksFromStore(ctx)
 		p.LoadBootConfigsFromStore(ctx)
