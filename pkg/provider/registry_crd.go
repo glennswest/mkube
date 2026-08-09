@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -96,6 +97,33 @@ func (p *MicroKubeProvider) LoadRegistriesFromStore(ctx context.Context) {
 	if len(keys) > 0 {
 		p.deps.Logger.Infow("loaded registries from store", "count", len(keys))
 	}
+	p.syncLocalRegistries()
+}
+
+// syncLocalRegistries tells the storage manager every address that belongs to
+// a registry we manage, so pulls from it use the local transport rather than
+// being treated as a public registry over HTTPS.
+//
+// Each registry contributes both forms a pod might reference it by — its
+// hostname and its static IP, each with the listen port.
+func (p *MicroKubeProvider) syncLocalRegistries() {
+	if p.deps.StorageMgr == nil {
+		return
+	}
+	var addrs []string
+	for _, reg := range p.registries.Snapshot() {
+		port := strings.TrimPrefix(reg.Spec.ListenAddr, ":")
+		if port == "" {
+			port = "5000"
+		}
+		if h := reg.Spec.Hostname; h != "" {
+			addrs = append(addrs, net.JoinHostPort(h, port))
+		}
+		if ip := reg.Spec.StaticIP; ip != "" {
+			addrs = append(addrs, net.JoinHostPort(ip, port))
+		}
+	}
+	p.deps.StorageMgr.SetLocalRegistries(addrs)
 }
 
 // MigrateRegistryConfig migrates config.yaml RegistryConfig into a Registry CRD
@@ -281,6 +309,9 @@ func (p *MicroKubeProvider) handleCreateRegistry(w http.ResponseWriter, r *http.
 	}
 
 	p.registries.Set(reg.Name, &reg)
+	// Before deploying: the pull path must know this address is local, or the
+	// first image pulled from it fails against HTTPS.
+	p.syncLocalRegistries()
 
 	// Auto-deploy managed registry pod
 	if reg.Spec.Managed {
@@ -391,6 +422,7 @@ func (p *MicroKubeProvider) handleDeleteRegistry(w http.ResponseWriter, r *http.
 	}
 
 	p.registries.Delete(name)
+	p.syncLocalRegistries()
 
 	podWriteJSON(w, http.StatusOK, metav1.Status{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
@@ -732,6 +764,12 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 				annotationNetwork:     reg.Spec.Network,
 				annotationStaticIP:    reg.Spec.StaticIP,
 				annotationImagePolicy: "auto",
+				// Publish the registry under the hostname its spec declares.
+				// Without this, DNS is derived from pod/container names and a
+				// registry ends up as "registry.registry-<name>.<zone>" — a
+				// name nothing references, so the registry is unreachable by
+				// the hostname pods actually pull from.
+				annotationAliases: reg.Spec.Hostname,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -858,6 +896,9 @@ func (p *MicroKubeProvider) teardownManagedRegistry(ctx context.Context, reg *Re
 // handleManagedRegistryTransition handles managed flag changes on update/patch.
 func (p *MicroKubeProvider) handleManagedRegistryTransition(ctx context.Context, wasManaged bool, reg *Registry) {
 	nowManaged := reg.Spec.Managed
+	// Hostname, IP or port may have changed — refresh what the pull path
+	// considers local before anything tries to use the new address.
+	p.syncLocalRegistries()
 
 	switch {
 	case !wasManaged && nowManaged:

@@ -40,6 +40,14 @@ type Manager struct {
 	images            map[string]*CachedImage // image ref -> cache entry
 	volumes           map[string]*ProvisionedVolume
 	registryTransport http.RoundTripper // TLS transport for local registry
+	// extraLocal holds addresses of every other registry mkube knows about,
+	// fed from the Registry CRDs by SetLocalRegistries. Kept separate from
+	// registryCfg.LocalAddresses on purpose: that list means "aliases of THE
+	// primary registry, rewrite them to it", which is the opposite of what a
+	// second, independent registry wants. Guarded by its own lock because it
+	// is read on the pull path while the main mutex may be held.
+	muLocal    sync.RWMutex
+	extraLocal []string
 }
 
 // CachedImage tracks a cached OCI image tarball on the RouterOS filesystem.
@@ -616,7 +624,34 @@ func (m *Manager) isLocalRegistry(imageRef string) bool {
 			return true
 		}
 	}
+	m.muLocal.RLock()
+	defer m.muLocal.RUnlock()
+	for _, addr := range m.extraLocal {
+		if registry == addr {
+			return true
+		}
+	}
 	return false
+}
+
+// SetLocalRegistries records the addresses of every registry mkube manages,
+// so images hosted on them are pulled over the local transport (plain HTTP,
+// no keychain) instead of being treated as a public registry.
+//
+// Without this, a second registry fails with "server gave HTTP response to
+// HTTPS client" — the pull path only knew the one address baked into
+// registry.localAddresses. Callers pass every known address form (hostname
+// and static IP, each with the listen port); duplicates are harmless.
+//
+// Deliberately NOT merged into registryCfg.LocalAddresses: that list also
+// drives rewriteLocalhost, which rewrites every entry to the primary address.
+// Adding a second registry there would silently rewrite its refs back to the
+// first one.
+func (m *Manager) SetLocalRegistries(addrs []string) {
+	m.muLocal.Lock()
+	defer m.muLocal.Unlock()
+	m.extraLocal = append([]string(nil), addrs...)
+	m.log.Infow("local registry addresses updated", "addresses", m.extraLocal)
 }
 
 // ClearImageDigest removes the session entry for an image so the next
