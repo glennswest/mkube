@@ -285,11 +285,17 @@ type StormblockConfig struct {
 	Endpoint string `yaml:"endpoint,omitempty"`
 
 	// Bearer token for that API. stormblockmk generates one into
-	// /data/meta/api-token on first boot unless it runs insecure, so prefer
-	// TokenFile and mount the same PVC read-only, or set the token explicitly
-	// on both sides.
-	Token     string `yaml:"token,omitempty"`
-	TokenFile string `yaml:"tokenFile,omitempty"`
+	// /data/meta/api-token on first boot unless it runs insecure.
+	//
+	// Prefer TokenSecret: a token in this file would be a plaintext secret in
+	// git. TokenSecret names an mkube Secret ("<namespace>/<name>", key
+	// "token" unless TokenSecretKey says otherwise), which is stored
+	// AES-256-GCM-encrypted in the KV store. TokenFile reads it off disk (e.g.
+	// stormblockmk's own PVC mounted read-only). Token is last resort.
+	TokenSecret    string `yaml:"tokenSecret,omitempty"`
+	TokenSecretKey string `yaml:"tokenSecretKey,omitempty"`
+	TokenFile      string `yaml:"tokenFile,omitempty"`
+	Token          string `yaml:"token,omitempty"`
 
 	// Filesystem template to clone new volumes from ("mkfs once"). When set,
 	// a PVC is a CoW clone of a pre-formatted filesystem and no format runs

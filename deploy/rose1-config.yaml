@@ -188,6 +188,15 @@ networks:
 storage:
   basePath: /raid1/images
   tarballCache: /raid1/cache
+  # stormblockmk backs `storageClassName: stormblock` PVCs: thin CoW volumes,
+  # attached over iSCSI or NVMe-TCP (whichever the export reports) and mounted
+  # by RouterOS. The token is a Secret, not a literal — stormblockmk generates
+  # one into /data/meta/api-token on first boot, and putting it here would
+  # commit a credential to git.
+  stormblock:
+    endpoint: "http://192.168.200.21:9090"
+    tokenSecret: "gt/stormblock-token"   # key: token
+    # template: "ext4-1g"   # clone a pre-formatted fs instead of mkfs per PVC
   selfRootDir: raid1/images/kube.gt.lo
   iscsiPortalIP: "192.168.10.1"
   persistentMounts:

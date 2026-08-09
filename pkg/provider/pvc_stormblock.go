@@ -80,7 +80,31 @@ func (p *MicroKubeProvider) newStormblockClient() (*sbClient, error) {
 	if cfg.Endpoint == "" {
 		return nil, fmt.Errorf("storage.stormblock.endpoint is not configured")
 	}
-	token := cfg.Token
+	// Secret first: keeps the token out of the config file (and therefore out
+	// of git), and it is already decrypted in memory by the Secret store.
+	token := ""
+	if cfg.TokenSecret != "" {
+		ns, name, ok := strings.Cut(cfg.TokenSecret, "/")
+		if !ok {
+			return nil, fmt.Errorf("storage.stormblock.tokenSecret %q must be \"namespace/name\"", cfg.TokenSecret)
+		}
+		secret, found := p.secrets.Get(ns + "/" + name)
+		if !found {
+			return nil, fmt.Errorf("stormblock token Secret %s not found", cfg.TokenSecret)
+		}
+		key := cfg.TokenSecretKey
+		if key == "" {
+			key = "token"
+		}
+		raw, has := secret.Data[key]
+		if !has {
+			return nil, fmt.Errorf("stormblock token Secret %s has no key %q", cfg.TokenSecret, key)
+		}
+		token = strings.TrimSpace(string(raw))
+	}
+	if token == "" {
+		token = cfg.Token
+	}
 	if token == "" && cfg.TokenFile != "" {
 		b, err := os.ReadFile(cfg.TokenFile)
 		if err != nil {
