@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	gonet "net"
@@ -314,12 +315,33 @@ func (p *MicroKubeProvider) managedDNSPodHealthy(ctx context.Context, netName st
 	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	name := "dns." + strings.TrimSuffix(network.Spec.DNS.Zone, ".")
-	if _, err := resolver.LookupHost(qctx, name); err == nil {
+	_, err := resolver.LookupHost(qctx, name)
+	if err == nil {
 		p.dnsHealthFails.Delete(netName)
 		return true
-	} else {
-		p.deps.Logger.Debugw("managed DNS health query failed", "network", netName, "query", name, "error", err)
 	}
+	// A NAME error is a healthy answer: the instance replied, it just has no
+	// such record. Treating it as a failure is what took every managed DNS
+	// pod down on 2026-08-09 — any zone lacking a `dns` A record was rebuilt
+	// on a loop, one per reconcile cycle, until nothing was serving. Only a
+	// timeout or a refused/unreachable socket means "not serving".
+	var dnsErr *gonet.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+		p.dnsHealthFails.Delete(netName)
+		return true
+	}
+	p.deps.Logger.Debugw("managed DNS health query failed",
+		"network", netName, "query", name, "error", err)
+	// Second opinion before doing anything destructive: if TCP/53 accepts a
+	// connection the instance is alive even if the query path is unhappy.
+	if conn, derr := gonet.DialTimeout("tcp", gonet.JoinHostPort(server, "53"), 2*time.Second); derr == nil {
+		_ = conn.Close()
+		p.dnsHealthFails.Delete(netName)
+		p.deps.Logger.Debugw("managed DNS query failed but port 53 is open — treating as healthy",
+			"network", netName)
+		return true
+	}
+
 	fails, _ := p.dnsHealthFails.Get(netName)
 	fails++
 	if fails >= dnsHealthFailThreshold {
