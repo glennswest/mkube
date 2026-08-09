@@ -887,6 +887,13 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 		}
 	}
 
+	// The certificate only exists as of the ConfigMap written above, so the
+	// trust pool has to be rebuilt now — before the first pull is attempted.
+	// Syncing only *before* deploy (as the create handler does, to register the
+	// address) leaves the pool without this registry's cert, and every pull
+	// fails with "certificate signed by unknown authority".
+	p.syncLocalRegistries()
+
 	// 4. Create the pod (goes through ContainerRuntime interface)
 	if err := p.CreatePod(ctx, &pod); err != nil {
 		return fmt.Errorf("creating registry pod: %w", err)

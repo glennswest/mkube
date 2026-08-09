@@ -336,6 +336,10 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	p.LoadRegistriesFromStore(context.Background())
 	p.MigrateRegistryConfig(context.Background())
 	p.LoadConfigMapsFromStore(context.Background())
+	// Registries loaded above, but their TLS certs live in ConfigMaps that were
+	// not in memory yet — re-sync now so the pull path trusts them from the
+	// first attempt rather than after the next registry write.
+	p.syncLocalRegistries()
 	p.LoadSecretsFromStore(context.Background())
 	p.ReconcileNetworkConfigMaps(context.Background())
 	p.LoadISCSICdromsFromStore(context.Background())
