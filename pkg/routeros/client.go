@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	rosapi "github.com/go-routeros/routeros/v3"
@@ -48,6 +49,13 @@ type Client struct {
 	containerCacheMu sync.Mutex
 	containerCache   []Container
 	containerCacheAt time.Time
+
+	// timeoutStreak counts consecutive per-request deadline expiries on the
+	// current connection. A request timing out does not by itself mean the
+	// connection is dead (RouterOS may just be slow extracting a tarball),
+	// but an unbroken run of them can mean a half-open TCP session that
+	// only a reconnect will clear.
+	timeoutStreak atomic.Int32
 }
 
 // Container represents a RouterOS container as returned by /container/print.
@@ -194,17 +202,34 @@ func (c *Client) Close() error {
 // reconnect on connection failure. Device errors (RouterOS !trap) are
 // returned without retry since they indicate a command-level problem,
 // not a connection problem.
+//
+// The connection is shared by every in-flight request via tag multiplexing,
+// so classifying errors correctly matters: a request hitting its own context
+// deadline must NOT close the shared connection (that would fail every other
+// in-flight request and cascade into a mass CreateFailed), while a genuine
+// connection death must be retried here rather than surfaced, because the
+// caller's operation is valid — only the transport hiccuped.
+const nativeRunAttempts = 4
+
+// timeoutStreakLimit: after this many consecutive request deadline expiries,
+// assume a half-open TCP session and force a reconnect.
+const timeoutStreakLimit = 3
+
 func (c *Client) nativeRun(ctx context.Context, words ...string) (*rosapi.Reply, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	var lastErr error
+	for attempt := 0; attempt < nativeRunAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		c.connMu.Lock()
 		if c.conn == nil {
 			if err := c.dialNative(); err != nil {
 				c.connMu.Unlock()
-				if attempt == 0 {
-					time.Sleep(time.Duration(1<<attempt) * time.Second) // 1s backoff
-					continue
+				lastErr = err
+				if !sleepCtx(ctx, backoffDelay(attempt)) {
+					return nil, ctx.Err()
 				}
-				return nil, fmt.Errorf("reconnect failed: %w", err)
+				continue
 			}
 		}
 		conn := c.conn
@@ -212,6 +237,7 @@ func (c *Client) nativeRun(ctx context.Context, words ...string) (*rosapi.Reply,
 
 		reply, err := conn.RunContext(ctx, words...)
 		if err == nil {
+			c.timeoutStreak.Store(0)
 			return reply, nil
 		}
 
@@ -221,15 +247,57 @@ func (c *Client) nativeRun(ctx context.Context, words ...string) (*rosapi.Reply,
 			return nil, err
 		}
 
-		// Connection-level error — close and retry
-		c.connMu.Lock()
-		if c.conn == conn { // another goroutine hasn't already reconnected
-			c.conn.Close()
-			c.conn = nil
+		// This request's context expired or was canceled. That is a
+		// per-request condition, not proof the shared connection is dead —
+		// leave it up for the other multiplexed requests. Only after an
+		// unbroken streak of timeouts (a likely half-open session) do we
+		// force a reconnect for the NEXT caller; this one is out of time
+		// either way.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			if errors.Is(err, context.DeadlineExceeded) &&
+				c.timeoutStreak.Add(1) >= timeoutStreakLimit {
+				c.timeoutStreak.Store(0)
+				c.closeConn(conn)
+			}
+			return nil, err
 		}
-		c.connMu.Unlock()
+
+		// Connection-level error — close the dead connection and retry the
+		// request on a fresh one instead of surfacing the transient error.
+		lastErr = err
+		c.closeConn(conn)
+		if !sleepCtx(ctx, backoffDelay(attempt)) {
+			return nil, ctx.Err()
+		}
 	}
-	return nil, fmt.Errorf("RouterOS API unreachable after reconnect")
+	return nil, fmt.Errorf("RouterOS API unreachable after reconnect: %w", lastErr)
+}
+
+// closeConn closes conn and clears it as the shared connection, unless
+// another goroutine has already replaced it.
+func (c *Client) closeConn(conn *rosapi.Client) {
+	c.connMu.Lock()
+	if c.conn == conn {
+		c.conn.Close()
+		c.conn = nil
+	}
+	c.connMu.Unlock()
+}
+
+// backoffDelay returns the pause before retry attempt+1: 250ms, 500ms, 1s, 2s.
+func backoffDelay(attempt int) time.Duration {
+	return 250 * time.Millisecond << attempt
+}
+
+// sleepCtx sleeps for d unless ctx is done first; reports whether the full
+// sleep completed.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // ─── Container Operations ───────────────────────────────────────────────────
