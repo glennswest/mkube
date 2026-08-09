@@ -353,6 +353,8 @@ func (p *MicroKubeProvider) SetStore(s *store.Store) {
 	go p.RunResourceWatchers(context.Background())
 	// Reclaim root-dirs swapped aside by swapRootDirAside, off the reconcile path.
 	go p.runRootDirGC(context.Background())
+	// Reap static bridge-port entries left pointing at deleted interfaces (#14).
+	go p.runBridgePortGC(context.Background())
 	// Pre-stage image tarballs (+ digest sidecars) for tracked pods so pulls stay
 	// off the pod-(re)create critical path. Off the reconcile path.
 	go p.runImageStager(context.Background())
@@ -564,6 +566,50 @@ func (p *MicroKubeProvider) swapRootDirAside(ctx context.Context, rootDir string
 // swapRootDirAside. It runs on its own goroutine — never on the reconcile path —
 // because deleting a large root-dir tree is slow and must not stall pod
 // reconciliation.
+// runBridgePortGC reaps static bridge-port entries whose interface no longer
+// exists. RemoveVeth now removes a veth's entry before deleting it, so this is
+// a safety net rather than the primary mechanism: it self-heals installs that
+// already leaked (20,737 orphans on rose1, #14) and covers any path that
+// deletes an interface without going through RemoveVeth.
+//
+// Runs once shortly after startup, then hourly — orphans accumulate one per
+// container recreate, so there is nothing to gain from a tight loop, and the
+// unfiltered port listing is the expensive kind of call to repeat.
+func (p *MicroKubeProvider) runBridgePortGC(ctx context.Context) {
+	cli := p.routerOSClient()
+	if cli == nil {
+		return // static bridge ports are a RouterOS concept
+	}
+	sweep := func() {
+		removed, err := cli.GCOrphanedBridgePorts(ctx)
+		if err != nil {
+			p.deps.Logger.Warnw("bridge-port GC failed", "error", err)
+			return
+		}
+		if removed > 0 {
+			p.deps.Logger.Infow("reaped orphaned bridge ports", "count", removed)
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(90 * time.Second):
+		sweep()
+	}
+
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
 func (p *MicroKubeProvider) runRootDirGC(ctx context.Context) {
 	if p.routerOSClient() == nil {
 		return // rename/trash scheme is RouterOS-only

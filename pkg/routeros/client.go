@@ -572,7 +572,17 @@ func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) 
 
 // RemoveVeth removes a virtual ethernet interface by name.
 // It looks up the veth's .id first, since RouterOS requires .id for removal.
+//
+// The static bridge-port entry goes first. RouterOS garbage-collects the
+// *dynamic* port when an interface disappears, but the static entry
+// AddBridgePort created survives with a dangling `*XX` interface reference,
+// and nothing ever reaps it — that leak reached 20,737 orphans on rose1 (#14).
+// It has to happen before the veth is deleted: once the interface is gone the
+// filtered query cannot resolve it by name, which is why the orphans were
+// invisible to the idempotency check in the first place.
 func (c *Client) RemoveVeth(ctx context.Context, name string) error {
+	c.removeBridgePortFor(ctx, name)
+
 	veths, err := c.ListVeths(ctx)
 	if err != nil {
 		return fmt.Errorf("listing veths to find %q: %w", name, err)
@@ -583,6 +593,48 @@ func (c *Client) RemoveVeth(ctx context.Context, name string) error {
 		}
 	}
 	return nil // already gone
+}
+
+// removeBridgePortFor deletes the static bridge-port entry belonging to an
+// interface, if there is one. Best-effort: a missing entry, a dynamic port
+// (which RouterOS reaps itself) or a query failure are all fine — the caller
+// is on a teardown path and a leaked entry must never block it.
+func (c *Client) removeBridgePortFor(ctx context.Context, iface string) {
+	var ports []BridgePort
+	if err := c.restGET(ctx, "/interface/bridge/port?interface="+iface, &ports); err != nil {
+		return
+	}
+	for _, p := range ports {
+		if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
+			continue // dynamic ports cannot be removed; RouterOS handles those
+		}
+	}
+}
+
+// GCOrphanedBridgePorts removes static bridge-port entries whose interface no
+// longer exists. RouterOS renders those as a dangling `*XX` id rather than a
+// name, so they are both invisible to name-filtered queries and never reaped.
+//
+// This self-heals installs that already leaked (see #14) and covers any path
+// that deletes an interface without going through RemoveVeth. Returns the
+// number removed.
+func (c *Client) GCOrphanedBridgePorts(ctx context.Context) (int, error) {
+	var ports []BridgePort
+	if err := c.restGET(ctx, "/interface/bridge/port", &ports); err != nil {
+		return 0, fmt.Errorf("listing bridge ports: %w", err)
+	}
+	removed := 0
+	for _, p := range ports {
+		// A resolvable interface prints as its name; an orphan prints as *XX.
+		if !strings.HasPrefix(p.Interface, "*") {
+			continue
+		}
+		if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
+			continue
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // AddBridgePort adds a veth to a bridge.
@@ -644,6 +696,11 @@ func (c *Client) recreateVethForBridge(ctx context.Context, name string) error {
 
 	// Remove any ghost containers still referencing this veth.
 	c.removeContainersUsingVeth(ctx, name)
+
+	// Drop the static bridge-port entry while the interface still resolves by
+	// name. Deleting the veth clears only the *dynamic* port; a static entry
+	// would be left behind pointing at nothing (#14).
+	c.removeBridgePortFor(ctx, name)
 
 	// Delete the veth — this also removes the dynamic bridge port.
 	if err := c.restPOST(ctx, "/interface/veth/remove", map[string]string{".id": id}, nil); err != nil {
