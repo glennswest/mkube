@@ -33,7 +33,14 @@ type = "http"
 url = "http://localhost:8082/healthz"
 interval_secs = 10
 failure_threshold = 3
-initial_delay_secs = 30
+# Boot must survive a fleet-wide DNS outage. Discovery alone takes ~40s, and
+# with every microdns endpoint dead each DNS-zone ensure eats a ~3s dial
+# timeout before /healthz ever starts serving — with a 30s delay stormd killed
+# mkube at ~45s on every boot, which turned a DNS outage into a control-plane
+# crash loop that could never recreate the DNS pods (observed 2026-08-09,
+# 200+ consecutive crashes). The real fix is serving /healthz before the slow
+# boot phases; until then the grace period must cover a worst-case boot.
+initial_delay_secs = 240
 
 [process.ui]
 label = "Management"
