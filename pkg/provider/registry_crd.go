@@ -100,9 +100,28 @@ func (p *MicroKubeProvider) LoadRegistriesFromStore(ctx context.Context) {
 	p.syncLocalRegistries()
 }
 
+// existingRegistryTLS returns the TLS pair already stored in a registry's
+// ConfigMap, if there is one. Redeploying must not mint a fresh certificate:
+// mkube trusts the current one, and rotating it under a running registry would
+// break every pull until the new cert propagated.
+func (p *MicroKubeProvider) existingRegistryTLS(cmName, namespace string) (cert, key string, ok bool) {
+	cm, found := p.configMaps.Get(namespace + "/" + cmName)
+	if !found || cm == nil {
+		return "", "", false
+	}
+	cert, hasCert := cm.Data["tls.crt"]
+	key, hasKey := cm.Data["tls.key"]
+	if !hasCert || !hasKey || cert == "" || key == "" {
+		return "", "", false
+	}
+	return cert, key, true
+}
+
 // syncLocalRegistries tells the storage manager every address that belongs to
 // a registry we manage, so pulls from it use the local transport rather than
-// being treated as a public registry over HTTPS.
+// being treated as a public registry over HTTPS. It also hands over each
+// registry's certificate, since those are self-signed and would otherwise fail
+// verification against the installer's CA.
 //
 // Each registry contributes both forms a pod might reference it by — its
 // hostname and its static IP, each with the listen port.
@@ -111,6 +130,7 @@ func (p *MicroKubeProvider) syncLocalRegistries() {
 		return
 	}
 	var addrs []string
+	var cas []string
 	for _, reg := range p.registries.Snapshot() {
 		port := strings.TrimPrefix(reg.Spec.ListenAddr, ":")
 		if port == "" {
@@ -122,8 +142,12 @@ func (p *MicroKubeProvider) syncLocalRegistries() {
 		if ip := reg.Spec.StaticIP; ip != "" {
 			addrs = append(addrs, net.JoinHostPort(ip, port))
 		}
+		if cert, _, ok := p.existingRegistryTLS("registry-"+reg.Name+"-config", reg.Spec.Network); ok {
+			cas = append(cas, cert)
+		}
 	}
 	p.deps.StorageMgr.SetLocalRegistries(addrs)
+	p.deps.StorageMgr.SetRegistryCAs(cas)
 }
 
 // MigrateRegistryConfig migrates config.yaml RegistryConfig into a Registry CRD
@@ -734,10 +758,31 @@ func (p *MicroKubeProvider) deployManagedRegistry(ctx context.Context, reg *Regi
 	// 1. Generate and persist ConfigMap
 	cfgYAML := p.generateRegistryConfigYAML(reg)
 	cmName := "registry-" + reg.Name + "-config"
+	data := map[string]string{"config.yaml": cfgYAML}
+
+	// TLS material rides in the same ConfigMap, which is mounted at
+	// /etc/registry — exactly where the registry looks for tls.crt/tls.key by
+	// default. With them present it serves HTTP *and* HTTPS on one port;
+	// without them it is plaintext-only and every mkube pull fails with
+	// "server gave HTTP response to HTTPS client".
+	//
+	// Reuse the existing pair when redeploying: regenerating on every deploy
+	// would invalidate the copy mkube already trusts.
+	if cert, key, ok := p.existingRegistryTLS(cmName, reg.Spec.Network); ok {
+		data["tls.crt"], data["tls.key"] = cert, key
+	} else if cert, key, err := generateRegistryTLS(reg.Spec.Hostname, reg.Spec.StaticIP); err == nil {
+		data["tls.crt"], data["tls.key"] = cert, key
+		log.Infow("generated registry TLS certificate",
+			"hostname", reg.Spec.Hostname, "ip", reg.Spec.StaticIP)
+	} else {
+		log.Warnw("could not generate registry TLS cert — registry will serve plaintext only",
+			"error", err)
+	}
+
 	cm := corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: reg.Spec.Network},
-		Data:       map[string]string{"config.yaml": cfgYAML},
+		Data:       data,
 	}
 
 	cmKey := reg.Spec.Network + "/" + cmName

@@ -385,7 +385,7 @@ func (m *Manager) getRegistryDigest(ctx context.Context, imageRef string) (strin
 	}))
 
 	if m.isLocalRegistry(imageRef) {
-		opts = append(opts, crane.WithTransport(m.registryTransport))
+		opts = append(opts, crane.WithTransport(m.transport()))
 	} else {
 		opts = append(opts, crane.WithAuthFromKeychain(
 			authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
@@ -477,7 +477,7 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 	}))
 
 	if m.isLocalRegistry(imageRef) {
-		opts = append(opts, crane.WithTransport(m.registryTransport))
+		opts = append(opts, crane.WithTransport(m.transport()))
 	} else {
 		// DefaultKeychain reads ~/.docker/config.json if present;
 		// Anonymous fallback lets the transport handle OAuth2 bearer
@@ -652,6 +652,62 @@ func (m *Manager) SetLocalRegistries(addrs []string) {
 	defer m.muLocal.Unlock()
 	m.extraLocal = append([]string(nil), addrs...)
 	m.log.Infow("local registry addresses updated", "addresses", m.extraLocal)
+}
+
+// SetRegistryCAs rebuilds the local-registry transport to trust the given
+// PEM certificates in addition to the installer's registry CA.
+//
+// Managed registries carry self-signed certificates that mkube generates for
+// them (the installer's CA key is not persisted, so nothing else can sign
+// one). Without adding them here, a pull from such a registry fails
+// certificate verification — the mirror image of the plaintext failure, and
+// just as fatal.
+func (m *Manager) SetRegistryCAs(pems []string) {
+	pool := x509.NewCertPool()
+	trusted := 0
+
+	// Start from the installer's CA so the default registry keeps verifying.
+	caFile := m.registryCfg.TLSCACertFile
+	if caFile == "" {
+		caFile = "/etc/mkube/registry-ca.crt"
+	}
+	if caPEM, err := os.ReadFile(caFile); err == nil {
+		if pool.AppendCertsFromPEM(caPEM) {
+			trusted++
+		}
+	}
+	for _, p := range pems {
+		if pool.AppendCertsFromPEM([]byte(p)) {
+			trusted++
+		}
+	}
+
+	if trusted == 0 {
+		// Nothing to verify against — keep the existing transport rather than
+		// installing an empty pool that would reject every registry.
+		m.log.Warnw("no registry CAs available; leaving transport unchanged")
+		return
+	}
+
+	m.muLocal.Lock()
+	defer m.muLocal.Unlock()
+	m.registryTransport = &http.Transport{
+		TLSClientConfig:     &tls.Config{RootCAs: pool},
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		MaxConnsPerHost:     4,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	m.log.Infow("registry trust pool rebuilt", "certificates", trusted)
+}
+
+// transport returns the current local-registry transport. Read through this
+// rather than touching the field: SetRegistryCAs swaps it at runtime whenever
+// the registry set changes.
+func (m *Manager) transport() http.RoundTripper {
+	m.muLocal.RLock()
+	defer m.muLocal.RUnlock()
+	return m.registryTransport
 }
 
 // ClearImageDigest removes the session entry for an image so the next
