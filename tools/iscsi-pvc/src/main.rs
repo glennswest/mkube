@@ -84,6 +84,12 @@ enum Commands {
         pool: String,
     },
 
+    /// Tell the target to commit its cache (SCSI SYNCHRONIZE CACHE)
+    Flush {
+        /// Target IQN
+        iqn: String,
+    },
+
     /// Give a filesystem a fresh UUID (and optionally label) — a CoW clone
     /// inherits its golden's identity byte for byte, and duplicate ext4
     /// UUIDs on one host confuse mount-by-UUID and blkid
@@ -202,6 +208,16 @@ async fn main() -> Result<()> {
                     println!("No disk found for path: /{file_path}");
                 }
             }
+        }
+
+        Commands::Flush { iqn } => {
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
+            let mut session = IscsiInitiator::connect(
+                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
+            ).await?;
+            session.synchronize_cache().await?;
+            println!("synchronize cache complete");
+            session.logout().await?;
         }
 
         Commands::Reid { iqn, label, clean } => {

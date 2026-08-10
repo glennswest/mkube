@@ -323,7 +323,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 
 	// Seed via a transient guarded container: RouterOS's own untar delivers
 	// the rootfs with modes intact.
-	if err := p.runCoWSeeder(ctx, ros, sb, created.Template.RawVolumeID, tarballPath, mountPoint); err != nil {
+	if err := p.runCoWSeeder(ctx, ros, sb, created.Template.RawVolumeID, attach, tarballPath, mountPoint); err != nil {
 		cleanupDisk()
 		return "", fmt.Errorf("seeding template: %w", err)
 	}
@@ -360,7 +360,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 // runCoWSeeder extracts the image tarball onto the mounted template volume
 // via a throwaway container, then detaches the volume and removes the
 // seeder (whose root-dir wipe then hits a path that no longer resolves).
-func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Client, sb *sbClient, rawVolumeID, tarballPath, mountPoint string) error {
+func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Client, sb *sbClient, rawVolumeID string, attach sbAttach, tarballPath, mountPoint string) error {
 	unguard := p.cowProbeGuardPod() // same shields as the probe
 	defer unguard()
 
@@ -461,6 +461,16 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 	// RouterOS unmount/sync verb.)
 	p.deps.Logger.Infow("cow seeder: settling writeback before detach", "seconds", 45)
 	time.Sleep(45 * time.Second)
+
+	// Ask the ENGINE to commit before we take the volume away. The writes
+	// reached stormblockmk — allocation grew to the full image size — so
+	// what is lost is not in RouterOS's cache but in partially-filled slab
+	// slots: bulk file data fills 4 MB slots and persists, scattered 4 KB
+	// metadata does not. SYNCHRONIZE CACHE is exactly the command for that,
+	// and RouterOS never sends it for a network disk.
+	if fErr := p.flushStormblockVolume(ctx, sb, rawVolumeID, attach); fErr != nil {
+		p.deps.Logger.Warnw("cow seeder: target flush failed", "error", fErr)
+	}
 
 	// EJECT before detaching. /disk/remove force-detaches without flushing,
 	// so everything RouterOS still held in its page cache — the directory

@@ -230,6 +230,52 @@ func (p *MicroKubeProvider) formatStormblockVolume(ctx context.Context, sb *sbCl
 	return p.formatISCSITargetExt4(ctx, portal, sbTargetName(tmp.Attach), label)
 }
 
+// flushStormblockVolume issues SCSI SYNCHRONIZE CACHE so the engine commits
+// everything it is holding.
+//
+// stormblock allocates in 4 MB slab slots and implements SYNCHRONIZE CACHE
+// as device.flush(). RouterOS appears never to issue it for a network disk,
+// which strands small scattered writes — filesystem metadata — while bulk
+// file data that fills whole slots persists. That is exactly the damage we
+// see on a seeded golden: 60 MB allocated, directory entries gone.
+func (p *MicroKubeProvider) flushStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach) error {
+	run := func(portal, target string) error {
+		out, err := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
+			"--url", p.deps.Config.RouterOS.RESTURL,
+			"--user", p.deps.Config.RouterOS.User,
+			"--password", p.deps.Config.RouterOS.Password,
+			"--portal", portal,
+			"flush", target).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("iscsi-pvc flush: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		p.deps.Logger.Infow("target cache flushed", "volume", volumeID)
+		return nil
+	}
+	if sbTransport(attach) == "iscsi" {
+		portal := attach.Address
+		if attach.Port != 0 {
+			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
+		}
+		return run(portal, sbTargetName(attach))
+	}
+	var tmp sbExport
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
+		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
+		return fmt.Errorf("creating temporary iscsi export: %w", err)
+	}
+	defer func() {
+		if tmp.ExportID != "" {
+			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+tmp.ExportID, nil, nil)
+		}
+	}()
+	portal := tmp.Attach.Address
+	if tmp.Attach.Port != 0 {
+		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
+	}
+	return run(portal, sbTargetName(tmp.Attach))
+}
+
 // reidentifyStormblockVolume gives a volume's filesystem a fresh UUID (and
 // label), optionally restoring the "cleanly unmounted" flag.
 //

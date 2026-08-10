@@ -32,6 +32,7 @@ const SCSI_TEST_UNIT_READY: u8 = 0x00;
 const SCSI_READ_CAPACITY_10: u8 = 0x25;
 const SCSI_READ_10: u8 = 0x28;
 const SCSI_WRITE_10: u8 = 0x2A;
+const SCSI_SYNCHRONIZE_CACHE_10: u8 = 0x35;
 
 // iSCSI BHS (Basic Header Segment) is always 48 bytes
 const BHS_SIZE: usize = 48;
@@ -616,6 +617,19 @@ impl IscsiInitiator {
         BigEndian::write_u16(&mut cdb[7..9], block_count);
 
         self.scsi_command(&cdb, 0, Some(data)).await?;
+        Ok(())
+    }
+
+    /// SCSI SYNCHRONIZE CACHE(10) — tell the target to commit everything it
+    /// is holding. stormblock implements this as device.flush(); RouterOS
+    /// apparently never issues it for a network disk, which would strand
+    /// small scattered writes (filesystem metadata) in partial slab slots
+    /// while bulk file data — filling whole slots — persists.
+    pub async fn synchronize_cache(&mut self) -> Result<()> {
+        let mut cdb = [0u8; 10];
+        cdb[0] = SCSI_SYNCHRONIZE_CACHE_10;
+        // LBA 0, block count 0 = flush the entire device.
+        self.scsi_command(&cdb, 0, None).await?;
         Ok(())
     }
 
