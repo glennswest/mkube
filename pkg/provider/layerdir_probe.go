@@ -105,10 +105,10 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	// after. (The clone is still provisioned above: it is the destination
 	// once we know what a complete layer looks like.)
 	layerStore := "raid1/layerprobe-store"
+	// Removed but NOT pre-created: 7.23 made container/add fail when root-dir
+	// already exists, so RouterOS may likewise expect to create its own layer
+	// store rather than be handed an empty directory.
 	_ = ros.RemoveDirectory(ctx, layerStore)
-	if err := ros.EnsureDirectory(ctx, layerStore); err != nil {
-		step("could not create %s: %v", layerStore, err)
-	}
 	defer func() { _ = ros.RemoveDirectory(context.Background(), layerStore) }()
 
 	veth := "veth_gt_cowprobe_0"
