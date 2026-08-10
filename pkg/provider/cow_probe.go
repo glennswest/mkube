@@ -265,31 +265,43 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 
 // cowProbeTryStart starts the probe container and reports whether RouterOS
 // executed it (running, or ran-to-completion with no error comment).
+//
+// Some states report neither running=true nor stopped=true (extraction,
+// freshly added); after a short grace we issue the start unconditionally —
+// waiting for stopped=true meant an indeterminate container never got
+// started at all.
 func (p *MicroKubeProvider) cowProbeTryStart(ctx context.Context, ros *routeros.Client) (bool, string) {
+	row := func(ct *routeros.Container) string {
+		return fmt.Sprintf("id=%s running=%q stopped=%q comment=%q tag=%q rootdir=%q",
+			ct.ID, ct.Running, ct.Stopped, ct.Comment, ct.Tag, ct.RootDir)
+	}
 	var lastStatus string
-	deadline := time.Now().Add(45 * time.Second)
+	startIssued := false
+	graceOver := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		ros.InvalidateContainerCache()
 		ct, err := ros.GetContainer(ctx, cowProbeContainer)
 		if err != nil {
+			lastStatus = fmt.Sprintf("lookup: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		lastStatus = fmt.Sprintf("running=%s stopped=%s comment=%q", ct.Running, ct.Stopped, ct.Comment)
+		lastStatus = row(ct)
 		if ct.IsRunning() {
 			return true, lastStatus
 		}
-		if ct.IsStopped() {
+		if !startIssued && (ct.IsStopped() || time.Now().After(graceOver)) {
 			if serr := ros.StartContainer(ctx, ct.ID); serr != nil {
 				return false, fmt.Sprintf("start failed: %v (%s)", serr, lastStatus)
 			}
+			startIssued = true
 			time.Sleep(3 * time.Second)
-			ros.InvalidateContainerCache()
-			if after, aerr := ros.GetContainer(ctx, cowProbeContainer); aerr == nil {
-				lastStatus = fmt.Sprintf("running=%s stopped=%s comment=%q", after.Running, after.Stopped, after.Comment)
-				return after.IsRunning() || (after.IsStopped() && after.Comment == ""), lastStatus
-			}
-			return false, lastStatus
+			continue
+		}
+		if startIssued && ct.IsStopped() {
+			// One-shot binary may have run to completion already.
+			return ct.Comment == "", lastStatus
 		}
 		time.Sleep(2 * time.Second)
 	}
