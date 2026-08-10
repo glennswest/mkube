@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### 2026-08-10
+- **finding(routeros):** `/disk/format-drive` does **not exist** on 7.22.2 ("no such command") — RouterOS cannot format a disk itself, so `iscsi-pvc` is the only formatter available and there is no RouterOS-written filesystem to compare signatures against.
+- **fix(iscsi-pvc):** filesystem UUIDs are now random (`/dev/urandom`, RFC 4122 v4 bits) instead of time+PID with four trailing zero bytes. This matters more for CoW than for plain PVCs: a clone inherits its golden's UUID **and label** byte for byte, so several clones mounted on one host all claim the same filesystem identity.
+- **feat(iscsi-pvc):** new `sb` command dumps superblock fields (magic, state, block size, feature_compat/incompat/ro_compat, inode size, label, UUID) and `reid` rewrites a filesystem's UUID/label — the post-clone step that gives each CoW clone its own identity.
+- **note:** our ext4 is journal-less (`feature_compat 0x08` = EXT_ATTR only) with `FILETYPE|EXTENTS` and `SPARSE_SUPER|LARGE_FILE|EXTRA_ISIZE`. RouterOS mounts it over iSCSI without complaint; the `state=0` seen in a dump of a *mounted* volume is normal (the kernel clears the clean flag while mounted and restores it on unmount) — which is precisely why a force-detached golden never seals: nothing ever restores it.
+
+### 2026-08-10
 - **finding(routeros):** RouterOS 7.22.2 attaches NVMe-TCP targets but does **not** probe or auto-mount a filesystem on them. A volume formatted ext4 (verified good — the format itself succeeds in ~340 ms) still shows `fs=-` on the `nvme-tcp1` disk row and never mounts, while the identical volume over iSCSI mounts at `/iscsiN`. rose1 is therefore back on `transport: iscsi` for volumes mkube must mount; NVMe remains correct for consumers that mount the device themselves (bare metal, or a container via device passthrough).
 - **fix(pvc):** NVMe-exported volumes are formatted through a temporary iSCSI export (`POST /mk/v1/exports {protocol:"iscsi"}`, withdrawn afterwards) — `iscsi-pvc` speaks iSCSI only and hit `early eof` against an NQN target once NVMe went live.
 

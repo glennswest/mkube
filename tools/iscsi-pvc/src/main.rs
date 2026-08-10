@@ -84,6 +84,17 @@ enum Commands {
         pool: String,
     },
 
+    /// Give a filesystem a fresh UUID (and optionally label) — a CoW clone
+    /// inherits its golden's identity byte for byte, and duplicate ext4
+    /// UUIDs on one host confuse mount-by-UUID and blkid
+    Reid {
+        /// Target IQN
+        iqn: String,
+        /// New filesystem label
+        #[arg(long)]
+        label: Option<String>,
+    },
+
     /// Dump ext4 superblock fields (for comparing our format against one
     /// RouterOS wrote itself — signatures and layouts must match)
     Sb {
@@ -185,6 +196,40 @@ async fn main() -> Result<()> {
                     println!("No disk found for path: /{file_path}");
                 }
             }
+        }
+
+        Commands::Reid { iqn, label } => {
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
+            let mut session = IscsiInitiator::connect(
+                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
+            ).await?;
+            let cap = session.read_capacity().await?;
+            let (mut sb, off) = read_superblock(&mut session, cap.block_size).await?;
+            if sb.len() < off + 264 {
+                bail!("short superblock read: {} bytes", sb.len());
+            }
+            let magic = u16::from_le_bytes([sb[off + 56], sb[off + 57]]);
+            if magic != 0xEF53 {
+                bail!("no ext4 superblock (magic 0x{magic:04x})");
+            }
+            let uuid = generate_uuid();
+            sb[off + 104..off + 120].copy_from_slice(&uuid);
+            if let Some(l) = &label {
+                let mut buf = [0u8; 16];
+                let b = l.as_bytes();
+                let n = b.len().min(16);
+                buf[..n].copy_from_slice(&b[..n]);
+                sb[off + 120..off + 136].copy_from_slice(&buf);
+            }
+            // Write the block that carries file byte 1024 back verbatim.
+            let bs = cap.block_size.max(1) as u64;
+            let lba = (1024 / bs) as u32;
+            session.write_blocks(lba, &sb[..bs as usize]).await?;
+            print!("new uuid ");
+            for b in uuid { print!("{b:02x}"); }
+            println!();
+            if let Some(l) = label { println!("new label {l}"); }
+            session.logout().await?;
         }
 
         Commands::Sb { iqn } => {
@@ -389,18 +434,23 @@ impl iscsi_pvc::ext4::BlockWriter for IscsiBlockWriter<'_> {
 }
 
 fn generate_uuid() -> [u8; 16] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    // Random, not time+pid. Every CLONE of a golden inherits its
+    // filesystem UUID byte for byte, so weak or partially-zero UUIDs make
+    // collisions between simultaneously-mounted clones far more likely —
+    // and a duplicate fs UUID is exactly what confuses mount-by-UUID and
+    // blkid caching.
     let mut uuid = [0u8; 16];
-    let nanos = t.as_nanos();
-    uuid[0..8].copy_from_slice(&nanos.to_le_bytes()[..8]);
-    // Mix in process ID
-    let pid = std::process::id();
-    uuid[8..12].copy_from_slice(&pid.to_le_bytes());
-    // Version 4 UUID markers
-    uuid[6] = (uuid[6] & 0x0F) | 0x40;
-    uuid[8] = (uuid[8] & 0x3F) | 0x80;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut uuid);
+    }
+    if uuid.iter().all(|b| *b == 0) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        uuid[0..16].copy_from_slice(&nanos.to_le_bytes());
+    }
+    uuid[6] = (uuid[6] & 0x0F) | 0x40; // version 4
+    uuid[8] = (uuid[8] & 0x3F) | 0x80; // RFC 4122 variant
     uuid
 }
+
