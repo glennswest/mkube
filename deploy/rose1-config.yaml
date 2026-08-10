@@ -202,10 +202,17 @@ storage:
   stormblock:
     endpoint: "http://192.168.200.21:9090"
     tokenSecret: "gt/stormblock-token"   # key: token
-    # Forward-safe: pre-v0.3.0 stormblockmk ignores the protocol field and
-    # exports iSCSI; v0.3.0+ honors it. mkube always attaches whatever the
-    # export reports, so this self-activates when the new image rolls out.
-    transport: "nvme-tcp"
+    # iSCSI, deliberately — NOT nvme-tcp.
+    #
+    # RouterOS 7.22.2 ATTACHES an NVMe-TCP target correctly (verified end to
+    # end: nqn…@:3304 → slot=nvme-tcp1) but never probes a filesystem on it:
+    # after a verified-good ext4 format the disk row still reads `fs=-` and
+    # nothing mounts, while the same volume over iSCSI mounts at /iscsiN.
+    # Anything mkube has to MOUNT — PVCs, CoW clones — therefore stays on
+    # iSCSI. NVMe is the right transport for consumers that mount the device
+    # themselves (a bare-metal host, or a container once device passthrough
+    # is wired up), not for the router's own mount path.
+    transport: "iscsi"
     # template: "ext4-1g"   # clone a pre-formatted fs instead of mkfs per PVC
   selfRootDir: raid1/images/kube.gt.lo
   iscsiPortalIP: "192.168.10.1"
