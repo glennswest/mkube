@@ -136,7 +136,9 @@ func (p *MicroKubeProvider) RunNVMeProbe(ctx context.Context) *NVMeProbeReport {
 				}
 			}
 			step("PASSTHROUGH 2/2: %s", p.probeContainerDeviceArg(ctx, ros))
-			for _, menu := range []string{"/container/device", "/container/devices", "/disk/device"} {
+			// Devices come from /system/hardware (passthrough shipped in 7.20)
+			// — see docs/routeros-container-changes.md.
+			for _, menu := range []string{"/system/hardware", "/system/hardware/device", "/container/config"} {
 				rows, merr := ros.ListRaw(ctx, menu)
 				if merr != nil {
 					step("menu %s: %v", menu, merr)
