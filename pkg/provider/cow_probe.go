@@ -24,6 +24,7 @@ package provider
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"context"
 	"fmt"
 	"net"
@@ -84,6 +85,10 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	if ros == nil {
 		return fail(fmt.Errorf("probe requires the RouterOS backend"))
 	}
+
+	// Shield the probe container from mkube's own orphan sweep.
+	unguard := p.cowProbeGuardPod()
+	defer unguard()
 
 	// ── 1. Volume: provision through the standard stormblock PVC path ──
 	sc := pvcTypeStormblock
@@ -373,20 +378,58 @@ func (p *MicroKubeProvider) cowProbeRemoveContainer(ctx context.Context, ros *ro
 	}
 }
 
-// cowStubTar returns a minimal tar archive holding one placeholder file —
-// the smallest thing that satisfies RouterOS's file= requirement.
+// cowStubTar returns a minimal DOCKER-SAVE archive (manifest.json + config +
+// one layer) holding a single placeholder file. RouterOS's file= extractor
+// requires the docker-save layout — a plain tar fails with "no manifest.json
+// in archive" and the container is silently auto-removed (device log,
+// 2026-08-10).
 func cowStubTar() []byte {
+	// Inner layer: one placeholder file.
+	var layer bytes.Buffer
+	lw := tar.NewWriter(&layer)
+	content := []byte("cow-probe\n")
+	_ = lw.WriteHeader(&tar.Header{Name: "cow-probe-placeholder", Mode: 0o644, Size: int64(len(content))})
+	_, _ = lw.Write(content)
+	_ = lw.Close()
+
+	layerSum := sha256.Sum256(layer.Bytes())
+	config := fmt.Sprintf(`{"architecture":"arm64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:%x"]}}`, layerSum)
+	manifest := `[{"Config":"config.json","RepoTags":["cow-probe-stub:latest"],"Layers":["layer.tar"]}]`
+
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	content := []byte("cow-probe\n")
-	_ = tw.WriteHeader(&tar.Header{
-		Name: "cow-probe-placeholder",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	})
-	_, _ = tw.Write(content)
+	add := func(name string, data []byte) {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data))})
+		_, _ = tw.Write(data)
+	}
+	add("config.json", []byte(config))
+	add("layer.tar", layer.Bytes())
+	add("manifest.json", []byte(manifest))
 	_ = tw.Close()
 	return buf.Bytes()
+}
+
+// cowProbeGuardPod registers a fake tracked pod matching the probe container
+// so mkube's own orphan sweep does not reap it mid-probe (device log showed
+// 'container removed by api:mkube' seconds after each add). Returns an
+// unguard func for cleanup.
+func (p *MicroKubeProvider) cowProbeGuardPod() func() {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cowprobe",
+			Namespace: "gt",
+			Annotations: map[string]string{
+				annotationNetwork: "gt",
+				annotationNode:    p.nodeName,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "cowprobe"}},
+		},
+	}
+	key := podKey(pod)
+	p.pods.Set(key, pod)
+	return func() { p.pods.Delete(key) }
 }
 
 // handleCoWProbePayload serves the static probe binary so the device can
