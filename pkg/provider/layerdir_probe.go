@@ -118,7 +118,10 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	}
 	defer func() { _ = p.deps.NetworkMgr.ReleaseInterface(ctx, veth) }()
 
-	const image = "192.168.200.3:5000/nats:edge"
+	// Repo:tag only — RouterOS resolves it against /container/config
+	// registry-url (http://192.168.200.3:5000). A fully-qualified ref sends
+	// the pull down the TLS path against our private CA instead.
+	const image = "nats:edge"
 	name := cowProbeContainer
 
 	remove := func() {
@@ -151,13 +154,27 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 		if err != nil {
 			return 0, err
 		}
-		deadline := time.Now().Add(8 * time.Minute)
+		settled := false
+		deadline := time.Now().Add(3 * time.Minute)
 		for time.Now().Before(deadline) {
 			ros.InvalidateContainerCache()
 			if ct, gerr := ros.GetContainer(ctx, name); gerr == nil && (ct.IsStopped() || ct.IsRunning()) {
+				settled = true
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
+		}
+		if !settled {
+			// RouterOS reports pull/extract failures only in its own log.
+			if entries, lerr := ros.TailLog(ctx, 40); lerr == nil {
+				for _, e := range entries {
+					if strings.Contains(e.Topics, "container") || strings.Contains(e.Message, "cowprobe") ||
+						strings.Contains(strings.ToLower(e.Message), "pull") || strings.Contains(strings.ToLower(e.Message), "registry") {
+						step("   device log: %s %s", e.Time, e.Message)
+					}
+				}
+			}
+			return 0, fmt.Errorf("container never settled within 3m (pull or extract failed — see device log above)")
 		}
 		elapsed := time.Since(start)
 
