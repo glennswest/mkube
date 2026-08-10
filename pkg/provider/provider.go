@@ -115,6 +115,7 @@ type MicroKubeProvider struct {
 	jobs            *safemap.Map[string, *Job]                           // namespace/name -> Job
 	storagePools    *safemap.Map[string, *StoragePool]                   // name -> StoragePool (cluster-scoped)
 	redeploying     *safemap.Map[string, bool]                           // pod keys currently being redeployed
+	cowPrewarm      *safemap.Map[string, bool] // in-flight golden prewarms by repo
 	createFailures  *safemap.Map[string, int]                            // pod key -> consecutive CreatePod failures
 	createBackoff   *safemap.Map[string, *containerRestartState]         // pod key -> creation backoff tracking
 	dnsHealthFails  *safemap.Map[string, int]                            // network -> consecutive failed DNS health queries
@@ -417,6 +418,7 @@ func NewMicroKubeProvider(deps Deps) (*MicroKubeProvider, error) {
 		jobs:             safemap.New[string, *Job](),
 		storagePools:     safemap.New[string, *StoragePool](),
 		redeploying:      safemap.New[string, bool](),
+		cowPrewarm:       safemap.New[string, bool](),
 		createFailures:   safemap.New[string, int](),
 		createBackoff:    safemap.New[string, *containerRestartState](),
 		dnsHealthFails:   safemap.New[string, int](),
@@ -2306,6 +2308,7 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 			log.Infow("registry push event, clearing digest cache and reconciling",
 				"repo", evt.Repo, "ref", evt.Reference)
 			p.deps.StorageMgr.ClearImageDigestByRepo(evt.Repo)
+			p.prewarmGoldenTemplates(evt.Repo)
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (push-triggered)", "error", err)
 			}
@@ -2313,6 +2316,7 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 			log.Infow("push-notify received, clearing digest cache and reconciling",
 				"repo", evt.Repo, "ref", evt.Reference)
 			p.deps.StorageMgr.ClearImageDigestByRepo(evt.Repo)
+			p.prewarmGoldenTemplates(evt.Repo)
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (push-notify)", "error", err)
 			}

@@ -499,3 +499,54 @@ func firstNonEmptySlice(a, b []string) []string {
 // the seeder reuses the probe's guarded identity so every reaper
 // (orphan-container sweep, veth sweep, CreatePod stale cleanup) skips it.
 var _ = metav1.Now // keep metav1 import anchored for future use
+
+// prewarmGoldenTemplates builds golden templates for cow-mode pods using the
+// pushed repo. Kicked from registry push events, so the ONE untar an image
+// ever gets overlaps the push instead of stalling the first pod create —
+// by create time the template is sealed and the pod takes the ~2s clone
+// path. One prewarm in flight per repo; a new digest gets a new template
+// (old digests' templates are left for a future GC).
+func (p *MicroKubeProvider) prewarmGoldenTemplates(repo string) {
+	if !p.cowPrewarm.SetIfAbsent(repo, true) {
+		return
+	}
+	go func() {
+		defer p.cowPrewarm.Delete(repo)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		ros := p.getRouterOSClient()
+		if ros == nil {
+			return
+		}
+		seen := map[string]bool{}
+		for _, pod := range p.allDesiredPods(ctx) {
+			if !isCoWPod(pod) {
+				continue
+			}
+			for i := range pod.Spec.Containers {
+				img := pod.Spec.Containers[i].Image
+				if repo != "" && !strings.Contains(img, repo) {
+					continue
+				}
+				if seen[img] {
+					continue
+				}
+				seen[img] = true
+				tarball, err := p.deps.StorageMgr.EnsureImage(ctx, img)
+				if err != nil {
+					p.deps.Logger.Warnw("cow prewarm: ensure image", "image", img, "error", err)
+					continue
+				}
+				digest := p.deps.StorageMgr.TarballDigest(tarball)
+				if digest == "" {
+					continue
+				}
+				if _, terr := p.ensureGoldenTemplate(ctx, ros, img, tarball, digest); terr != nil {
+					p.deps.Logger.Warnw("cow prewarm: golden template", "image", img, "error", terr)
+				} else {
+					p.deps.Logger.Infow("cow prewarm: golden template ready at push time", "image", img, "digest", digest)
+				}
+			}
+		}
+	}()
+}
