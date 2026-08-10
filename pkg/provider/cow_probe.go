@@ -231,6 +231,8 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 		step("seeder skipped: cannot read payload binary: %v", rerr)
 	} else if uerr := ros.UploadFile(ctx, payloadPath, bytes.NewReader(cowPayloadTar(bin))); uerr != nil {
 		step("seeder skipped: payload upload failed: %v", uerr)
+	} else if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, cowProbeVeth, "cowprobe.cowprobe", "gt", ""); verr != nil {
+		step("seeder skipped: veth re-ensure failed: %v", verr)
 	} else {
 		seeder := routeros.ContainerSpec{
 			Name:        seederName,
@@ -422,12 +424,24 @@ func (p *MicroKubeProvider) cowProbeTryStart(ctx context.Context, ros *routeros.
 	return false, lastStatus
 }
 
-// cowProbeRemoveContainer removes the probe container if present.
+// cowProbeRemoveContainer removes the probe container if present — via raw
+// client calls, NOT stopAndRemoveContainer: that provider helper also tears
+// down the pod's derived veths, which silently destroyed probe interfaces
+// still needed by later variants (run 9: seeder's veth was gone).
 func (p *MicroKubeProvider) cowProbeRemoveContainer(ctx context.Context, ros *routeros.Client) {
 	ros.InvalidateContainerCache()
-	if ct, err := ros.GetContainer(ctx, cowProbeContainer); err == nil {
-		p.stopAndRemoveContainer(ctx, cowProbeContainer, ct.ID)
+	ct, err := ros.GetContainer(ctx, cowProbeContainer)
+	if err != nil {
+		return
 	}
+	_ = ros.StopContainer(ctx, ct.ID)
+	for i := 0; i < 6; i++ {
+		time.Sleep(2 * time.Second)
+		if rerr := ros.RemoveContainer(ctx, ct.ID); rerr == nil {
+			break
+		}
+	}
+	ros.InvalidateContainerCache()
 }
 
 // cowPayloadTar returns a docker-save archive whose layer carries the probe
