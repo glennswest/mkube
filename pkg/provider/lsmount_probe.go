@@ -83,7 +83,7 @@ func (p *MicroKubeProvider) handleLsMount(w http.ResponseWriter, r *http.Request
 		Name:        name,
 		Interface:   veth,
 		RootDir:     rootDir,
-		Image:       strings.TrimPrefix(tarball, "/"),
+		File:        strings.TrimPrefix(tarball, "/"),
 		MountLists:  list,
 		Entrypoint:  "/bin/ls",
 		Cmd:         "-la /payload",
