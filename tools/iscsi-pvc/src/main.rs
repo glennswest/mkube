@@ -84,6 +84,13 @@ enum Commands {
         pool: String,
     },
 
+    /// Dump ext4 superblock fields (for comparing our format against one
+    /// RouterOS wrote itself — signatures and layouts must match)
+    Sb {
+        /// Target IQN
+        iqn: String,
+    },
+
     /// Connect to iSCSI target and read capacity
     Probe {
         /// Target IQN
@@ -178,6 +185,41 @@ async fn main() -> Result<()> {
                     println!("No disk found for path: /{file_path}");
                 }
             }
+        }
+
+        Commands::Sb { iqn } => {
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
+            let mut session = IscsiInitiator::connect(
+                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
+            ).await?;
+            let cap = session.read_capacity().await?;
+            let (sb, off) = read_superblock(&mut session, cap.block_size).await?;
+            if sb.len() < off + 264 {
+                bail!("short superblock read: {} bytes", sb.len());
+            }
+            let s = &sb[off..];
+            let le16 = |o: usize| u16::from_le_bytes([s[o], s[o + 1]]);
+            let le32 = |o: usize| u32::from_le_bytes([s[o], s[o + 1], s[o + 2], s[o + 3]]);
+            let label: String = s[120..136].iter().take_while(|c| **c != 0)
+                .map(|c| *c as char).collect();
+            let uuid = &s[104..120];
+            println!("device_block_size {}", cap.block_size);
+            println!("magic             0x{:04x}", le16(56));
+            println!("state             {}   (1 = cleanly unmounted)", le16(58));
+            println!("log_block_size    {}   (block size {})", le32(24), 1024u32 << le32(24));
+            println!("inodes_count      {}", le32(0));
+            println!("blocks_count      {}", le32(4));
+            println!("first_data_block  {}", le32(20));
+            println!("blocks_per_group  {}", le32(32));
+            println!("inode_size        {}", le16(88));
+            println!("feature_compat    0x{:08x}", le32(92));
+            println!("feature_incompat  0x{:08x}", le32(96));
+            println!("feature_ro_compat 0x{:08x}", le32(100));
+            println!("label             {label:?}");
+            print!("uuid              ");
+            for b in uuid { print!("{b:02x}"); }
+            println!();
+            session.logout().await?;
         }
 
         Commands::Probe { iqn } => {

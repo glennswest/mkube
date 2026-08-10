@@ -2236,3 +2236,9 @@ func (c *Client) LocalTree(devicePath string, max int) ([]string, error) {
 	}
 	return out, nil
 }
+
+// ContainerAddRawTo issues an arbitrary action command with caller-supplied
+// attributes. Capability probes use it to discover accepted argument shapes.
+func (c *Client) ContainerAddRawTo(ctx context.Context, path string, params map[string]string) error {
+	return c.restPOST(ctx, path, params, nil)
+}
