@@ -1635,6 +1635,7 @@ type FileDisk struct {
 	ID             string `json:".id"`
 	Slot           string `json:"slot"`
 	Type           string `json:"type"`
+	Parent         string `json:"parent,omitempty"`
 	FilePath       string `json:"file-path"`
 	FileSize       string `json:"file-size,omitempty"`
 	Filesystem     string `json:"fs,omitempty"`
@@ -1887,6 +1888,16 @@ func (c *Client) RemoveFileDisk(ctx context.Context, id string) error {
 }
 
 // listFileDisks returns all file-type disks.
+// ListDisks returns every /disk row (all types, including partition child
+// rows RouterOS creates when it detects a filesystem on an attached disk).
+func (c *Client) ListDisks(ctx context.Context) ([]FileDisk, error) {
+	var disks []FileDisk
+	if err := c.restGET(ctx, "/disk", &disks); err != nil {
+		return nil, err
+	}
+	return disks, nil
+}
+
 func (c *Client) listFileDisks(ctx context.Context) ([]FileDisk, error) {
 	var allDisks []FileDisk
 	err := c.restGET(ctx, "/disk", &allDisks)

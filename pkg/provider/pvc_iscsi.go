@@ -167,18 +167,25 @@ func (p *MicroKubeProvider) provisionISCSIPVC(ctx context.Context, pvc *corev1.P
 	return mountPoint, nil
 }
 
-// waitForDiskMount polls RouterOS until the file disk has a mount-point.
+// waitForDiskMount polls RouterOS until the disk has a mount-point.
+//
+// The mount-point may appear on the disk row itself (file-backed disks) or
+// on a CHILD row — RouterOS represents a filesystem it detects on an
+// attached disk as a separate partition-style entry whose `parent` is the
+// disk's slot. On timeout the error carries the relevant /disk rows so the
+// failure is diagnosable from the log.
 func (p *MicroKubeProvider) waitForDiskMount(ctx context.Context, ros *routeros.Client, diskID string, timeout time.Duration) (string, error) {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	var lastRows string
 	for {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-deadline:
-			return "", fmt.Errorf("timed out waiting for RouterOS to mount disk %s", diskID)
+			return "", fmt.Errorf("timed out waiting for RouterOS to mount disk %s (rows: %s)", diskID, lastRows)
 		case <-ticker.C:
 			disk, err := ros.GetISCSIDisk(ctx, diskID)
 			if err != nil {
@@ -187,6 +194,26 @@ func (p *MicroKubeProvider) waitForDiskMount(ctx context.Context, ros *routeros.
 			if disk.MountPoint != "" {
 				return "/" + disk.MountPoint, nil
 			}
+			// Check child rows (detected filesystem / partitions).
+			all, err := ros.ListDisks(ctx)
+			if err != nil {
+				continue
+			}
+			var rows []string
+			for i := range all {
+				d := &all[i]
+				related := d.ID == diskID ||
+					(disk.Slot != "" && (d.Parent == disk.Slot || (d.Slot != disk.Slot && strings.HasPrefix(d.Slot, disk.Slot))))
+				if !related {
+					continue
+				}
+				rows = append(rows, fmt.Sprintf("{id=%s slot=%s type=%s parent=%s fs=%s mount=%s}",
+					d.ID, d.Slot, d.Type, d.Parent, d.Filesystem, d.MountPoint))
+				if d.ID != diskID && d.MountPoint != "" {
+					return "/" + d.MountPoint, nil
+				}
+			}
+			lastRows = strings.Join(rows, " ")
 		}
 	}
 }
