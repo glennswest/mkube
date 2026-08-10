@@ -22,6 +22,8 @@ package provider
 // the decisive one failed).
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -134,8 +136,9 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	}
 	step("veth %s allocated", cowProbeVeth)
 
-	// ── 4. THE decisive step: container/add with no image source ──
-	spec := routeros.ContainerSpec{
+	// ── 4a. Baseline: imageless container/add (Phase 0 — known rejected,
+	// kept so the report always states the ground truth for this ROS build).
+	imageless := routeros.ContainerSpec{
 		Name:        cowProbeContainer,
 		Interface:   cowProbeVeth,
 		RootDir:     rootfs,
@@ -144,59 +147,166 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 		Logging:     "yes",
 		StartOnBoot: "no",
 	}
-	if err := ros.CreateContainer(ctx, spec); err != nil {
-		step("container/add REJECTED without an image source: %v", err)
-		rep.Verdict = "unsupported"
-		p.cowProbeCleanup(ctx, ros, pvc, true)
-		return rep
+	if err := ros.CreateContainer(ctx, imageless); err != nil {
+		step("A0 imageless add: REJECTED (%v)", err)
+	} else {
+		step("A0 imageless add: ACCEPTED")
+		p.cowProbeRemoveContainer(ctx, ros)
 	}
-	step("container/add ACCEPTED with pre-populated root-dir and no file=/remote-image=")
 
-	// ── 5. Does it start? ──
-	started := false
+	// ── 4b. Stub tarball on the device (one placeholder file) ──
+	stubPath := "raid1/cache/cow-probe-stub.tar"
+	if err := ros.UploadFile(ctx, stubPath, bytes.NewReader(cowStubTar())); err != nil {
+		p.cowProbeCleanup(ctx, ros, pvc, false)
+		return fail(fmt.Errorf("writing stub tarball: %w", err))
+	}
+	step("stub tarball at %s (%d bytes, single placeholder file)", stubPath, len(cowStubTar()))
+
+	// ── 4c. Variant A: stub file= with root-dir ON the pre-populated clone.
+	// Decisive question: does extraction PRESERVE the existing files?
+	specA := imageless
+	specA.File = stubPath
+	verdictA := "rejected"
+	if err := ros.CreateContainer(ctx, specA); err != nil {
+		step("A stub-into-clone add: REJECTED (%v)", err)
+	} else {
+		// Wait for extraction to settle, then check the pre-populated file.
+		time.Sleep(5 * time.Second)
+		preserved, perr := ros.FileExists(ctx, rootfs+"/bin/probe")
+		stubThere, _ := ros.FileExists(ctx, rootfs+"/cow-probe-placeholder")
+		switch {
+		case perr != nil:
+			verdictA = "accepted, preservation unknown"
+			step("A stub-into-clone add: ACCEPTED; preservation check failed: %v", perr)
+		case preserved:
+			verdictA = "accepted, pre-populated content PRESERVED"
+			step("A stub-into-clone add: ACCEPTED and pre-populated /bin/probe survived extraction (stub placeholder present: %v)", stubThere)
+			if started, status := p.cowProbeTryStart(ctx, ros); started {
+				step("A container started from the clone-backed root-dir (%s)", status)
+			} else {
+				step("A container start not clean (%s)", status)
+			}
+		default:
+			verdictA = "accepted but extraction WIPED the root-dir"
+			step("A stub-into-clone add: ACCEPTED but pre-populated /bin/probe is GONE — extraction wipes root-dir")
+		}
+		p.cowProbeRemoveContainer(ctx, ros)
+	}
+
+	// ── 4d. Variant B: stub root-dir on raid1 + clone content via MOUNT,
+	// entrypoint inside the mount (covers scratch/static-binary images).
+	mountList := "cowprobe"
+	_ = ros.RemoveMountsByList(ctx, mountList)
+	if err := ros.CreateMount(ctx, mountList, "/"+rootfs, "/payload"); err != nil {
+		step("B mount create failed: %v", err)
+	} else {
+		specB := routeros.ContainerSpec{
+			Name:        cowProbeContainer,
+			Interface:   cowProbeVeth,
+			RootDir:     "raid1/images/cowprobe-stub",
+			File:        stubPath,
+			MountLists:  mountList,
+			Entrypoint:  "/payload/bin/probe",
+			Cmd:         "--help",
+			Logging:     "yes",
+			StartOnBoot: "no",
+		}
+		if err := ros.CreateContainer(ctx, specB); err != nil {
+			step("B stub-rootdir + clone-mount add: REJECTED (%v)", err)
+		} else {
+			time.Sleep(5 * time.Second)
+			if started, status := p.cowProbeTryStart(ctx, ros); started {
+				step("B stub-rootdir + clone-mount: container RAN the binary from the mounted clone (%s)", status)
+				rep.Verdict = "supported"
+			} else {
+				step("B stub-rootdir + clone-mount: add accepted, start not clean (%s)", status)
+			}
+			p.cowProbeRemoveContainer(ctx, ros)
+		}
+		_ = ros.RemoveMountsByList(ctx, mountList)
+		_ = ros.RemoveDirectory(ctx, "raid1/images/cowprobe-stub")
+	}
+
+	// ── 4e. Variant B2: is dst=/ accepted for a mount? (full rootfs shadowing)
+	rootList := "cowproberoot"
+	_ = ros.RemoveMountsByList(ctx, rootList)
+	if err := ros.CreateMount(ctx, rootList, "/"+rootfs, "/"); err != nil {
+		step("B2 mount with dst=/: REJECTED (%v)", err)
+	} else {
+		step("B2 mount with dst=/: accepted by /container/mounts — full-root shadowing may be possible (not container-tested in this probe)")
+		_ = ros.RemoveMountsByList(ctx, rootList)
+	}
+
+	if rep.Verdict == "inconclusive" {
+		if strings.Contains(verdictA, "PRESERVED") {
+			rep.Verdict = "supported"
+		} else {
+			rep.Verdict = "unsupported"
+		}
+	}
+	step("variant A: %s", verdictA)
+
+	_ = ros.RemoveFile(ctx, stubPath)
+	p.cowProbeCleanup(ctx, ros, pvc, true)
+	step("cleanup complete")
+	return rep
+}
+
+// cowProbeTryStart starts the probe container and reports whether RouterOS
+// executed it (running, or ran-to-completion with no error comment).
+func (p *MicroKubeProvider) cowProbeTryStart(ctx context.Context, ros *routeros.Client) (bool, string) {
 	var lastStatus string
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		ros.InvalidateContainerCache()
-		ct, gerr := ros.GetContainer(ctx, cowProbeContainer)
-		if gerr != nil {
+		ct, err := ros.GetContainer(ctx, cowProbeContainer)
+		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		lastStatus = fmt.Sprintf("running=%s stopped=%s comment=%q", ct.Running, ct.Stopped, ct.Comment)
 		if ct.IsRunning() {
-			started = true
-			break
+			return true, lastStatus
 		}
 		if ct.IsStopped() {
 			if serr := ros.StartContainer(ctx, ct.ID); serr != nil {
-				step("container/start failed: %v", serr)
-				break
+				return false, fmt.Sprintf("start failed: %v (%s)", serr, lastStatus)
 			}
 			time.Sleep(3 * time.Second)
 			ros.InvalidateContainerCache()
 			if after, aerr := ros.GetContainer(ctx, cowProbeContainer); aerr == nil {
 				lastStatus = fmt.Sprintf("running=%s stopped=%s comment=%q", after.Running, after.Stopped, after.Comment)
-				// A one-shot binary may already have run and exited — a
-				// clean stopped state with no error comment counts as
-				// "RouterOS executed it".
-				started = after.IsRunning() || (after.IsStopped() && after.Comment == "")
+				return after.IsRunning() || (after.IsStopped() && after.Comment == ""), lastStatus
 			}
-			break
+			return false, lastStatus
 		}
 		time.Sleep(2 * time.Second)
 	}
-	if started {
-		step("container started from the pre-populated root-dir (%s)", lastStatus)
-		rep.Verdict = "supported"
-	} else {
-		step("container did not start cleanly (%s) — add works, start behavior needs a real init; verdict still supported for the add capability", lastStatus)
-		rep.Verdict = "supported"
-	}
+	return false, lastStatus
+}
 
-	p.cowProbeCleanup(ctx, ros, pvc, true)
-	step("cleanup complete")
-	return rep
+// cowProbeRemoveContainer removes the probe container if present.
+func (p *MicroKubeProvider) cowProbeRemoveContainer(ctx context.Context, ros *routeros.Client) {
+	ros.InvalidateContainerCache()
+	if ct, err := ros.GetContainer(ctx, cowProbeContainer); err == nil {
+		p.stopAndRemoveContainer(ctx, cowProbeContainer, ct.ID)
+	}
+}
+
+// cowStubTar returns a minimal tar archive holding one placeholder file —
+// the smallest thing that satisfies RouterOS's file= requirement.
+func cowStubTar() []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	content := []byte("cow-probe\n")
+	_ = tw.WriteHeader(&tar.Header{
+		Name: "cow-probe-placeholder",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	})
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	return buf.Bytes()
 }
 
 // handleCoWProbePayload serves the static probe binary so the device can
