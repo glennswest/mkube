@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -135,6 +136,31 @@ func (p *MicroKubeProvider) RunNVMeProbe(ctx context.Context) *NVMeProbeReport {
 				}
 			}
 			step("PASSTHROUGH 2/2: %s", p.probeContainerDeviceArg(ctx, ros))
+			for _, menu := range []string{"/container/device", "/container/devices", "/disk/device"} {
+				rows, merr := ros.ListRaw(ctx, menu)
+				if merr != nil {
+					step("menu %s: %v", menu, merr)
+					continue
+				}
+				keys := map[string]bool{}
+				for _, r := range rows {
+					for k := range r {
+						keys[k] = true
+					}
+				}
+				var ks []string
+				for k := range keys {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				step("menu %s EXISTS — %d row(s), fields: %v", menu, len(rows), ks)
+				for i, r := range rows {
+					if i >= 3 {
+						break
+					}
+					step("   row: %v", r)
+				}
+			}
 			_ = ros.RemoveDisk(ctx, diskID)
 			step("probe disk detached")
 		}

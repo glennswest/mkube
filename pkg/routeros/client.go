@@ -2169,3 +2169,14 @@ func (c *Client) ContainerAddRaw(ctx context.Context, params map[string]string) 
 	defer c.InvalidateContainerCache()
 	return c.restPOST(ctx, "/container/add", params, nil)
 }
+
+// ListRaw returns the rows of an arbitrary print-able menu as generic maps.
+// Capability probes use it to discover menus (e.g. /container/device) whose
+// schema mkube does not model.
+func (c *Client) ListRaw(ctx context.Context, path string) ([]map[string]interface{}, error) {
+	var rows []map[string]interface{}
+	if err := c.restGET(ctx, path, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
