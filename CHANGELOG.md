@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-08-10
+- **docs:** CoW Phase 0 RESULT: RouterOS rejects imageless `container/add` with `failure: No file or remote-image` (verdict `unsupported`, probe run clean end to end — volume chain 4-for-4, payload delivered via device-side `/tool/fetch`). The direct golden+clone root-dir path is out; next candidate is the stub-tarball variant (Phase 0b in the work plan): tiny `file=` stub extracted INTO the pre-populated clone mount.
 - **feat(probe):** CoW Phase 0 capability probe — `POST /api/v1/probes/cow` provisions a small stormblock volume through the standard PVC path, lays a one-binary rootfs on the mount, then attempts `/container/add` with `root-dir` pointing at it and **no `file=`/`remote-image=`** — the untested RouterOS behavior the golden-image/clone-per-pod catalog depends on. Reports every step plus a verdict (`supported`/`unsupported`) and tears everything down (container, veth, volume, PVC) on all paths.
 
 ## [v6.3.0] — 2026-08-10
