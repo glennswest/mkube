@@ -176,7 +176,10 @@ func (p *MicroKubeProvider) provisionISCSIPVC(ctx context.Context, pvc *corev1.P
 // failure is diagnosable from the log.
 func (p *MicroKubeProvider) waitForDiskMount(ctx context.Context, ros *routeros.Client, diskID string, timeout time.Duration) (string, error) {
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(1 * time.Second)
+	// 150ms, not 1s: RouterOS probes and mounts an attached disk in well
+	// under a second, so a 1s tick spent ~1.1s of a 1.5s clone-provision
+	// simply waiting to notice. Each poll is one cheap /disk print.
+	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
 	var lastRows string
