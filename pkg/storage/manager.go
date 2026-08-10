@@ -898,3 +898,9 @@ func (m *Manager) runGC(ctx context.Context) {
 		m.log.Infow("GC completed", "imagesRemoved", removed, "volumesRemoved", orphanedVolumes)
 	}
 }
+
+// TarballDigest exposes the manifest digest recorded for a tarball ("" when
+// no sidecar exists). The CoW catalog keys golden templates on it.
+func (m *Manager) TarballDigest(tarballPath string) string {
+	return m.readTarballDigest(tarballPath)
+}

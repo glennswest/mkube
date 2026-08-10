@@ -804,6 +804,53 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 
 		tracker.done()
 
+		// 1b. CoW image mode: the rootfs comes from a stormblock clone of a
+		// golden per-digest template; RouterOS only ever extracts a tiny
+		// generic stub. See cow_catalog.go for the proven recipe.
+		cowMode := isCoWPod(pod)
+		var cowPayloadMount, cowEntrypoint, cowCmd string
+		if cowMode {
+			rosC := p.getRouterOSClient()
+			if rosC == nil {
+				return fmt.Errorf("cow image mode requires the RouterOS backend")
+			}
+			if err := p.ensureGenericStub(ctx, rosC); err != nil {
+				return fmt.Errorf("ensuring cow stub: %w", err)
+			}
+			digest := p.deps.StorageMgr.TarballDigest(tarballPath)
+			if digest == "" {
+				return fmt.Errorf("cow image mode: no digest recorded for %s", tarballPath)
+			}
+			imgCfg, cfgErr := readDockerSaveConfig(tarballPath)
+			if cfgErr != nil {
+				log.Warnw("cow: cannot read image config, relying on pod command", "error", cfgErr)
+			}
+			templateName, err := p.ensureGoldenTemplate(ctx, rosC, container.Image, tarballPath, digest)
+			if err != nil {
+				return fmt.Errorf("cow golden template: %w", err)
+			}
+			payloadRootfs, volID, err := p.provisionCoWRoot(ctx, rosC, pod, container.Name, templateName)
+			if err != nil {
+				return fmt.Errorf("cow root volume: %w", err)
+			}
+			cowPayloadMount = payloadRootfs
+			if pod.Annotations == nil {
+				pod.Annotations = map[string]string{}
+			}
+			pod.Annotations[annCoWVolumeID] = volID
+			pod.Annotations[annCoWTemplate] = templateName
+			if p.deps.Store != nil {
+				storeKey := pod.Namespace + "." + pod.Name
+				_, _ = p.deps.Store.Pods.PutJSON(ctx, storeKey, pod)
+			}
+			cowEntrypoint, cowCmd = rewriteEntrypointForCoW(pod, &container, imgCfg)
+			if cowEntrypoint == "" {
+				return fmt.Errorf("cow image mode: no entrypoint (set the pod command or use an image that has one)")
+			}
+			tarballPath = cowStubDevicePath
+			log.Infow("cow root provisioned", "template", templateName, "payload", cowPayloadMount, "entrypoint", cowEntrypoint)
+		}
+
 		// 2. Allocate network (registers containerName.podName in network zone)
 		tracker.start(PhaseNetworkAlloc)
 		vethName := vethName(pod, i)
@@ -944,6 +991,16 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			})
 		}
 
+		if cowMode && cowPayloadMount != "" {
+			// The clone rootfs rides the normal mount machinery; IsPVC keeps
+			// it out of ephemeral-mount garbage collection.
+			desiredMounts = append(desiredMounts, runtime.DesiredMount{
+				Src:   cowPayloadMount,
+				Dst:   cowPayloadDst,
+				IsPVC: true,
+			})
+		}
+
 		mountListName := ""
 		if len(desiredMounts) > 0 {
 			mountListName = name
@@ -983,6 +1040,12 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			DNS:         dnsServer,
 			Logging:     "true",
 			StartOnBoot: startOnBoot,
+		}
+
+		if cowMode {
+			spec.Entrypoint = cowEntrypoint
+			spec.Cmd = cowCmd
+			spec.Command = nil
 		}
 
 		// Set root user for containers that need privileged port binding
@@ -1907,6 +1970,14 @@ func (p *MicroKubeProvider) DeletePod(ctx context.Context, pod *corev1.Pod) erro
 	for _, container := range pod.Spec.Containers {
 		name := sanitizeName(pod, container.Name)
 		p.deps.LifecycleMgr.Unregister(name)
+	}
+
+	// CoW image mode: hand the clone volume back (detach + delete) so the
+	// thin volume, its export and its portal are not leaked.
+	if volID := pod.Annotations[annCoWVolumeID]; volID != "" {
+		if rosC := p.getRouterOSClient(); rosC != nil {
+			defer p.deprovisionCoWRoot(ctx, rosC, volID)
+		}
 	}
 
 	// Collect container IPs before releasing anything (needed for alias cleanup)
