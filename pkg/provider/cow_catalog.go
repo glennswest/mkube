@@ -402,6 +402,16 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
 		return "", "", fmt.Errorf("waiting for cow volume mount: %w", err)
 	}
+
+	// The container will bind-mount <mount>/rootfs — verify the sealed
+	// content actually presents there before wiring anything.
+	devMount := strings.TrimPrefix(mountPoint, "/")
+	if ok, cerr := ros.FileExists(ctx, devMount+"/rootfs"); cerr != nil || !ok {
+		names, _ := ros.ListDirectory(ctx, devMount)
+		_ = ros.RemoveDisk(ctx, diskID)
+		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
+		return "", "", fmt.Errorf("cow clone mounted at %s but has no rootfs (contents: %v, existsErr: %v)", mountPoint, names, cerr)
+	}
 	return mountPoint + "/rootfs", created.ID, nil
 }
 
