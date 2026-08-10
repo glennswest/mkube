@@ -162,39 +162,10 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	}
 	step("stub tarball at %s (%d bytes, single placeholder file)", stubPath, len(cowStubTar()))
 
-	// ── 4c. Variant A: stub file= with root-dir ON the pre-populated clone.
-	// Decisive question: does extraction PRESERVE the existing files?
-	specA := imageless
-	specA.File = stubPath
-	verdictA := "rejected"
-	if err := ros.CreateContainer(ctx, specA); err != nil {
-		step("A stub-into-clone add: REJECTED (%v)", err)
-	} else {
-		// Wait for extraction to settle, then check the pre-populated file.
-		time.Sleep(5 * time.Second)
-		preserved, perr := ros.FileExists(ctx, rootfs+"/bin/probe")
-		stubThere, _ := ros.FileExists(ctx, rootfs+"/cow-probe-placeholder")
-		switch {
-		case perr != nil:
-			verdictA = "accepted, preservation unknown"
-			step("A stub-into-clone add: ACCEPTED; preservation check failed: %v", perr)
-		case preserved:
-			verdictA = "accepted, pre-populated content PRESERVED"
-			step("A stub-into-clone add: ACCEPTED and pre-populated /bin/probe survived extraction (stub placeholder present: %v)", stubThere)
-			if started, status := p.cowProbeTryStart(ctx, ros); started {
-				step("A container started from the clone-backed root-dir (%s)", status)
-			} else {
-				step("A container start not clean (%s)", status)
-			}
-		default:
-			verdictA = "accepted but extraction WIPED the root-dir"
-			step("A stub-into-clone add: ACCEPTED but pre-populated /bin/probe is GONE — extraction wipes root-dir")
-		}
-		p.cowProbeRemoveContainer(ctx, ros)
-	}
-
-	// ── 4d. Variant B: stub root-dir on raid1 + clone content via MOUNT,
-	// entrypoint inside the mount (covers scratch/static-binary images).
+	// ── 4c. Variant B FIRST: stub root-dir on raid1 + clone content via
+	// MOUNT, entrypoint inside the mount (covers scratch/static-binary
+	// images). Runs before variant A because container/remove deletes the
+	// root-dir contents — A's teardown destroys the clone rootfs B mounts.
 	mountList := "cowprobe"
 	_ = ros.RemoveMountsByList(ctx, mountList)
 	// Variant A's container teardown consumes the veth — B needs its own.
@@ -236,6 +207,38 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	}
 	if vethB != "" {
 		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethB)
+	}
+
+	// ── 4d. Variant A LAST (destructive): stub file= with root-dir ON the
+	// pre-populated clone — its container removal deletes the rootfs.
+	// Decisive question: does extraction PRESERVE the existing files?
+	specA := imageless
+	specA.File = stubPath
+	verdictA := "rejected"
+	if err := ros.CreateContainer(ctx, specA); err != nil {
+		step("A stub-into-clone add: REJECTED (%v)", err)
+	} else {
+		// Wait for extraction to settle, then check the pre-populated file.
+		time.Sleep(5 * time.Second)
+		preserved, perr := ros.FileExists(ctx, rootfs+"/bin/probe")
+		stubThere, _ := ros.FileExists(ctx, rootfs+"/cow-probe-placeholder")
+		switch {
+		case perr != nil:
+			verdictA = "accepted, preservation unknown"
+			step("A stub-into-clone add: ACCEPTED; preservation check failed: %v", perr)
+		case preserved:
+			verdictA = "accepted, pre-populated content PRESERVED"
+			step("A stub-into-clone add: ACCEPTED and pre-populated /bin/probe survived extraction (stub placeholder present: %v)", stubThere)
+			if started, status := p.cowProbeTryStart(ctx, ros); started {
+				step("A container started from the clone-backed root-dir (%s)", status)
+			} else {
+				step("A container start not clean (%s)", status)
+			}
+		default:
+			verdictA = "accepted but extraction WIPED the root-dir"
+			step("A stub-into-clone add: ACCEPTED but pre-populated /bin/probe is GONE — extraction wipes root-dir")
+		}
+		p.cowProbeRemoveContainer(ctx, ros)
 	}
 
 	// ── 4e. Variant B2: is dst=/ accepted for a mount? (full rootfs shadowing)
