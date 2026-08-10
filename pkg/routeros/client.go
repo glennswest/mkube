@@ -863,11 +863,22 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]map[string]inter
 }
 
 // RemoveFile deletes a file from the RouterOS filesystem.
-// Looks up the file by name to get its .id, then removes by .id.
+//
+// Name-addressed (=numbers=<path>): the device resolves the name internally,
+// avoiding a /file print whose full-tree serialization takes minutes when
+// /raid1 holds registry blobs. "no such item" means already gone. Any other
+// error falls back to the legacy print+.id lookup so older devices keep
+// working.
 func (c *Client) RemoveFile(ctx context.Context, path string) error {
-	files, err := c.ListFiles(ctx, path)
-	if err != nil {
-		return err
+	path = strings.TrimPrefix(path, "/")
+	err := c.restPOST(ctx, "/file/remove", map[string]string{"numbers": path}, nil)
+	if err == nil || strings.Contains(err.Error(), "no such item") {
+		return nil
+	}
+
+	files, lerr := c.ListFiles(ctx, path)
+	if lerr != nil {
+		return fmt.Errorf("%w (fallback list: %s)", err, lerr)
 	}
 	if len(files) == 0 {
 		return nil // already gone
@@ -947,9 +958,18 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 	if oldPath == "" || newPath == "" {
 		return fmt.Errorf("MoveDirectory: empty source or destination path")
 	}
-	files, err := c.ListFiles(ctx, oldPath)
-	if err != nil {
-		return err
+	// Name-addressed set — same rationale as RemoveFile: no /file print.
+	err := c.restPOST(ctx, "/file/set", map[string]string{"numbers": oldPath, "name": newPath}, nil)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "no such item") {
+		return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+	}
+
+	files, lerr := c.ListFiles(ctx, oldPath)
+	if lerr != nil {
+		return fmt.Errorf("%w (fallback list: %s)", err, lerr)
 	}
 	if len(files) == 0 {
 		return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
