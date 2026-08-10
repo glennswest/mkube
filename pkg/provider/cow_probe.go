@@ -220,6 +220,39 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethB0)
 	}
 
+	// ── 4b3. Seeder: extract the payload docker-save archive ONTO the clone
+	// via a throwaway container add — RouterOS's own untar preserves the
+	// exec bit that /tool/fetch (0644) cannot ("execvpe: Permission denied"
+	// in run 8). The seeder is left in place (never started); its removal
+	// would wipe the rootfs it seeded.
+	seederName := "gt_cowprobe_cowprobe1"
+	payloadPath := "raid1/cache/cow-probe-payload.tar"
+	if bin, rerr := os.ReadFile(cowProbeBinary); rerr != nil {
+		step("seeder skipped: cannot read payload binary: %v", rerr)
+	} else if uerr := ros.UploadFile(ctx, payloadPath, bytes.NewReader(cowPayloadTar(bin))); uerr != nil {
+		step("seeder skipped: payload upload failed: %v", uerr)
+	} else {
+		seeder := routeros.ContainerSpec{
+			Name:        seederName,
+			Interface:   cowProbeVeth,
+			RootDir:     rootfs,
+			File:        payloadPath,
+			Logging:     "yes",
+			StartOnBoot: "no",
+		}
+		if serr := ros.CreateContainer(ctx, seeder); serr != nil {
+			step("seeder add failed: %v", serr)
+		} else {
+			time.Sleep(6 * time.Second)
+			if ok, _ := ros.FileExists(ctx, rootfs+"/bin/probe"); ok {
+				step("seeder extracted payload onto the clone (bin/probe present, modes preserved by untar)")
+			} else {
+				step("seeder extraction did not produce bin/probe on the clone")
+				deviceLog("seeder")
+			}
+		}
+	}
+
 	// ── 4c. Variant B FIRST: stub root-dir on raid1 + clone content via
 	// MOUNT, entrypoint inside the mount (covers scratch/static-binary
 	// images). Runs before variant A because container/remove deletes the
@@ -252,7 +285,26 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 			step("B stub-rootdir + clone-mount add: REJECTED (%v)", err)
 		} else {
 			time.Sleep(5 * time.Second)
-			if started, status := p.cowProbeTryStart(ctx, ros); started {
+			started, status := p.cowProbeTryStart(ctx, ros)
+			ran := started
+			if !ran {
+				// The binary may have run to completion (one-shot) — the
+				// device log is authoritative: a "started" line without an
+				// execvpe error means RouterOS executed it from the mount.
+				if entries, lerr := ros.TailLog(ctx, 40); lerr == nil {
+					var sawStart, sawExecErr bool
+					for _, e := range entries {
+						if strings.Contains(e.Message, "started") && strings.Contains(e.Message, "/payload/bin/probe") {
+							sawStart = true
+						}
+						if strings.Contains(e.Message, "execvpe") || strings.Contains(e.Message, "No such file") {
+							sawExecErr = true
+						}
+					}
+					ran = sawStart && !sawExecErr
+				}
+			}
+			if ran {
 				step("B stub-rootdir + clone-mount: container RAN the binary from the mounted clone (%s)", status)
 				rep.Verdict = "supported"
 			} else {
@@ -378,6 +430,36 @@ func (p *MicroKubeProvider) cowProbeRemoveContainer(ctx context.Context, ros *ro
 	}
 }
 
+// cowPayloadTar returns a docker-save archive whose layer carries the probe
+// binary at bin/probe with mode 0755 — extraction by RouterOS preserves the
+// exec bit that /tool/fetch (0644) cannot deliver. This is also the
+// production seeding pattern: a throwaway container add extracts the real
+// image onto the golden volume with correct modes.
+func cowPayloadTar(bin []byte) []byte {
+	var layer bytes.Buffer
+	lw := tar.NewWriter(&layer)
+	_ = lw.WriteHeader(&tar.Header{Name: "bin", Mode: 0o755, Typeflag: tar.TypeDir})
+	_ = lw.WriteHeader(&tar.Header{Name: "bin/probe", Mode: 0o755, Size: int64(len(bin))})
+	_, _ = lw.Write(bin)
+	_ = lw.Close()
+
+	layerSum := sha256.Sum256(layer.Bytes())
+	config := fmt.Sprintf(`{"architecture":"arm64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:%x"]}}`, layerSum)
+	manifest := `[{"Config":"config.json","RepoTags":["cow-probe-payload:latest"],"Layers":["layer.tar"]}]`
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	add := func(name string, data []byte) {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data))})
+		_, _ = tw.Write(data)
+	}
+	add("config.json", []byte(config))
+	add("layer.tar", layer.Bytes())
+	add("manifest.json", []byte(manifest))
+	_ = tw.Close()
+	return buf.Bytes()
+}
+
 // cowStubTar returns a minimal DOCKER-SAVE archive (manifest.json + config +
 // one layer) holding a single placeholder file. RouterOS's file= extractor
 // requires the docker-save layout — a plain tar fails with "no manifest.json
@@ -472,6 +554,10 @@ func (p *MicroKubeProvider) cowProbeCleanup(ctx context.Context, ros *routeros.C
 			p.stopAndRemoveContainer(ctx, cowProbeContainer, ct.ID)
 		}
 	}
+	if ct, err := ros.GetContainer(ctx, "gt_cowprobe_cowprobe1"); err == nil {
+		p.stopAndRemoveContainer(ctx, "gt_cowprobe_cowprobe1", ct.ID)
+	}
+	_ = ros.RemoveFile(ctx, "raid1/cache/cow-probe-payload.tar")
 	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, cowProbeVeth)
 	if err := p.deprovisionStormblockPVC(ctx, pvc); err != nil {
 		p.deps.Logger.Warnw("COW-PROBE: volume cleanup failed", "error", err)
