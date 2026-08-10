@@ -159,7 +159,24 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		return time.Since(start), nil
+		elapsed := time.Since(start)
+
+		// The decisive measurement: is the rootfs COPIED per container, or
+		// overlay-mounted from the shared store? root-dir holding a full
+		// image means copy-per-container (download once, extract each time);
+		// a near-empty root-dir beside a populated store means the layers are
+		// mounted, which is the zero-copy model.
+		rootBytes, _ := ros.DirectoryDiskUsage(ctx, rootDir)
+		storeBytes, _ := ros.DirectoryDiskUsage(ctx, layerStore)
+		step("after create: root-dir %s = %.1f MB | layer store = %.1f MB",
+			rootDir, float64(rootBytes)/(1024*1024), float64(storeBytes)/(1024*1024))
+		if rootBytes < storeBytes/4 && storeBytes > 0 {
+			step("   → root-dir is a fraction of the store: layers look MOUNTED, not copied")
+		} else if rootBytes > 0 {
+			step("   → root-dir carries the image: layers are COPIED per container")
+		}
+
+		return elapsed, nil
 	}
 
 	d1, err := create("raid1/images/layerdir-a")
