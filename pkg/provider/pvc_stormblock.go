@@ -64,6 +64,7 @@ type sbAttach struct {
 // export as a flat attach block left every field empty and provisioning
 // failed "no attach parameters returned").
 type sbExport struct {
+	ExportID string   `json:"export_id"`
 	Protocol string   `json:"protocol"` // "iscsi" | "nvme-tcp"
 	State    string   `json:"state"`
 	Attach   sbAttach `json:"attach"`
@@ -187,6 +188,47 @@ func (c *sbClient) do(ctx context.Context, method, path string, body any, out an
 	return nil
 }
 
+// formatStormblockVolume formats a freshly-created volume as ext4.
+//
+// The formatter (iscsi-pvc) speaks iSCSI only, so an NVMe-exported volume
+// cannot be formatted through its own export. stormblockmk v0.3.0 accepts
+// `protocol` on POST /mk/v1/exports, so we add a TEMPORARY iSCSI export for
+// the format pass and withdraw it again — the volume keeps its NVMe export
+// for the actual attach.
+func (p *MicroKubeProvider) formatStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach, label string) error {
+	if sbTransport(attach) == "iscsi" {
+		portal := attach.Address
+		if attach.Port != 0 {
+			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
+		}
+		return p.formatISCSITargetExt4(ctx, portal, sbTargetName(attach), label)
+	}
+
+	p.deps.Logger.Infow("adding a temporary iSCSI export to format an NVMe volume", "volume", volumeID)
+	var tmp sbExport
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
+		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
+		return fmt.Errorf("creating temporary iscsi export: %w", err)
+	}
+	exportID := tmp.ExportID
+	defer func() {
+		if exportID == "" {
+			return
+		}
+		if err := sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+exportID, nil, nil); err != nil {
+			p.deps.Logger.Warnw("could not withdraw the temporary format export", "export", exportID, "error", err)
+		}
+	}()
+	if tmp.Attach.Address == "" {
+		return fmt.Errorf("temporary iscsi export returned no attach parameters")
+	}
+	portal := tmp.Attach.Address
+	if tmp.Attach.Port != 0 {
+		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
+	}
+	return p.formatISCSITargetExt4(ctx, portal, sbTargetName(tmp.Attach), label)
+}
+
 // provisionStormblockPVC creates (or recovers) the volume behind a PVC and
 // returns the host path RouterOS mounted it at.
 //
@@ -297,14 +339,6 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		}
 	}
 
-	// The per-volume export listens on its own port — the formatter dials
-	// the portal directly, so it needs host:port, not just the host (a bare
-	// host means default 3260, which is stormblockmk's SHARED portal where
-	// the per-volume IQN does not exist).
-	formatPortal := attach.Address
-	if attach.Port != 0 {
-		formatPortal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-	}
 
 	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 	if err != nil {
@@ -312,7 +346,7 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		// one does not, and RouterOS will not mount what it cannot recognise.
 		if template == "" {
 			log.Infow("formatting stormblock volume as ext4", "diskID", diskID)
-			if fErr := p.formatISCSITargetExt4(ctx, formatPortal, sbTargetName(attach), name); fErr != nil {
+			if fErr := p.formatStormblockVolume(ctx, sb, created.ID, attach, name); fErr != nil {
 				rollback()
 				return "", fmt.Errorf("formatting stormblock volume: %w", fErr)
 			}

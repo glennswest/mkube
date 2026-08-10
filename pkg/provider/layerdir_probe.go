@@ -191,10 +191,29 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	remove()
 	_ = ros.RemoveDirectory(ctx, "raid1/images/layerdir-b")
 
+	// ── 4. The prize: with the store populated, is an image source still
+	// required at all? Imageless add was rejected on an EMPTY store; the
+	// question is whether a populated layer-dir satisfies it.
+	imagelessErr := ros.ContainerAddRaw(ctx, map[string]string{
+		"name":          name,
+		"interface":     veth,
+		"root-dir":      "raid1/images/layerdir-c",
+		"layer-dir":     layerStore,
+		"logging":       "yes",
+		"start-on-boot": "no",
+	})
+	if imagelessErr == nil {
+		rep.StubStillNeeded = "no"
+		step("IMAGELESS add with a populated layer-dir ACCEPTED — no tarball needed at all")
+		remove()
+	} else {
+		step("imageless add with a populated layer-dir: %v", imagelessErr)
+	}
+	_ = ros.RemoveDirectory(ctx, "raid1/images/layerdir-c")
+
 	switch {
 	case d2 < d1/3:
 		rep.Verdict = "layers-reused-from-clone"
-		rep.StubStillNeeded = "no"
 		step("second create %.1fx faster — the clone's layer store is reused; a per-pod tarball is unnecessary", float64(d1)/float64(d2))
 	case d2 < d1*4/5:
 		rep.Verdict = "partial-reuse"

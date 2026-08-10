@@ -157,9 +157,10 @@ func parseImageConfigJSON(blob []byte) (*dockerSaveConfig, error) {
 
 // sbTemplate is a stormblockmk fstemplate row.
 type sbTemplate struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	State string `json:"state"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	RawVolumeID  string `json:"raw_volume_id"`
 }
 
 // sbCreateTemplateResp is the create-template response: the template row
@@ -291,11 +292,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	}
 	cleanupDisk := func() { _ = ros.RemoveDisk(ctx, diskID) }
 
-	formatPortal := attach.Address
-	if attach.Port != 0 {
-		formatPortal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-	}
-	if err := p.formatISCSITargetExt4(ctx, formatPortal, sbTargetName(attach), name); err != nil {
+	if err := p.formatStormblockVolume(ctx, sb, created.Template.RawVolumeID, attach, name); err != nil {
 		cleanupDisk()
 		return "", fmt.Errorf("formatting template volume: %w", err)
 	}
