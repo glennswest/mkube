@@ -964,6 +964,25 @@ func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Read
 	return nil
 }
 
+// RosLogEntry is one /log row.
+type RosLogEntry struct {
+	Time    string `json:"time"`
+	Topics  string `json:"topics"`
+	Message string `json:"message"`
+}
+
+// TailLog returns the last n device log entries.
+func (c *Client) TailLog(ctx context.Context, n int) ([]RosLogEntry, error) {
+	var all []RosLogEntry
+	if err := c.restGET(ctx, "/log", &all); err != nil {
+		return nil, err
+	}
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	return all, nil
+}
+
 // FetchFile makes the DEVICE download url to dstPath via /tool/fetch —
 // the reliable way to place a file on a non-flash disk path (the REST
 // upload endpoint resets the connection on such paths).

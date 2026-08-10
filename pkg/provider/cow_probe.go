@@ -162,6 +162,59 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	}
 	step("stub tarball at %s (%d bytes, single placeholder file)", stubPath, len(cowStubTar()))
 
+	// deviceLog surfaces the device's own container-related log lines —
+	// RouterOS reports async container failures only there (a failed
+	// container is silently auto-removed).
+	deviceLog := func(label string) {
+		entries, lerr := ros.TailLog(ctx, 50)
+		if lerr != nil {
+			step("%s: device log unavailable: %v", label, lerr)
+			return
+		}
+		var picked []string
+		for _, e := range entries {
+			if strings.Contains(e.Topics, "container") || strings.Contains(e.Message, "container") || strings.Contains(e.Message, "cowprobe") {
+				picked = append(picked, e.Time+" "+e.Message)
+			}
+		}
+		if len(picked) > 8 {
+			picked = picked[len(picked)-8:]
+		}
+		step("%s — device log: %s", label, strings.Join(picked, " | "))
+	}
+
+	// ── 4b2. Control B0: stub-only container (no mount). If this survives
+	// and B vanishes, the mount is what kills B.
+	vethB0 := "veth_gt_cowprobe0_0"
+	if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, vethB0, "cowprobe0.cowprobe0", "gt", ""); verr != nil {
+		step("B0 veth allocation failed: %v", verr)
+	} else {
+		specB0 := routeros.ContainerSpec{
+			Name:        cowProbeContainer,
+			Interface:   vethB0,
+			RootDir:     "raid1/images/cowprobe-stub0",
+			File:        stubPath,
+			Entrypoint:  "/bin/sh",
+			Logging:     "yes",
+			StartOnBoot: "no",
+		}
+		if err := ros.CreateContainer(ctx, specB0); err != nil {
+			step("B0 stub-only add: REJECTED (%v)", err)
+		} else {
+			time.Sleep(6 * time.Second)
+			ros.InvalidateContainerCache()
+			if ct, gerr := ros.GetContainer(ctx, cowProbeContainer); gerr == nil {
+				step("B0 stub-only container persists after add (running=%q stopped=%q comment=%q)", ct.Running, ct.Stopped, ct.Comment)
+			} else {
+				step("B0 stub-only container VANISHED after add — stub/extraction problem, not the mount")
+				deviceLog("B0")
+			}
+			p.cowProbeRemoveContainer(ctx, ros)
+		}
+		_ = ros.RemoveDirectory(ctx, "raid1/images/cowprobe-stub0")
+		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethB0)
+	}
+
 	// ── 4c. Variant B FIRST: stub root-dir on raid1 + clone content via
 	// MOUNT, entrypoint inside the mount (covers scratch/static-binary
 	// images). Runs before variant A because container/remove deletes the
@@ -199,6 +252,7 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 				rep.Verdict = "supported"
 			} else {
 				step("B stub-rootdir + clone-mount: add accepted, start not clean (%s)", status)
+				deviceLog("B")
 			}
 			p.cowProbeRemoveContainer(ctx, ros)
 		}
