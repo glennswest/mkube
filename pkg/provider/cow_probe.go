@@ -197,12 +197,20 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	// entrypoint inside the mount (covers scratch/static-binary images).
 	mountList := "cowprobe"
 	_ = ros.RemoveMountsByList(ctx, mountList)
-	if err := ros.CreateMount(ctx, mountList, "/"+rootfs, "/payload"); err != nil {
+	// Variant A's container teardown consumes the veth — B needs its own.
+	vethB := "veth_gt_cowprobeb_0"
+	if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, vethB, "cowprobeb.cowprobeb", "gt", ""); verr != nil {
+		step("B veth allocation failed: %v", verr)
+		vethB = ""
+	}
+	if vethB == "" {
+		step("B skipped: no veth")
+	} else if err := ros.CreateMount(ctx, mountList, "/"+rootfs, "/payload"); err != nil {
 		step("B mount create failed: %v", err)
 	} else {
 		specB := routeros.ContainerSpec{
 			Name:        cowProbeContainer,
-			Interface:   cowProbeVeth,
+			Interface:   vethB,
 			RootDir:     "raid1/images/cowprobe-stub",
 			File:        stubPath,
 			MountLists:  mountList,
@@ -225,6 +233,9 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 		}
 		_ = ros.RemoveMountsByList(ctx, mountList)
 		_ = ros.RemoveDirectory(ctx, "raid1/images/cowprobe-stub")
+	}
+	if vethB != "" {
+		_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vethB)
 	}
 
 	// ── 4e. Variant B2: is dst=/ accepted for a mount? (full rootfs shadowing)
