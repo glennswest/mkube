@@ -190,7 +190,7 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 
 	// ── 4b2. Control B0: stub-only container (no mount). If this survives
 	// and B vanishes, the mount is what kills B.
-	vethB0 := "veth_gt_cowprobe0_0"
+	vethB0 := "veth_gt_cowprobe_2"
 	if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, vethB0, "cowprobe0.cowprobe0", "gt", ""); verr != nil {
 		step("B0 veth allocation failed: %v", verr)
 	} else {
@@ -227,7 +227,7 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	mountList := "cowprobe"
 	_ = ros.RemoveMountsByList(ctx, mountList)
 	// Variant A's container teardown consumes the veth — B needs its own.
-	vethB := "veth_gt_cowprobeb_0"
+	vethB := "veth_gt_cowprobe_1"
 	if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, vethB, "cowprobeb.cowprobeb", "gt", ""); verr != nil {
 		step("B veth allocation failed: %v", verr)
 		vethB = ""
@@ -424,7 +424,11 @@ func (p *MicroKubeProvider) cowProbeGuardPod() func() {
 			},
 		},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "cowprobe"}},
+			// Three container slots: the veth sweep derives owned veth names
+			// as veth_<ns>_<pod>_<index>, so indices 0..2 cover every veth
+			// the probe allocates (issue #18's reaper removes the CONTAINER
+			// holding an unowned veth — it took the probe container out).
+			Containers: []corev1.Container{{Name: "cowprobe"}, {Name: "cowprobe1"}, {Name: "cowprobe2"}},
 		},
 	}
 	key := podKey(pod)
