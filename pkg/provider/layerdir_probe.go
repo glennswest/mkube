@@ -99,10 +99,17 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	rep.MountPoint = mountPoint
 	step("clone volume mounted at %s", mountPoint)
 
-	layerStore := strings.TrimPrefix(mountPoint, "/") + "/layers"
+	// Discovery store lives on raid1, not on the clone: raid1 is bind-mounted
+	// into mkube, so the tree can be walked LOCALLY with sizes and dotfiles
+	// visible — and the hidden bookkeeping is the thing we are actually
+	// after. (The clone is still provisioned above: it is the destination
+	// once we know what a complete layer looks like.)
+	layerStore := "raid1/layerprobe-store"
+	_ = ros.RemoveDirectory(ctx, layerStore)
 	if err := ros.EnsureDirectory(ctx, layerStore); err != nil {
 		step("could not create %s: %v", layerStore, err)
 	}
+	defer func() { _ = ros.RemoveDirectory(context.Background(), layerStore) }()
 
 	veth := "veth_gt_cowprobe_0"
 	if _, _, _, verr := p.deps.NetworkMgr.AllocateInterface(ctx, veth, "cowprobe.cowprobe", "gt", ""); verr != nil {
@@ -171,11 +178,20 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	rep.FirstCreate = d1.Round(time.Millisecond).String()
 	step("per-container layer-dir ACCEPTED; first create %s", rep.FirstCreate)
 
-	if entries, lerr := ros.ListDirectory(ctx, layerStore); lerr == nil {
+	// Full local walk: names, sizes, and any hidden bookkeeping RouterOS
+	// uses to decide a layer is present and complete.
+	if entries, lerr := ros.LocalTree(layerStore, 120); lerr == nil {
 		rep.LayerStoreContents = entries
-		step("layer store on the clone holds %d entr(ies): %v", len(entries), entries)
+		step("layer store tree (%d entries):", len(entries))
+		for _, e := range entries {
+			step("   %s", e)
+		}
 	} else {
-		step("could not list the layer store: %v", lerr)
+		step("local walk unavailable (%v) — falling back to /file listing", lerr)
+		if entries, lerr2 := ros.ListDirectory(ctx, layerStore); lerr2 == nil {
+			rep.LayerStoreContents = entries
+			step("layer store holds: %v", entries)
+		}
 	}
 	remove()
 	_ = ros.RemoveDirectory(ctx, "raid1/images/layerdir-a")

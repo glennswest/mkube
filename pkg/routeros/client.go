@@ -2197,3 +2197,42 @@ func (c *Client) GetContainerConfig(ctx context.Context) (map[string]interface{}
 func (c *Client) SetContainerConfig(ctx context.Context, params map[string]string) error {
 	return c.restPOST(ctx, "/container/config/set", params, nil)
 }
+
+// LocalTree walks a device path on the locally-mounted storage disk and
+// returns entries as "relative/path (size)" — INCLUDING dotfiles, which the
+// device's /file listing hides. Capability probes use it to see the
+// metadata RouterOS writes for its own bookkeeping (e.g. what marks a
+// container layer as present and complete). Requires localFileRoot.
+func (c *Client) LocalTree(devicePath string, max int) ([]string, error) {
+	root, ok := c.localPath(devicePath)
+	if !ok {
+		return nil, fmt.Errorf("local file access unavailable for %q", devicePath)
+	}
+	var out []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil || rel == "." {
+			return nil
+		}
+		if len(out) >= max {
+			return fs.SkipAll
+		}
+		if d.IsDir() {
+			out = append(out, rel+"/")
+			return nil
+		}
+		size := int64(-1)
+		if info, ierr := d.Info(); ierr == nil {
+			size = info.Size()
+		}
+		out = append(out, fmt.Sprintf("%s (%d bytes)", rel, size))
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
