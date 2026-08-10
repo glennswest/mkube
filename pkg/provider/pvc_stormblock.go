@@ -316,6 +316,21 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 				rollback()
 				return "", fmt.Errorf("formatting stormblock volume: %w", fErr)
 			}
+			// RouterOS probes a consumed target's filesystem at ATTACH time
+			// only — formatting after attach changes content it never
+			// re-reads, so the mount wait times out no matter how long
+			// (observed live: format verified OK, no mount in 120s). Bounce
+			// the disk so it probes the fresh ext4 — the equivalent of the
+			// iscsi class's export-disable kick.
+			log.Infow("re-attaching stormblock disk to trigger filesystem probe", "diskID", diskID)
+			if rmErr := rosClient.RemoveDisk(ctx, diskID); rmErr != nil {
+				log.Warnw("could not detach stormblock disk for re-probe", "diskID", diskID, "error", rmErr)
+			}
+			diskID, err = p.attachStormblockDisk(ctx, attach)
+			if err != nil {
+				rollback()
+				return "", fmt.Errorf("re-attaching stormblock disk after format: %w", err)
+			}
 			mountPoint, err = p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 		}
 		if err != nil {
