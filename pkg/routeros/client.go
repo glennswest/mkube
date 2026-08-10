@@ -2250,7 +2250,17 @@ func (c *Client) ContainerAddRawTo(ctx context.Context, path string, params map[
 // exists on 7.22.2 (it answers "no such item" for a stale id, not "no such
 // command"), so a seeded volume can be quiesced properly.
 func (c *Client) EjectDisk(ctx context.Context, id string) error {
-	return c.restPOST(ctx, "/disk/eject", map[string]string{".id": id}, nil)
+	// The CLI form is `/disk eject number=<slot>`, so try the numbers=
+	// spelling as well as .id — RouterOS accepts different addressing on
+	// different menus and the two are not interchangeable everywhere.
+	err := c.restPOST(ctx, "/disk/eject", map[string]string{".id": id}, nil)
+	if err == nil {
+		return nil
+	}
+	if err2 := c.restPOST(ctx, "/disk/eject", map[string]string{"numbers": id}, nil); err2 == nil {
+		return nil
+	}
+	return err
 }
 
 // DisableDisk disables a disk entry. RouterOS refuses to eject a network
