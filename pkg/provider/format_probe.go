@@ -196,3 +196,51 @@ func (p *MicroKubeProvider) RunFormatProbe(ctx context.Context) *FormatProbeRepo
 	}
 	return rep
 }
+
+// handleInspect lists a device path — read-only, for diagnosing what is
+// actually on a mounted clone (RouterOS's /file index lags fresh mounts,
+// so treat an empty result as "unknown" for the first minute or two).
+// GET /api/v1/probes/inspect?path=iscsi15
+func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Query().Get("path"), "/")
+	if path == "" {
+		http.Error(w, "path query parameter required", http.StatusBadRequest)
+		return
+	}
+	ros := p.getRouterOSClient()
+	if ros == nil {
+		http.Error(w, "RouterOS backend required", http.StatusServiceUnavailable)
+		return
+	}
+	out := map[string]any{"path": path}
+
+	if entries, err := ros.ListDirectory(r.Context(), path); err == nil {
+		out["entries"] = entries
+	} else {
+		out["entriesError"] = err.Error()
+	}
+	if tree, err := ros.LocalTree(path, 60); err == nil {
+		out["localTree"] = tree
+	}
+	if disks, err := ros.ListDisks(r.Context()); err == nil {
+		var rows []string
+		for i := range disks {
+			d := &disks[i]
+			if d.MountPoint != "" || d.Type == "iscsi" || d.Type == "nvme-tcp" {
+				rows = append(rows, fmt.Sprintf("id=%s slot=%s type=%s fs=%s mount=%s iqn=%s",
+					d.ID, d.Slot, d.Type, d.Filesystem, d.MountPoint, d.ISCSIIQN))
+			}
+		}
+		out["disks"] = rows
+	}
+	if mounts, err := ros.ListMounts(r.Context()); err == nil {
+		var rows []string
+		for _, m := range mounts {
+			if strings.Contains(m.Src, "iscsi") || strings.Contains(m.Dst, "payload") {
+				rows = append(rows, fmt.Sprintf("list=%s src=%s dst=%s", m.List, m.Src, m.Dst))
+			}
+		}
+		out["cowMounts"] = rows
+	}
+	podWriteJSON(w, http.StatusOK, out)
+}
