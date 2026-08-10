@@ -529,7 +529,16 @@ func (p *MicroKubeProvider) cowProbeGuardPod() func() {
 	}
 	key := podKey(pod)
 	p.pods.Set(key, pod)
-	return func() { p.pods.Delete(key) }
+	// The redeploying flag makes the reconciler SKIP this pod: without it,
+	// "not all containers exist" enqueues CreatePod, whose pre-creation
+	// cleanup removes "stale" probe containers seconds after every add —
+	// the actual remover behind runs 4..10 (device log action ids were
+	// CreatePod stale-cleanups, not sweeps).
+	p.redeploying.Set(key, true)
+	return func() {
+		p.redeploying.Delete(key)
+		p.pods.Delete(key)
+	}
 }
 
 // handleCoWProbePayload serves the static probe binary so the device can
