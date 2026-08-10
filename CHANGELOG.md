@@ -1,7 +1,9 @@
 # Changelog
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-10
+- **fix(consistency):** Network-repair recreates now run via the pod worker on the app-lifetime context instead of inline under the consistency check's single 30-second context. Inline, the repair (which runs late in the pass, after IPAM resync and orphan sweeps) always started with an exhausted deadline: `DeletePod` half-tore the pod down with every native call failing `context deadline exceeded`, `CreatePod` failed instantly, and the pod looped broken forever — observed 2026-08-10 00:13Z–00:25Z on infra/netwatch during post-outage recovery. The worker dedupes by pod key, so repeated consistency passes can't stack duplicate recreates.
 
 ## [v6.2.0] — 2026-08-09
 

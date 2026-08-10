@@ -1491,18 +1491,28 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 				p.deps.Logger.Infow("container network broken beyond threshold, triggering recreate",
 					"pod", key, "failures", failCount)
 
-				// DeletePod/CreatePod manage their own p.pods lock internally
-				if err := p.DeletePod(ctx, pod); err != nil {
-					p.deps.Logger.Errorw("failed to delete pod for network repair",
-						"pod", key, "error", err)
-					continue
-				}
-				if err := p.CreatePod(ctx, pod); err != nil {
-					p.deps.Logger.Errorw("failed to recreate pod for network repair",
-						"pod", key, "error", err)
-					continue
-				}
-				p.networkFailures.Delete(key)
+				// Hand the recreate to the pod worker rather than running it
+				// inline: this whole consistency pass shares one 30s context,
+				// and a delete+create cycle alone can take minutes. Running
+				// inline meant the repair always started with an exhausted
+				// deadline — DeletePod half-tore the pod down, CreatePod
+				// failed instantly, and the pod looped broken forever
+				// (observed 2026-08-10 on infra/netwatch). The worker runs
+				// on the app-lifetime context and dedupes by key.
+				podCopy := pod.DeepCopy()
+				capturedKey := key
+				p.podWorker.Enqueue(capturedKey, "network repair", func(wctx context.Context) error {
+					if err := p.DeletePod(wctx, podCopy); err != nil {
+						p.deps.Logger.Warnw("network repair: delete failed, attempting recreate anyway",
+							"pod", capturedKey, "error", err)
+					}
+					err := p.CreatePod(wctx, podCopy)
+					p.updateCreateResult(capturedKey, podCopy, err)
+					if err == nil {
+						p.networkFailures.Delete(capturedKey)
+					}
+					return err
+				})
 				repaired++
 			}
 		} else {
