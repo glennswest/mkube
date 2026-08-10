@@ -352,6 +352,24 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 	if err != nil {
 		return "", "", err
 	}
+
+	// Idempotent: a recreate reuses the pod's existing clone (its writes
+	// included) instead of leaking a fresh volume per retry — 8 clones
+	// leaked in the first live run's retry loop.
+	if ann := pod.GetAnnotations(); ann != nil && ann[annCoWVolumeID] != "" {
+		volID := ann[annCoWVolumeID]
+		if attach, ok := p.findCoWVolumeAttach(ctx, sb, volID); ok {
+			if diskID, aerr := p.attachStormblockDisk(ctx, attach); aerr == nil {
+				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second); merr == nil {
+					return mp + "/rootfs", volID, nil
+				}
+				_ = ros.RemoveDisk(ctx, diskID)
+			}
+		}
+		// Unusable — hand it back and provision fresh below.
+		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+volID+"?force=true", nil, nil)
+	}
+
 	volName := fmt.Sprintf("cow-%s-%s-%s", pod.Namespace, pod.Name, containerName)
 	reqBody := map[string]any{
 		"name":          volName,
@@ -385,6 +403,23 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		return "", "", fmt.Errorf("waiting for cow volume mount: %w", err)
 	}
 	return mountPoint + "/rootfs", created.ID, nil
+}
+
+// findCoWVolumeAttach locates an existing volume by id and returns its
+// attach parameters when it still has an active export.
+func (p *MicroKubeProvider) findCoWVolumeAttach(ctx context.Context, sb *sbClient, volID string) (sbAttach, bool) {
+	var list struct {
+		Items []sbCreateVolumeResp `json:"items"`
+	}
+	if err := sb.do(ctx, http.MethodGet, "/mk/v1/volumes", nil, &list); err != nil {
+		return sbAttach{}, false
+	}
+	for i := range list.Items {
+		if list.Items[i].ID == volID {
+			return list.Items[i].attachParams()
+		}
+	}
+	return sbAttach{}, false
 }
 
 // deprovisionCoWRoot detaches and returns a pod's cow volume.
