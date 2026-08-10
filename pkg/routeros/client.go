@@ -1713,7 +1713,11 @@ func (c *Client) RemoveISCSITarget(ctx context.Context, id string) error {
 
 // GetISCSIDisk returns the file disk details including auto-generated IQN.
 func (c *Client) GetISCSIDisk(ctx context.Context, id string) (*FileDisk, error) {
-	disks, err := c.listFileDisks(ctx)
+	// All disk types, not just file-backed: consumed remote targets
+	// (type=iscsi / type=nvme-tcp) must be findable by id too. The old
+	// listFileDisks filter made every lookup of an attached stormblock disk
+	// return "not found", so mount-wait polls never saw the disk at all.
+	disks, err := c.ListDisks(ctx)
 	if err != nil {
 		return nil, err
 	}
