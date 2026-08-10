@@ -261,8 +261,19 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	// Detach BEFORE seal (seal refuses attachments), then seal, then the
 	// seeder container is already gone (runCoWSeeder removes it after the
 	// detach inside — see ordering note there).
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+created.Template.ID+"/seal?force=true", nil, nil); err != nil {
-		return "", fmt.Errorf("sealing fstemplate %s: %w", name, err)
+	// Seal WITHOUT force: stormblockmk verifies the ext4 superblock is
+	// cleanly unmounted, and that guard is the only thing standing between
+	// us and a golden that clones as an empty filesystem. RouterOS detaches
+	// without flushing its page cache, so a ROS-seeded volume currently
+	// fails this check — data blocks land, directory metadata does not
+	// (observed live: 60 MB allocated in raw, sealed AND clone volumes,
+	// every clone mounting empty). Forcing past it produced broken goldens
+	// silently; failing here is correct until the seeding write path
+	// bypasses the ROS page cache (that is exactly what sbregistry's
+	// direct-to-volume layer writes do).
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+created.Template.ID+"/seal", nil, nil); err != nil {
+		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/fstemplates/"+created.Template.ID+"?force=true", nil, nil)
+		return "", fmt.Errorf("sealing fstemplate %s (ROS-seeded volumes cannot currently be cleanly unmounted — use an sbregistry-created golden): %w", name, err)
 	}
 	log.Infow("golden template sealed", "template", name)
 	return name, nil
