@@ -617,97 +617,128 @@ func (p *MicroKubeProvider) fixOrphanedVolumeMounts(pod *corev1.Pod, ctx context
 }
 
 // enrichPVCUsage adds a vkube.io/used-bytes annotation with actual disk usage.
+// pvcUsageIndexes is the cached snapshot the PVC handlers read instead of
+// querying RouterOS inline. A full /file print over a large /raid1 tree takes
+// minutes on the device, so fetching it on the request path made every PVC
+// list/get hang past client timeouts (observed 2026-08-10: >90s, curl giving
+// up). A background refresher keeps this warm; handlers only ever read it.
+// Usage figures may be up to pvcUsageRefreshInterval stale — acceptable for
+// a dashboard statistic. Both index fields may be nil before the first
+// successful refresh.
+type pvcUsageIndexes struct {
+	fileIdx *routeros.FileUsageIndex
+	diskIdx *routeros.FileDiskIndex
+	at      time.Time
+}
+
+const pvcUsageRefreshInterval = 5 * time.Minute
+
+// runPVCUsageRefresher keeps the PVC usage snapshot warm. First refresh is
+// delayed past boot so it never competes with pod recreation for the device.
+func (p *MicroKubeProvider) runPVCUsageRefresher(ctx context.Context) {
+	t := time.NewTimer(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		p.refreshPVCUsage(ctx)
+		t.Reset(pvcUsageRefreshInterval)
+	}
+}
+
+func (p *MicroKubeProvider) refreshPVCUsage(ctx context.Context) {
+	rc := p.getRouterOSClient()
+	if rc == nil {
+		return
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+
+	snap := &pvcUsageIndexes{at: time.Now()}
+
+	idx, err := rc.FetchFileUsageIndex(fetchCtx)
+	if err != nil {
+		p.deps.Logger.Debugw("PVC usage refresh: file index fetch failed", "error", err)
+	} else {
+		snap.fileIdx = idx
+	}
+
+	hasDisk := false
+	for _, pvc := range p.pvcs.Snapshot() {
+		if isISCSIPVC(pvc) {
+			hasDisk = true
+			break
+		}
+	}
+	if hasDisk {
+		diskIdx, err := rc.FetchFileDiskIndex(fetchCtx)
+		if err != nil {
+			p.deps.Logger.Debugw("PVC usage refresh: disk index fetch failed", "error", err)
+		} else {
+			snap.diskIdx = diskIdx
+		}
+	}
+
+	// Keep the previous index when a fetch fails so one bad cycle doesn't
+	// blank out usage data.
+	if prev := p.pvcUsage.Load(); prev != nil {
+		if snap.fileIdx == nil {
+			snap.fileIdx = prev.fileIdx
+		}
+		if snap.diskIdx == nil {
+			snap.diskIdx = prev.diskIdx
+		}
+	}
+	p.pvcUsage.Store(snap)
+}
+
 // For single-PVC gets only; list handlers should use enrichPVCUsageBatch.
-func (p *MicroKubeProvider) enrichPVCUsage(ctx context.Context, pvc *corev1.PersistentVolumeClaim) {
-	// iSCSI PVCs: get capacity/usage from RouterOS /disk
+// Reads the cached usage snapshot — never queries the device inline.
+func (p *MicroKubeProvider) enrichPVCUsage(_ context.Context, pvc *corev1.PersistentVolumeClaim) {
+	if snap := p.pvcUsage.Load(); snap != nil {
+		p.enrichPVCFromIndexes(pvc, snap)
+	}
+}
+
+// enrichPVCUsageBatch enriches all PVCs with disk usage from the cached
+// snapshot — never queries the device inline.
+func (p *MicroKubeProvider) enrichPVCUsageBatch(_ context.Context, pvcs []corev1.PersistentVolumeClaim) {
+	snap := p.pvcUsage.Load()
+	if snap == nil {
+		return
+	}
+	for i := range pvcs {
+		p.enrichPVCFromIndexes(&pvcs[i], snap)
+	}
+}
+
+func (p *MicroKubeProvider) enrichPVCFromIndexes(pvc *corev1.PersistentVolumeClaim, snap *pvcUsageIndexes) {
 	if isISCSIPVC(pvc) {
-		rc := p.getRouterOSClient()
-		if rc == nil {
+		if snap.diskIdx == nil {
 			return
 		}
 		ann := pvc.GetAnnotations()
 		if ann == nil || ann[annDiskID] == "" {
 			return
 		}
-		disk, err := rc.GetISCSIDisk(ctx, ann[annDiskID])
-		if err != nil {
-			return
+		if disk := snap.diskIdx.ByID(ann[annDiskID]); disk != nil {
+			enrichPVCFromDisk(pvc, disk)
 		}
-		enrichPVCFromDisk(pvc, disk)
 		return
 	}
 
-	// Directory PVCs: get usage from runtime
-	hostPath := p.pvcHostPath(pvc)
-	used, err := p.deps.Runtime.DirectoryDiskUsage(ctx, hostPath)
-	if err != nil {
+	if snap.fileIdx == nil {
 		return
 	}
-	if pvc.Annotations == nil {
-		pvc.Annotations = make(map[string]string)
-	}
-	pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
-}
-
-// enrichPVCUsageBatch enriches all PVCs with disk usage in a single RouterOS
-// /file and /disk fetch instead of one per PVC.
-func (p *MicroKubeProvider) enrichPVCUsageBatch(ctx context.Context, pvcs []corev1.PersistentVolumeClaim) {
-	rc := p.getRouterOSClient()
-	if rc == nil {
-		return
-	}
-
-	// Check if any iSCSI PVCs exist to avoid unnecessary /disk fetch
-	hasISCSI := false
-	for i := range pvcs {
-		if isISCSIPVC(&pvcs[i]) {
-			hasISCSI = true
-			break
+	used := snap.fileIdx.DirectoryUsage(p.pvcHostPath(pvc))
+	if used > 0 {
+		if pvc.Annotations == nil {
+			pvc.Annotations = make(map[string]string)
 		}
-	}
-
-	// Fetch file usage index for directory PVCs
-	idx, err := rc.FetchFileUsageIndex(ctx)
-	if err != nil {
-		p.deps.Logger.Debugw("failed to fetch file usage index for PVC enrichment", "error", err)
-	}
-
-	// Fetch disk index for iSCSI PVCs (single /disk call)
-	var diskIdx *routeros.FileDiskIndex
-	if hasISCSI {
-		diskIdx, err = rc.FetchFileDiskIndex(ctx)
-		if err != nil {
-			p.deps.Logger.Debugw("failed to fetch disk index for iSCSI PVC enrichment", "error", err)
-		}
-	}
-
-	for i := range pvcs {
-		if isISCSIPVC(&pvcs[i]) {
-			// iSCSI PVC: enrich from disk index
-			if diskIdx == nil {
-				continue
-			}
-			ann := pvcs[i].GetAnnotations()
-			if ann == nil || ann[annDiskID] == "" {
-				continue
-			}
-			if disk := diskIdx.ByID(ann[annDiskID]); disk != nil {
-				enrichPVCFromDisk(&pvcs[i], disk)
-			}
-		} else {
-			// Directory PVC: enrich from file index
-			if idx == nil {
-				continue
-			}
-			hostPath := p.pvcHostPath(&pvcs[i])
-			used := idx.DirectoryUsage(hostPath)
-			if used > 0 {
-				if pvcs[i].Annotations == nil {
-					pvcs[i].Annotations = make(map[string]string)
-				}
-				pvcs[i].Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
-			}
-		}
+		pvc.Annotations["vkube.io/used-bytes"] = fmt.Sprintf("%d", used)
 	}
 }
 

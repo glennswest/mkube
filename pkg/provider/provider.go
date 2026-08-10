@@ -98,6 +98,7 @@ type MicroKubeProvider struct {
 	deps            Deps
 	nodeName        string
 	startTime       time.Time
+	pvcUsage        atomic.Pointer[pvcUsageIndexes] // cached /file + /disk indexes for PVC usage enrichment
 	pods            *safemap.Map[string, *corev1.Pod]                    // namespace/name -> pod
 	configMaps      *safemap.Map[string, *corev1.ConfigMap]              // namespace/name -> configmap
 	secrets         *safemap.Map[string, *corev1.Secret]               // namespace/name -> secret
@@ -2206,6 +2207,7 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 	log.Info("standalone reconciler starting")
 
 	go p.podWorker.Run(ctx)
+	go p.runPVCUsageRefresher(ctx)
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()

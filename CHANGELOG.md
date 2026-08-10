@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### 2026-08-10
+- **perf(pvc):** PVC list/get endpoints no longer query RouterOS inline. Usage enrichment previously did a full `/file` print (and `/disk` fetch) on every request — minutes on rose1's /raid1 tree, so every PVC API call hung past client timeouts. A background refresher (`runPVCUsageRefresher`, 5-min cadence, first run 1 min after boot) now keeps a cached `/file`+`/disk` index snapshot; handlers only read the cache, and a failed refresh keeps the previous snapshot instead of blanking data. Usage figures may be up to 5 min stale. The directory-usage half of this can be deleted outright once PVCs migrate to stormblock/NVMe volumes (usage then comes from the volume layer, not file tree walks).
 - **fix(consistency):** Network-repair recreates now run via the pod worker on the app-lifetime context instead of inline under the consistency check's single 30-second context. Inline, the repair (which runs late in the pass, after IPAM resync and orphan sweeps) always started with an exhausted deadline: `DeletePod` half-tore the pod down with every native call failing `context deadline exceeded`, `CreatePod` failed instantly, and the pod looped broken forever — observed 2026-08-10 00:13Z–00:25Z on infra/netwatch during post-outage recovery. The worker dedupes by pod key, so repeated consistency passes can't stack duplicate recreates.
 
 ## [v6.2.0] — 2026-08-09
