@@ -248,5 +248,25 @@ func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request
 	// EnsureDirectory stopped using it). The disk rows and mount entries
 	// answer the question that matters: which slot the clone is really on
 	// versus which path the container was told to mount.
+	// Optional: does RouterOS expose a clean UNMOUNT? /disk/remove
+	// force-detaches without flushing, which is why a seeded golden loses
+	// its filesystem metadata. An eject verb would fix golden-building
+	// on-device outright.
+	if id := r.URL.Query().Get("eject"); id != "" {
+		tried := map[string]string{}
+		for _, attempt := range []struct{ path string; params map[string]string }{
+			{"/disk/eject", map[string]string{".id": id}},
+			{"/disk/unmount", map[string]string{".id": id}},
+			{"/disk/set", map[string]string{".id": id, "mounted": "no"}},
+		} {
+			if err := ros.ContainerAddRawTo(ctx, attempt.path, attempt.params); err != nil {
+				tried[attempt.path] = "rejected: " + err.Error()
+			} else {
+				tried[attempt.path] = "ACCEPTED"
+			}
+		}
+		out["unmountAttempts"] = tried
+	}
+
 	podWriteJSON(w, http.StatusOK, out)
 }
