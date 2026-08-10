@@ -124,6 +124,17 @@ func (p *MicroKubeProvider) RunNVMeProbe(ctx context.Context) *NVMeProbeReport {
 			if disk, derr := ros.GetISCSIDisk(ctx, diskID); derr == nil {
 				step("disk row: slot=%s type=%s nqn=%s addr=%s", disk.Slot, disk.Type, disk.NVMeTCPNQN, disk.NVMeTCPAddress)
 			}
+			// Device-passthrough feasibility: can the attached target be
+			// handed to a container as a DEVICE instead of a mounted path?
+			// Two prerequisites, both checked here.
+			if disk, derr := ros.GetISCSIDisk(ctx, diskID); derr == nil {
+				if disk.BlockDevice != "" {
+					step("PASSTHROUGH 1/2: disk exposes block-device %q", disk.BlockDevice)
+				} else {
+					step("PASSTHROUGH 1/2: disk row exposes no block-device path")
+				}
+			}
+			step("PASSTHROUGH 2/2: %s", p.probeContainerDeviceArg(ctx, ros))
 			_ = ros.RemoveDisk(ctx, diskID)
 			step("probe disk detached")
 		}
@@ -199,3 +210,33 @@ func (p *MicroKubeProvider) nvmeProbePurge(ctx context.Context, sb *sbClient, na
 }
 
 var _ = routeros.FileDisk{} // keep the routeros import anchored
+
+
+// probeContainerDeviceArg asks the device whether /container/add accepts a
+// `devices=` argument at all. An "unknown/no such argument" complaint means
+// this RouterOS build has no container device passthrough; anything else
+// (invalid value, missing image, …) means the argument is recognised and
+// passthrough is worth designing against on THIS version.
+func (p *MicroKubeProvider) probeContainerDeviceArg(ctx context.Context, ros *routeros.Client) string {
+	err := ros.ContainerAddRaw(ctx, map[string]string{
+		"name":      "gt_devprobe_devprobe",
+		"root-dir":  "raid1/images/devprobe-nonexistent",
+		"devices":   "/dev/null",
+		"interface": "veth_gt_cowprobe_0",
+	})
+	if err == nil {
+		// Should not happen (no image source), but clean up if it did.
+		if ct, gerr := ros.GetContainer(ctx, "gt_devprobe_devprobe"); gerr == nil {
+			_ = ros.RemoveContainer(ctx, ct.ID)
+		}
+		return "container/add ACCEPTED a devices= argument — passthrough exists on this build"
+	}
+	e := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(e, "unknown argument"), strings.Contains(e, "no such argument"),
+		strings.Contains(e, "unrecognized"), strings.Contains(e, "invalid argument"):
+		return fmt.Sprintf("container/add REJECTED the argument itself — no device passthrough on this build (%v)", err)
+	default:
+		return fmt.Sprintf("container/add recognised devices= and failed later — passthrough likely supported (%v)", err)
+	}
+}

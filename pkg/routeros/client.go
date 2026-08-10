@@ -2161,3 +2161,11 @@ func decodeReply(reply *rosapi.Reply, result interface{}) error {
 		return json.Unmarshal(data, result)
 	}
 }
+
+// ContainerAddRaw issues /container/add with caller-supplied attributes.
+// Capability probes use it to ask the device whether an argument exists at
+// all; production paths should use CreateContainer.
+func (c *Client) ContainerAddRaw(ctx context.Context, params map[string]string) error {
+	defer c.InvalidateContainerCache()
+	return c.restPOST(ctx, "/container/add", params, nil)
+}
