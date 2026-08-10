@@ -242,6 +242,14 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	if template != "" {
 		reqBody["from_template"] = template
 	}
+	// Requested transport ("iscsi" | "nvme-tcp"). stormblockmk currently
+	// hardcodes iSCSI and ignores unknown fields, so this is forward-safe —
+	// the spec asking stormblockmk to honor it lives in that project's
+	// enhancements/. mkube already attaches whatever protocol the export
+	// reports, so no further change is needed here when it lands.
+	if t := p.deps.Config.Storage.Stormblock.Transport; t != "" {
+		reqBody["protocol"] = t
+	}
 	var created sbCreateVolumeResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", reqBody, &created); err != nil {
 		return "", fmt.Errorf("creating stormblock volume: %w", err)

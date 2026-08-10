@@ -49,6 +49,11 @@ pub struct IscsiInitiator {
     tsih: u16,
     /// Negotiated max recv data segment length
     max_recv_data_segment: u32,
+    /// Device block size learned from READ CAPACITY (512 until then).
+    /// RouterOS file-backed targets use 512; stormblockmk volumes use 4096 —
+    /// hardcoding 512 sent 8x-too-large CDB block counts against 4K devices
+    /// and every write died with ILLEGAL REQUEST asc=0x20 (short data).
+    device_block_size: u32,
     /// Negotiated first burst length
     first_burst_length: u32,
 }
@@ -89,6 +94,7 @@ impl IscsiInitiator {
             isid: [0x00, 0x02, 0x3D, 0x00, 0x00, 0x01],
             tsih: 0,
             max_recv_data_segment: 65536,
+            device_block_size: 512,
             first_burst_length: 65536,
         };
 
@@ -577,6 +583,8 @@ impl IscsiInitiator {
         let block_count = last_lba as u64 + 1;
         let total_bytes = block_count * block_size as u64;
 
+        self.device_block_size = block_size.max(1);
+
         Ok(DiskCapacity {
             block_count,
             block_size,
@@ -591,14 +599,17 @@ impl IscsiInitiator {
         BigEndian::write_u32(&mut cdb[2..6], lba);
         BigEndian::write_u16(&mut cdb[7..9], count);
 
-        // Assume 512-byte sectors
-        let expected = count as u32 * 512;
+        let expected = count as u32 * self.device_block_size;
         self.scsi_command(&cdb, expected, None).await
     }
 
     /// SCSI WRITE(10) — write blocks to the disk.
     pub async fn write_blocks(&mut self, lba: u32, data: &[u8]) -> Result<()> {
-        let block_count = (data.len() / 512) as u16;
+        let bs = self.device_block_size as usize;
+        if data.len() % bs != 0 {
+            bail!("write of {} bytes is not a multiple of device block size {}", data.len(), bs);
+        }
+        let block_count = (data.len() / bs) as u16;
         let mut cdb = [0u8; 10];
         cdb[0] = SCSI_WRITE_10;
         BigEndian::write_u32(&mut cdb[2..6], lba);

@@ -30,6 +30,23 @@ struct Cli {
 
 /// Parse a portal as "ip" (default port 3260) or "ip:port" — per-volume
 /// stormblockmk exports listen on non-default ports.
+
+/// Read the ext4 superblock area (file bytes 1024..1024+len) regardless of
+/// the device block size, returning the buffer and the in-buffer offset of
+/// byte 1024. Hardcoding "LBA 2" assumed 512-byte sectors and read the wrong
+/// place on 4096-byte devices (stormblockmk volumes).
+async fn read_superblock(
+    session: &mut IscsiInitiator,
+    block_size: u32,
+) -> anyhow::Result<(Vec<u8>, usize)> {
+    let bs = block_size.max(1) as u64;
+    let lba = 1024 / bs;
+    let skip = (1024 % bs) as usize;
+    let blocks = ((skip as u64 + 4096).div_ceil(bs)) as u16;
+    let data = session.read_blocks(lba as u32, blocks).await?;
+    Ok((data, skip))
+}
+
 fn portal_addr(portal: &str) -> Result<SocketAddr, std::net::AddrParseError> {
     if portal.contains(':') {
         portal.parse()
@@ -182,10 +199,10 @@ async fn main() -> Result<()> {
             let cap = session.read_capacity().await?;
             println!("  Capacity: {cap}");
 
-            // Read superblock area: starts at file byte 1024 = LBA 2
-            let sb_data = session.read_blocks(2, 2).await?;
-            if sb_data.len() >= 58 {
-                let has_ext4 = sb_data[56] == 0x53 && sb_data[57] == 0xEF;
+            // Read the superblock area (file byte 1024 onward)
+            let (sb_data, off) = read_superblock(&mut session, cap.block_size).await?;
+            if sb_data.len() >= off + 58 {
+                let has_ext4 = sb_data[off + 56] == 0x53 && sb_data[off + 57] == 0xEF;
                 println!("  Filesystem: {}", if has_ext4 { "ext4" } else { "none (unformatted)" });
             }
 
@@ -221,11 +238,10 @@ async fn main() -> Result<()> {
             }
             println!("  Format complete!");
 
-            // Verify: superblock is at file byte 1024. Read from LBA 2 (byte 1024).
-            // Magic at file byte 1080 = buffer offset 56.
-            let sb_data = session.read_blocks(2, 8).await?;
-            if sb_data.len() >= 58 {
-                let magic = u16::from_le_bytes([sb_data[56], sb_data[57]]);
+            // Verify: superblock is at file byte 1024, magic 56 bytes in.
+            let (sb_data, off) = read_superblock(&mut session, cap.block_size).await?;
+            if sb_data.len() >= off + 58 {
+                let magic = u16::from_le_bytes([sb_data[off + 56], sb_data[off + 57]]);
                 if magic == 0xEF53 {
                     println!("  Verification: ext4 superblock OK (magic=0xEF53)");
                 } else {
@@ -277,9 +293,9 @@ async fn main() -> Result<()> {
 
             // Step 4: Verify — superblock at file byte 1024, magic at 1080 = LBA 2 offset 56
             println!("Step 4: Verifying...");
-            let sb_data = session.read_blocks(2, 2).await?;
-            if sb_data.len() >= 58 {
-                let magic = u16::from_le_bytes([sb_data[56], sb_data[57]]);
+            let (sb_data, off) = read_superblock(&mut session, cap.block_size).await?;
+            if sb_data.len() >= off + 58 {
+                let magic = u16::from_le_bytes([sb_data[off + 56], sb_data[off + 57]]);
                 if magic == 0xEF53 {
                     println!("  ext4 superblock: OK");
                 } else {
