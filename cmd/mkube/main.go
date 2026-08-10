@@ -147,6 +147,23 @@ func runRouterOS(ctx context.Context, cfg *config.Config, log *zap.SugaredLogger
 	// proper session semantics — no zombie sessions to clean up.
 	log.Info("BOOT: RouterOS native API connected")
 
+	// Local file-ops fast path: ensure our own container has the storage
+	// disk bind-mounted. The mount attaches on the next container recreate;
+	// until then the API paths keep working.
+	if cfg.RouterOS.LocalFileRoot != "" {
+		active, err := rosClient.EnsureSelfMount(ctx, cfg.Storage.SelfRootDir,
+			cfg.RouterOS.LocalFileRoot, cfg.RouterOS.LocalFileDevicePrefix)
+		switch {
+		case err != nil:
+			log.Warnw("BOOT: local file-ops mount not ensured", "error", err)
+		case active:
+			log.Infow("BOOT: local file-ops active", "root", cfg.RouterOS.LocalFileRoot)
+		default:
+			log.Infow("BOOT: local file-ops mount ensured — active after next container restart",
+				"root", cfg.RouterOS.LocalFileRoot)
+		}
+	}
+
 	rt := runtime.NewRouterOSRuntime(rosClient)
 
 	// ── DNS Client ──────────────────────────────────────────────────

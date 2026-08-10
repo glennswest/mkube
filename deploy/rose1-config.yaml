@@ -13,6 +13,12 @@ routeros:
   user: mkube
   password: "mkube-rest"
   useTLS: false
+  # /raid1 bind-mounted into this container: file ops (exists/mkdir/remove/
+  # rename/list/du) run on the local filesystem instead of /file print, which
+  # enumerates the whole tree server-side (minutes with registry blobs on
+  # /raid1). mkube self-ensures the mount entry at boot; it attaches on the
+  # next container recreate.
+  localFileRoot: "/hostraid1"
 
 # Statically configured networks. Discovery will auto-populate DNS config
 # for any of these that lack it, and add new networks found on the device.

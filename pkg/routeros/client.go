@@ -503,6 +503,59 @@ type MountEntry struct {
 	Dst  string `json:"dst"`  // container path
 }
 
+// EnsureSelfMount makes sure the container running mkube has the device's
+// storage disk bind-mounted at localRoot (the LocalFileRoot fast path).
+// The entry is added to this container's own mount list; RouterOS applies
+// mounts at container start, so it takes effect on the next container
+// recreate (every image swap does one). Returns (true, nil) when the mount
+// is already active in this process.
+func (c *Client) EnsureSelfMount(ctx context.Context, selfRootDir, localRoot, devicePrefix string) (bool, error) {
+	if localRoot == "" || selfRootDir == "" {
+		return false, nil
+	}
+	if st, err := os.Stat(localRoot); err == nil && st.IsDir() {
+		return true, nil // mount active
+	}
+	cts, err := c.ListContainers(ctx)
+	if err != nil {
+		return false, fmt.Errorf("listing containers: %w", err)
+	}
+	want := strings.TrimPrefix(selfRootDir, "/")
+	var self *Container
+	for i := range cts {
+		if strings.TrimPrefix(cts[i].RootDir, "/") == want {
+			self = &cts[i]
+			break
+		}
+	}
+	if self == nil {
+		return false, fmt.Errorf("could not find own container by root-dir %q", selfRootDir)
+	}
+	list := self.MountLists
+	if i := strings.IndexByte(list, ','); i >= 0 {
+		list = list[:i]
+	}
+	if list == "" {
+		return false, fmt.Errorf("own container %q has no mount list", self.Name)
+	}
+	if devicePrefix == "" {
+		devicePrefix = "raid1"
+	}
+	mounts, err := c.ListMountsByList(ctx, list)
+	if err != nil {
+		return false, fmt.Errorf("listing mounts for %q: %w", list, err)
+	}
+	for _, m := range mounts {
+		if m.Dst == localRoot {
+			return false, nil // entry present, waiting for a container restart
+		}
+	}
+	if err := c.CreateMount(ctx, list, "/"+devicePrefix, localRoot); err != nil {
+		return false, fmt.Errorf("adding self mount: %w", err)
+	}
+	return false, nil
+}
+
 // CreateMount creates a container mount entry.
 func (c *Client) CreateMount(ctx context.Context, listName, src, dst string) error {
 	return c.restPOST(ctx, "/container/mounts/add", map[string]string{
