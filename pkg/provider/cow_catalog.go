@@ -327,6 +327,14 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	// silently; failing here is correct until the seeding write path
 	// bypasses the ROS page cache (that is exactly what sbregistry's
 	// direct-to-volume layer writes do).
+	// RouterOS force-detaches without unmounting, so the seeded filesystem
+	// is left flagged dirty and stormblockmk (correctly) refuses to seal it.
+	// Writes have quiesced by now — the settle above — so restore the flag
+	// explicitly rather than forcing past the guard.
+	if rErr := p.reidentifyStormblockVolume(ctx, sb, created.Template.RawVolumeID, attach, name, true); rErr != nil {
+		p.deps.Logger.Warnw("could not restore the clean flag before sealing", "template", name, "error", rErr)
+	}
+
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+created.Template.ID+"/seal", nil, nil); err != nil {
 		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/fstemplates/"+created.Template.ID+"?force=true", nil, nil)
 		return "", fmt.Errorf("sealing fstemplate %s (ROS-seeded volumes cannot currently be cleanly unmounted — use an sbregistry-created golden): %w", name, err)
@@ -467,6 +475,21 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		}
 		return "", "", fmt.Errorf("cow volume %s: no attach parameters", created.ID)
 	}
+	// A clone is byte-identical to its golden, UUID and label included.
+	// Give it its own identity BEFORE RouterOS ever sees it, so no two
+	// mounted filesystems on this host claim to be the same one.
+	shortID := created.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	// New UUID *and* a clean flag: a clone inherits both from its golden, so
+	// one that was cloned while the golden carried a mount's dirty flag would
+	// start life looking unclean through no fault of its own. The clone is a
+	// snapshot of quiesced data, so state=1 is the truth.
+	if rErr := p.reidentifyStormblockVolume(ctx, sb, created.ID, attach, "cow-"+shortID, true); rErr != nil {
+		p.deps.Logger.Warnw("could not re-identify the cow clone", "volume", created.ID, "error", rErr)
+	}
+
 	diskID, err := p.attachStormblockDisk(ctx, attach)
 	if err != nil {
 		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)

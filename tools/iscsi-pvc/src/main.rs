@@ -93,6 +93,12 @@ enum Commands {
         /// New filesystem label
         #[arg(long)]
         label: Option<String>,
+        /// Also restore the "cleanly unmounted" flag (state=1). Only valid
+        /// once writes have quiesced: RouterOS force-detaches without
+        /// unmounting, so a golden it seeded is left flagged dirty and
+        /// stormblockmk refuses to seal it.
+        #[arg(long)]
+        clean: bool,
     },
 
     /// Dump ext4 superblock fields (for comparing our format against one
@@ -198,7 +204,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Reid { iqn, label } => {
+        Commands::Reid { iqn, label, clean } => {
             let portal: SocketAddr = portal_addr(&cli.portal)?;
             let mut session = IscsiInitiator::connect(
                 portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
@@ -214,6 +220,10 @@ async fn main() -> Result<()> {
             }
             let uuid = generate_uuid();
             sb[off + 104..off + 120].copy_from_slice(&uuid);
+            if clean {
+                sb[off + 58] = 1;
+                sb[off + 59] = 0;
+            }
             if let Some(l) = &label {
                 let mut buf = [0u8; 16];
                 let b = l.as_bytes();
@@ -229,6 +239,7 @@ async fn main() -> Result<()> {
             for b in uuid { print!("{b:02x}"); }
             println!();
             if let Some(l) = label { println!("new label {l}"); }
+            if clean { println!("state set to 1 (cleanly unmounted)"); }
             session.logout().await?;
         }
 

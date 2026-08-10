@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -227,6 +228,63 @@ func (p *MicroKubeProvider) formatStormblockVolume(ctx context.Context, sb *sbCl
 		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
 	}
 	return p.formatISCSITargetExt4(ctx, portal, sbTargetName(tmp.Attach), label)
+}
+
+// reidentifyStormblockVolume gives a volume's filesystem a fresh UUID (and
+// label), optionally restoring the "cleanly unmounted" flag.
+//
+// A CoW clone is byte-identical to its golden, so without this every clone
+// on the host claims the same filesystem identity — which is what makes
+// mount-by-UUID and blkid caching misbehave. `clean` additionally repairs
+// the flag RouterOS leaves cleared when it force-detaches without
+// unmounting; only pass it once writes have quiesced.
+func (p *MicroKubeProvider) reidentifyStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach, label string, clean bool) error {
+	run := func(portal, target string) error {
+		args := []string{
+			"--url", p.deps.Config.RouterOS.RESTURL,
+			"--user", p.deps.Config.RouterOS.User,
+			"--password", p.deps.Config.RouterOS.Password,
+			"--portal", portal,
+			"reid", target, "--label", label,
+		}
+		if clean {
+			args = append(args, "--clean")
+		}
+		out, err := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc", args...).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("iscsi-pvc reid: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		p.deps.Logger.Infow("filesystem re-identified", "volume", volumeID, "label", label, "clean", clean,
+			"output", strings.TrimSpace(string(out)))
+		return nil
+	}
+
+	if sbTransport(attach) == "iscsi" {
+		portal := attach.Address
+		if attach.Port != 0 {
+			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
+		}
+		return run(portal, sbTargetName(attach))
+	}
+
+	var tmp sbExport
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
+		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
+		return fmt.Errorf("creating temporary iscsi export: %w", err)
+	}
+	defer func() {
+		if tmp.ExportID != "" {
+			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+tmp.ExportID, nil, nil)
+		}
+	}()
+	if tmp.Attach.Address == "" {
+		return fmt.Errorf("temporary iscsi export returned no attach parameters")
+	}
+	portal := tmp.Attach.Address
+	if tmp.Attach.Port != 0 {
+		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
+	}
+	return run(portal, sbTargetName(tmp.Attach))
 }
 
 // provisionStormblockPVC creates (or recovers) the volume behind a PVC and
