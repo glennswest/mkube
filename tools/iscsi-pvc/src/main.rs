@@ -84,6 +84,23 @@ enum Commands {
         pool: String,
     },
 
+    /// Write a known pattern at a block offset (each block stamped with its
+    /// own LBA), then optionally verify it. The point is to answer "are we
+    /// actually storing bytes?" without trusting allocation counters.
+    Pattern {
+        /// Target IQN
+        iqn: String,
+        /// write | check
+        #[arg(long, default_value = "check")]
+        mode: String,
+        /// First LBA to touch
+        #[arg(long, default_value_t = 4096)]
+        lba: u32,
+        /// How many blocks
+        #[arg(long, default_value_t = 64)]
+        count: u32,
+    },
+
     /// Tell the target to commit its cache (SCSI SYNCHRONIZE CACHE)
     Flush {
         /// Target IQN
@@ -208,6 +225,48 @@ async fn main() -> Result<()> {
                     println!("No disk found for path: /{file_path}");
                 }
             }
+        }
+
+        Commands::Pattern { iqn, mode, lba, count } => {
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
+            let mut session = IscsiInitiator::connect(
+                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
+            ).await?;
+            let cap = session.read_capacity().await?;
+            let bs = cap.block_size as usize;
+            let stamp = |i: u32| -> Vec<u8> {
+                let mut b = vec![0u8; bs];
+                let magic: u64 = 0xDA7A_0000_0000_0000 | (i as u64);
+                b[..8].copy_from_slice(&magic.to_le_bytes());
+                for (j, x) in b[8..].iter_mut().enumerate() {
+                    *x = ((i as usize + j) % 251) as u8;
+                }
+                b
+            };
+            match mode.as_str() {
+                "write" => {
+                    for i in 0..count {
+                        session.write_blocks(lba + i, &stamp(i)).await?;
+                    }
+                    session.synchronize_cache().await?;
+                    println!("wrote {count} blocks of {bs} bytes at lba {lba} (+flush)");
+                }
+                _ => {
+                    let mut bad = 0u32;
+                    let mut zero = 0u32;
+                    for i in 0..count {
+                        let got = session.read_blocks(lba + i, 1).await?;
+                        let want = stamp(i);
+                        if got.len() < bs { bail!("short read at lba {}", lba + i); }
+                        if got[..bs] == want[..] { continue; }
+                        if got[..bs].iter().all(|b| *b == 0) { zero += 1; } else { bad += 1; }
+                    }
+                    println!("checked {count} blocks at lba {lba}: {} good, {zero} all-zero, {bad} corrupt",
+                             count - zero - bad);
+                    if zero + bad > 0 { bail!("pattern verification FAILED"); }
+                }
+            }
+            session.logout().await?;
         }
 
         Commands::Flush { iqn } => {
