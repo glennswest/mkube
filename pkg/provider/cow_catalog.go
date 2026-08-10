@@ -462,6 +462,26 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 	p.deps.Logger.Infow("cow seeder: settling writeback before detach", "seconds", 45)
 	time.Sleep(45 * time.Second)
 
+	// EJECT before detaching. /disk/remove force-detaches without flushing,
+	// so everything RouterOS still held in its page cache — the directory
+	// entries and inode updates that make the extracted image findable —
+	// was being lost, leaving a volume with 60 MB allocated that mounts
+	// completely empty. /disk/eject unmounts properly first.
+	if disks, derr := ros.ListDisks(ctx); derr == nil {
+		for i := range disks {
+			d := &disks[i]
+			if d.MountPoint != "" && "/"+d.MountPoint == mountPoint {
+				if eerr := ros.EjectDisk(ctx, d.ID); eerr != nil {
+					p.deps.Logger.Warnw("cow seeder: eject failed, metadata may not be flushed", "disk", d.ID, "error", eerr)
+				} else {
+					p.deps.Logger.Infow("cow seeder: disk ejected (filesystem quiesced)", "disk", d.ID)
+				}
+				break
+			}
+		}
+	}
+	time.Sleep(5 * time.Second)
+
 	// Ordering that keeps the content: detach the disk FIRST (mount path
 	// vanishes), THEN remove the seeder — its root-dir wipe misses.
 	if disk, err := ros.FindNetworkDisk(ctx, "iscsi", "", ""); err == nil && disk != nil && "/"+strings.TrimPrefix(mountPoint, "/") == "/"+disk.MountPoint {

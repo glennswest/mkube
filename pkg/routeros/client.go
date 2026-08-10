@@ -2242,3 +2242,13 @@ func (c *Client) LocalTree(devicePath string, max int) ([]string, error) {
 func (c *Client) ContainerAddRawTo(ctx context.Context, path string, params map[string]string) error {
 	return c.restPOST(ctx, path, params, nil)
 }
+
+// EjectDisk asks RouterOS to eject (cleanly unmount) a disk before it is
+// detached. /disk/remove force-detaches without flushing, which loses
+// filesystem metadata still sitting in RouterOS's page cache — the reason a
+// volume RouterOS seeded mounts as clean-but-empty afterwards. /disk/eject
+// exists on 7.22.2 (it answers "no such item" for a stale id, not "no such
+// command"), so a seeded volume can be quiesced properly.
+func (c *Client) EjectDisk(ctx context.Context, id string) error {
+	return c.restPOST(ctx, "/disk/eject", map[string]string{".id": id}, nil)
+}
