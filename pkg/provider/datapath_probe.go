@@ -19,6 +19,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -53,7 +54,6 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 		rep.Error = err.Error()
 		return rep
 	}
-	ros := p.getRouterOSClient()
 
 	// iscsi-pvc pattern helper.
 	pattern := func(attach sbAttach, mode string) (string, error) {
@@ -137,15 +137,13 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 		attach = a2
 	}
 
-	// 4. Format + seal + clone, then read the pattern out of the CLONE.
-	// The pattern sits far past the filesystem metadata, so this tests
-	// clone fidelity of raw blocks regardless of ext4.
-	if err := p.formatStormblockVolume(ctx, sb, created.ID, attach, "datapath"); err != nil {
-		step("format for template failed: %v", err)
-	}
-	if _, err := pattern(attach, "write"); err != nil {
-		step("re-write pattern after format failed: %v", err)
-	}
+	// 4. THE decisive leg: known bytes → seal → clone → read them back.
+	//
+	// stormblockmk templates create their own volume, so the pattern goes
+	// into the TEMPLATE's raw volume, past the filesystem's metadata. The
+	// clone either reproduces those exact blocks or it does not, and that
+	// is independent of ext4, RouterOS, and every other layer we have been
+	// arguing about.
 	var tmpl sbCreateTemplateResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates",
 		map[string]any{"name": "datapath-tpl", "fs": "ext4", "size_bytes": 512 * 1024 * 1024}, &tmpl); err != nil {
@@ -155,20 +153,69 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 	defer func() {
 		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/fstemplates/"+tmpl.Template.ID+"?force=true", nil, nil)
 	}()
-	step("clone-fidelity leg needs a template built from THIS volume; stormblockmk templates create their own volume, so comparing raw blocks instead")
 
-	// Simplest honest clone test available: snapshot-by-template is not
-	// possible on an arbitrary volume, so verify the pattern once more on
-	// the original after all the template churn.
-	if out, err := pattern(attach, "check"); err != nil {
-		rep.FromClone = "post-churn verify FAILED: " + out
-		step("post-churn verify FAILED: %s", out)
+	var wiring sbExport
+	if err := json.Unmarshal(tmpl.Attach, &wiring); err != nil || wiring.Attach.Address == "" {
+		rep.FromClone = "template returned no attach block"
+		return rep
+	}
+	tAttach := wiring.Attach
+	if tAttach.Transport == "" {
+		tAttach.Transport = wiring.Protocol
+	}
+	step("template %s raw volume exported at %s:%d", tmpl.Template.Name, tAttach.Address, tAttach.Port)
+
+	// Format so the seal guard has a valid, clean ext4 to verify...
+	if err := p.formatStormblockVolume(ctx, sb, tmpl.Template.RawVolumeID, tAttach, "datapath-tpl"); err != nil {
+		rep.FromClone = "formatting template volume failed: " + err.Error()
+		return rep
+	}
+	// ...then stamp the pattern well past the filesystem metadata.
+	if out, err := pattern(tAttach, "write"); err != nil {
+		rep.FromClone = "writing pattern to template volume failed: " + out
+		return rep
 	} else {
-		rep.FromClone = "post-churn verify: " + out
-		step("post-churn verify: %s", out)
+		step("pattern written into the template volume: %s", out)
 	}
-	if ros != nil {
-		_ = ros // reserved: attach path not needed for a pure block test
+	if out, err := pattern(tAttach, "check"); err != nil {
+		rep.FromClone = "pattern not readable on the template volume itself: " + out
+		step("template volume verify FAILED before sealing: %s", out)
+		return rep
+	} else {
+		step("template volume verify before sealing: %s", out)
 	}
+
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+tmpl.Template.ID+"/seal", nil, nil); err != nil {
+		rep.FromClone = "seal failed: " + err.Error()
+		step("seal failed: %v", err)
+		return rep
+	}
+	step("template sealed (guard verified the filesystem)")
+
+	var clone sbCreateVolumeResp
+	if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", map[string]any{
+		"name": "datapath-clone", "from_template": tmpl.Template.Name, "export": true, "protocol": "iscsi",
+	}, &clone); err != nil {
+		rep.FromClone = "clone failed: " + err.Error()
+		return rep
+	}
+	defer func() {
+		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/volumes/"+clone.ID+"?force=true", nil, nil)
+	}()
+	cAttach, ok2 := clone.attachParams()
+	if !ok2 {
+		rep.FromClone = "clone returned no attach parameters"
+		return rep
+	}
+	step("clone %s exported at %s:%d", clone.ID[:8], cAttach.Address, cAttach.Port)
+
+	if out, err := pattern(cAttach, "check"); err != nil {
+		rep.FromClone = "CLONE LOST THE DATA: " + out
+		step("clone verify FAILED: %s", out)
+	} else {
+		rep.FromClone = out
+		step("clone verify: %s", out)
+	}
+
 	return rep
 }
