@@ -2252,3 +2252,17 @@ func (c *Client) ContainerAddRawTo(ctx context.Context, path string, params map[
 func (c *Client) EjectDisk(ctx context.Context, id string) error {
 	return c.restPOST(ctx, "/disk/eject", map[string]string{".id": id}, nil)
 }
+
+// DisableDisk disables a disk entry. RouterOS refuses to eject a network
+// disk ("can eject only hardware disks, disable or remove it instead"), and
+// remove force-detaches without flushing — so disable is the remaining
+// candidate for quiescing a filesystem RouterOS has been writing to.
+func (c *Client) DisableDisk(ctx context.Context, id string) error {
+	if err := c.restPOST(ctx, "/disk/disable", map[string]string{".id": id}, nil); err == nil {
+		return nil
+	} else if !strings.Contains(strings.ToLower(err.Error()), "no such command") {
+		// Command exists but refused — report that, don't mask it.
+		return err
+	}
+	return c.restPOST(ctx, "/disk/set", map[string]string{".id": id, "disabled": "yes"}, nil)
+}

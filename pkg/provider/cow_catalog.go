@@ -471,10 +471,16 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 		for i := range disks {
 			d := &disks[i]
 			if d.MountPoint != "" && "/"+d.MountPoint == mountPoint {
-				if eerr := ros.EjectDisk(ctx, d.ID); eerr != nil {
-					p.deps.Logger.Warnw("cow seeder: eject failed, metadata may not be flushed", "disk", d.ID, "error", eerr)
-				} else {
+				// Eject is for hardware disks only — RouterOS says so and
+				// points at disable instead, which is the one remaining way
+				// to make it release a filesystem without a force-detach.
+				if eerr := ros.EjectDisk(ctx, d.ID); eerr == nil {
 					p.deps.Logger.Infow("cow seeder: disk ejected (filesystem quiesced)", "disk", d.ID)
+				} else if derr := ros.DisableDisk(ctx, d.ID); derr == nil {
+					p.deps.Logger.Infow("cow seeder: disk disabled (filesystem quiesced)", "disk", d.ID)
+				} else {
+					p.deps.Logger.Warnw("cow seeder: could not quiesce the filesystem — metadata may be lost",
+						"disk", d.ID, "ejectError", eerr, "disableError", derr)
 				}
 				break
 			}
