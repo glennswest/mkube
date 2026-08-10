@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-08-10
+- **feat(probe):** NVMe-TCP capability probe (`POST /api/v1/probes/nvme`). First run answers both switchover questions: **RouterOS 7.22.2 supports the NVMe-TCP initiator** — it accepted `/disk add type=nvme-tcp` and created a disk row against a deliberately absent target — retiring the ≥7.9 support risk; and the deployed **stormblockmk 0.2.0 ignores `protocol`** and exports iSCSI, so the switchover waits only on the v0.3.0 image. The probe classifies the device's complaint (`invalid value for argument type` = no support vs a connect/no-target error = supported) so it answers the initiator question regardless of which engine build is deployed, and purges its volume and any disk row on every path.
+
+### 2026-08-10
 - **fix(cow):** Golden templates are sealed **without** `force`, restoring stormblockmk's ext4 "cleanly unmounted" guard. That guard is what stands between us and a golden that clones as an empty filesystem: RouterOS detaches without flushing its page cache, so a ROS-seeded volume lands its data blocks (60 MB allocated in the raw, sealed, and cloned volumes alike) while the directory metadata never commits — every clone then mounts as clean-but-empty ext4 and containers fail `error creating src <mount>/rootfs`. Forcing past the check produced broken goldens silently; the build now fails loudly and deletes the half-built template. Seeding has to bypass the RouterOS page cache to pass — which is precisely what sbregistry's direct-to-volume layer writes do.
 
 ### 2026-08-10
