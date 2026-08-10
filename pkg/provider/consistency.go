@@ -1232,6 +1232,11 @@ func (p *MicroKubeProvider) cleanStaleDNSRecords(ctx context.Context) (int, erro
 // network is considered broken and the pod is recreated.
 const networkHealthThreshold = 3
 
+// networkHealthCreateGrace: how long after a pod's create completes before
+// the network-health check may count it broken — covers slow post-create
+// convergence (bridge learning, first reconcile refresh of actualPorts).
+const networkHealthCreateGrace = 5 * time.Minute
+
 // checkNetworkHealth produces read-only CheckItems for the /api/v1/consistency
 // endpoint. It verifies each tracked pod has a veth with a valid IP and that
 // static-IP annotations match the actual allocation.
@@ -1455,6 +1460,19 @@ func (p *MicroKubeProvider) repairNetworkHealth(ctx context.Context) (int, error
 
 		// Skip pods currently being redeployed
 		if redeployingSnap[key] {
+			continue
+		}
+
+		// Skip pods with an in-flight worker job, and pods whose create
+		// finished only moments ago. A mid-create pod always looks broken
+		// (its veth isn't in actualPorts yet), and counting it re-arms the
+		// repair to fire again the instant the create completes — a
+		// delete+create loop that never converges (observed 2026-08-10:
+		// infra/stormblockmk recreated every consistency pass for 25+ min).
+		if p.podWorker.IsPendingOrProcessing(key) {
+			continue
+		}
+		if created, ok := p.podWorker.CreatedAt(key); ok && time.Since(created) < networkHealthCreateGrace {
 			continue
 		}
 
