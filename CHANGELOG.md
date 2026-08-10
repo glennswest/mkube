@@ -1,11 +1,22 @@
 # Changelog
 
 ## [Unreleased]
+<!-- New unreleased changes go here -->
+
+## [v6.3.0] — 2026-08-10
+
+stormblock (`storageClassName: stormblock`) PVC provisioning works end to end
+as of this release: create → export → attach (per-volume portal) → ext4 format
+→ probe-kick re-attach → mount → pod running with the volume, idempotent
+reattach on recreate in under a second, rollback on every failure path.
+Local file-ops fast path active on rose1 (`/hostraid1`).
 
 ### 2026-08-10
 - **perf(routeros):** `EnsureDirectory` no longer runs `FileExists` (a `/file print` that enumerates the entire file tree server-side even with a name filter — minutes of device CPU with /raid1 full of registry blobs, and the source of a flat 3-minute stall in every PVC-backed pod create) and no longer relies on the marker-file HTTP upload (which has been silently failing with 415 Unsupported Media Type on its zero-byte body — every "failed to ensure PVC directory" warning ever logged). It now issues `/file/add type=directory` per path segment (RouterOS 7.13+, "already exists" = success), with a 1-byte marker upload kept as fallback for older devices.
 - **fix(pvc):** stormblock provisioning now parses the real stormblockmk response shape — the transport lives in `export.protocol` and attach parameters are nested in `export.attach`, not flat under `export` (verified against a live `/mk/v1/volumes` response; the old struct decoded every field empty and provisioning failed "no attach parameters returned" despite the volume+export being created fine). Also: the no-attach-params failure path now rolls the created volume back (this exact leak happened live), and all volume rollback/delete calls pass `?force=true` since stormblockmk 409s a plain DELETE of an exported volume.
 - **perf(routeros):** Local file-ops fast path shipped end-to-end: `routeros.localFileRoot` (rose1: `/hostraid1`) + `EnsureSelfMount` — at boot mkube adds a `/raid1 → /hostraid1` bind mount to its own container's mount list (found by matching `selfRootDir`); the mount attaches on the next container recreate (every image swap). Once active, exists/mkdir/remove/rename/list/du/upload/usage-index are local `os.*` calls — the `/file print` family disappears from on-device operation entirely.
+- **fix(routeros):** `GetISCSIDisk` resolved ids via the file-backed-only disk list, so looking up a consumed remote target (`type=iscsi`/`nvme-tcp`) always returned "disk not found" — every stormblock mount-wait poll silently failed and provisioning timed out **even when RouterOS had mounted the volume**. It now searches all disk types. This was the final blocker: with it fixed, the full stormblock chain completes — "stormblock PVC ready", mounted at `/iscsi3`, PVC Bound with volume/disk/portal annotations.
+- **fix(pvc):** `waitForDiskMount` also accepts a mount-point on a child `/disk` row (RouterOS represents a detected filesystem as a partition-style entry whose `parent` is the disk's slot) and carries the observed rows in its timeout error so failures are self-diagnosing.
 - **fix(pvc):** After formatting a stormblock volume, the attached disk is bounced (remove + re-attach) so RouterOS probes the fresh ext4. RouterOS reads a consumed target's filesystem at ATTACH time only — the format happens after attach, so the mount wait timed out no matter how long (observed: format verified OK, no mount in 120s). The iscsi class gets the same effect from its export-disable step; a consumed remote target has no export to toggle.
 - **fix(iscsi-pvc):** The initiator honored a hardcoded 512-byte sector size in its READ(10)/WRITE(10) CDB math. RouterOS file-backed targets are 512 so it always worked, but stormblockmk volumes report 4096-byte blocks — every write declared 8× the data it carried and the target correctly failed it with ILLEGAL REQUEST asc=0x20 (short data-out). This was the "SCSI response status=0x02" blocking stormblock PVC formatting. The session now learns the device block size from READ CAPACITY and uses it everywhere, including the superblock probe/verify reads (which assumed "byte 1024 = LBA 2").
 - **feat(pvc):** stormblock volume creation sends `protocol` from `storage.stormblock.transport` ("iscsi" | "nvme-tcp"). stormblockmk currently hardcodes iSCSI and ignores unknown fields (forward-safe); the spec asking it to honor the field is filed in `stormblockmk/enhancements/volume-create-protocol.md`. mkube's attach path already handles both transports.
