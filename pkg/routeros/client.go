@@ -964,6 +964,18 @@ func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Read
 	return nil
 }
 
+// FetchFile makes the DEVICE download url to dstPath via /tool/fetch —
+// the reliable way to place a file on a non-flash disk path (the REST
+// upload endpoint resets the connection on such paths).
+func (c *Client) FetchFile(ctx context.Context, url, dstPath string) error {
+	dstPath = strings.TrimPrefix(dstPath, "/")
+	return c.restPOST(ctx, "/tool/fetch", map[string]string{
+		"url":      url,
+		"dst-path": dstPath,
+		"mode":     "http",
+	}, nil)
+}
+
 // ListFiles lists files at a given path on RouterOS.
 func (c *Client) ListFiles(ctx context.Context, path string) ([]map[string]interface{}, error) {
 	var files []map[string]interface{}

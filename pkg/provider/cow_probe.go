@@ -22,9 +22,9 @@ package provider
 // the decisive one failed).
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -116,18 +116,15 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	}
 	step("stormblock volume provisioned and mounted at %s", mountPoint)
 
-	// ── 2. Rootfs: one static binary ──
-	bin, err := os.ReadFile(cowProbeBinary)
-	if err != nil {
-		p.cowProbeCleanup(ctx, ros, pvc, false)
-		return fail(fmt.Errorf("reading probe binary: %w", err))
-	}
+	// ── 2. Rootfs: one static binary, delivered by making the DEVICE fetch
+	// it from mkube's API (the REST upload resets on non-flash disk paths).
 	rootfs := strings.TrimPrefix(mountPoint, "/") + "/rootfs"
-	if err := ros.UploadFile(ctx, rootfs+"/bin/probe", bytes.NewReader(bin)); err != nil {
+	payloadURL := fmt.Sprintf("http://%s/api/v1/probes/cow/payload", p.ownAPIAddr())
+	if err := ros.FetchFile(ctx, payloadURL, rootfs+"/bin/probe"); err != nil {
 		p.cowProbeCleanup(ctx, ros, pvc, false)
-		return fail(fmt.Errorf("uploading rootfs binary: %w", err))
+		return fail(fmt.Errorf("device fetch of rootfs binary from %s: %w", payloadURL, err))
 	}
-	step("pre-populated rootfs at %s (single %d-byte static binary)", rootfs, len(bin))
+	step("pre-populated rootfs at %s (device fetched static binary from %s)", rootfs, payloadURL)
 
 	// ── 3. Network ──
 	_, _, _, err = p.deps.NetworkMgr.AllocateInterface(ctx, cowProbeVeth, "cowprobe.cowprobe", "gt", "")
@@ -200,6 +197,35 @@ func (p *MicroKubeProvider) RunCoWProbe(ctx context.Context) *CoWProbeReport {
 	p.cowProbeCleanup(ctx, ros, pvc, true)
 	step("cleanup complete")
 	return rep
+}
+
+// handleCoWProbePayload serves the static probe binary so the device can
+// /tool/fetch it onto the probe volume.
+func (p *MicroKubeProvider) handleCoWProbePayload(w http.ResponseWriter, r *http.Request) {
+	bin, err := os.ReadFile(cowProbeBinary)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bin)))
+	_, _ = w.Write(bin)
+}
+
+// ownAPIAddr returns the host:port the DEVICE can reach mkube's API on,
+// derived from the local end of a dial toward the device.
+func (p *MicroKubeProvider) ownAPIAddr() string {
+	addr := p.deps.Config.RouterOS.Address
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return "192.168.200.2:8082" // gt-network default
+	}
+	defer conn.Close()
+	host, _, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		return "192.168.200.2:8082"
+	}
+	return net.JoinHostPort(host, "8082")
 }
 
 // cowProbeCleanup tears down everything the probe may have created.
