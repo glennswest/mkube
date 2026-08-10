@@ -992,12 +992,15 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 
 		if cowMode && cowPayloadMount != "" {
-			// The clone rootfs rides the normal mount machinery; IsPVC keeps
-			// it out of ephemeral-mount garbage collection.
+			// NOT IsPVC: the clone's mount slot drifts across re-attaches,
+			// and PVC-flagged entries are never removed by ReconcileMounts —
+			// a stale slot entry from the previous create then fails every
+			// container start ("error creating src /iscsiN/rootfs"). The
+			// mount is re-declared with the current slot on every create,
+			// so reconciler-managed is exactly right.
 			desiredMounts = append(desiredMounts, runtime.DesiredMount{
-				Src:   cowPayloadMount,
-				Dst:   cowPayloadDst,
-				IsPVC: true,
+				Src: cowPayloadMount,
+				Dst: cowPayloadDst,
 			})
 		}
 
