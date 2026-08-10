@@ -1,7 +1,9 @@
 # Changelog
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-10
+- **feat(probe):** CoW Phase 0 capability probe — `POST /api/v1/probes/cow` provisions a small stormblock volume through the standard PVC path, lays a one-binary rootfs on the mount, then attempts `/container/add` with `root-dir` pointing at it and **no `file=`/`remote-image=`** — the untested RouterOS behavior the golden-image/clone-per-pod catalog depends on. Reports every step plus a verdict (`supported`/`unsupported`) and tears everything down (container, veth, volume, PVC) on all paths.
 
 ## [v6.3.0] — 2026-08-10
 
