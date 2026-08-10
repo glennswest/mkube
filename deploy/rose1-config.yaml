@@ -202,6 +202,10 @@ storage:
   stormblock:
     endpoint: "http://192.168.200.21:9090"
     tokenSecret: "gt/stormblock-token"   # key: token
+    # Forward-safe: pre-v0.3.0 stormblockmk ignores the protocol field and
+    # exports iSCSI; v0.3.0+ honors it. mkube always attaches whatever the
+    # export reports, so this self-activates when the new image rolls out.
+    transport: "nvme-tcp"
     # template: "ext4-1g"   # clone a pre-formatted fs instead of mkfs per PVC
   selfRootDir: raid1/images/kube.gt.lo
   iscsiPortalIP: "192.168.10.1"
