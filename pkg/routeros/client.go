@@ -2180,3 +2180,20 @@ func (c *Client) ListRaw(ctx context.Context, path string) ([]map[string]interfa
 	}
 	return rows, nil
 }
+
+// GetContainerConfig returns the single /container/config row.
+func (c *Client) GetContainerConfig(ctx context.Context) (map[string]interface{}, error) {
+	rows, err := c.ListRaw(ctx, "/container/config")
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	return rows[0], nil
+}
+
+// SetContainerConfig applies attributes to /container/config.
+func (c *Client) SetContainerConfig(ctx context.Context, params map[string]string) error {
+	return c.restPOST(ctx, "/container/config/set", params, nil)
+}
