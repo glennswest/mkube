@@ -58,10 +58,34 @@ type sbAttach struct {
 	LUN       int    `json:"lun"`
 }
 
+// sbExport mirrors stormblockmk's export object: the transport lives in
+// `protocol` and the attach parameters are nested one level down in `attach`
+// (verified against a live /mk/v1/volumes response 2026-08-10 — parsing the
+// export as a flat attach block left every field empty and provisioning
+// failed "no attach parameters returned").
+type sbExport struct {
+	Protocol string   `json:"protocol"` // "iscsi" | "nvme-tcp"
+	State    string   `json:"state"`
+	Attach   sbAttach `json:"attach"`
+}
+
 type sbCreateVolumeResp struct {
-	ID     string   `json:"id"`
-	Name   string   `json:"name"`
-	Export sbAttach `json:"export"`
+	ID     string    `json:"id"`
+	Name   string    `json:"name"`
+	Export *sbExport `json:"export"`
+}
+
+// attachParams flattens the export into the attach block the rest of the
+// flow consumes, stamping the transport from the export's protocol.
+func (r *sbCreateVolumeResp) attachParams() (sbAttach, bool) {
+	if r.Export == nil || r.Export.Attach.Address == "" {
+		return sbAttach{}, false
+	}
+	a := r.Export.Attach
+	if a.Transport == "" {
+		a.Transport = r.Export.Protocol
+	}
+	return a, true
 }
 
 // sbClient is a minimal client for stormblockmk's /mk/v1 surface.
@@ -222,22 +246,31 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", reqBody, &created); err != nil {
 		return "", fmt.Errorf("creating stormblock volume: %w", err)
 	}
-	if created.Export.Address == "" {
+	attach, ok := created.attachParams()
+	if !ok {
+		// Roll back — a created-but-unusable volume would leak space and,
+		// if exported, a target and port (this exact leak happened live
+		// 2026-08-10 while the response shape was mis-parsed).
+		if created.ID != "" {
+			if delErr := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil); delErr != nil {
+				log.Warnw("could not roll back stormblock volume", "volumeID", created.ID, "error", delErr)
+			}
+		}
 		return "", fmt.Errorf("stormblock volume %s created but no attach parameters returned", created.ID)
 	}
 	log.Infow("stormblock volume provisioned",
 		"volumeID", created.ID, "size", sizeBytes, "template", template,
-		"transport", sbTransport(created.Export), "target", sbTargetName(created.Export))
+		"transport", sbTransport(attach), "target", sbTargetName(attach))
 
 	// Attach it with the RouterOS initiator. Both transports are addressed by
 	// (address, target name) — the per-volume target means no LUN/namespace
 	// selection is needed, which is the whole point of stormblockmk's
 	// per-export addressing.
-	diskID, err := p.attachStormblockDisk(ctx, created.Export)
+	diskID, err := p.attachStormblockDisk(ctx, attach)
 	if err != nil {
 		// Roll the volume back: leaving an exported-but-unattached volume
 		// behind would leak a target, a port and the space.
-		if delErr := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID, nil, nil); delErr != nil {
+		if delErr := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil); delErr != nil {
 			log.Warnw("could not roll back stormblock volume", "volumeID", created.ID, "error", delErr)
 		}
 		return "", err
@@ -249,7 +282,7 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		// one does not, and RouterOS will not mount what it cannot recognise.
 		if template == "" {
 			log.Infow("formatting stormblock volume as ext4", "diskID", diskID)
-			if fErr := p.formatISCSITargetExt4(ctx, created.Export.Address, sbTargetName(created.Export), name); fErr != nil {
+			if fErr := p.formatISCSITargetExt4(ctx, attach.Address, sbTargetName(attach), name); fErr != nil {
 				return "", fmt.Errorf("formatting stormblock volume: %w", fErr)
 			}
 			mountPoint, err = p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
@@ -264,8 +297,8 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	if err == nil {
 		slot = disk.Slot
 	}
-	portal := fmt.Sprintf("%s:%d", created.Export.Address, created.Export.Port)
-	p.setISCSIPVCAnnotations(ctx, pvc, diskID, slot, mountPoint, sbTargetName(created.Export), portal)
+	portal := fmt.Sprintf("%s:%d", attach.Address, attach.Port)
+	p.setISCSIPVCAnnotations(ctx, pvc, diskID, slot, mountPoint, sbTargetName(attach), portal)
 	p.setStormblockPVCAnnotations(ctx, pvc, created.ID, portal)
 	log.Infow("stormblock PVC ready", "mountPoint", mountPoint, "slot", slot, "portal", portal)
 	return mountPoint, nil
@@ -324,7 +357,7 @@ func (p *MicroKubeProvider) deprovisionStormblockPVC(ctx context.Context, pvc *c
 		return err
 	}
 	volumeID := ann[annSBVolumeID]
-	if err := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+volumeID, nil, nil); err != nil {
+	if err := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+volumeID+"?force=true", nil, nil); err != nil {
 		return fmt.Errorf("deleting stormblock volume %s: %w", volumeID, err)
 	}
 	log.Infow("stormblock volume deleted", "volumeID", volumeID)
