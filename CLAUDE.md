@@ -141,7 +141,7 @@ Known test failures (pre-existing):
 
 ## Work Plan
 
-### Current Version: `v6.1.0`
+### Current Version: `v6.2.0`
 
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)

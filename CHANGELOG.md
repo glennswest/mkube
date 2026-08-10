@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+<!-- New unreleased changes go here -->
+
+## [v6.2.0] — 2026-08-09
 
 ### 2026-08-09
 - **fix(routeros):** Forked `go-routeros/routeros/v3` into `third_party/routeros` (MIT, `replace` directive) to fix two upstream races that together wedged the whole pod fleet during the 2026-08-09 DNS outage: (1) `RunArgsContext` sent the request BEFORE registering its reply tag, so against a LAN RouterOS (sub-ms RTT) a fast reply could reach the async read loop while the tag didn't exist yet — the reply was silently dropped and the caller blocked forever on its reply channel. All 16 concurrently dispatched CreatePod workers hung this way at 23:27, with zero events, permanently "in worker queue". (2) On context timeout/cancel `RunArgsContext` called `reader.Cancel()`, which forces the SHARED connection reader to return io.EOF — tearing down the async loop and failing every other in-flight request because one request expired (the original "unreachable after reconnect" mass-CreateFailed cascade). The fork registers the tag before sending (deregistering on send failure, same fix in `Listen`), and on ctx expiry abandons only its own tag, leaving the connection intact. Also added `defaultRunTimeout` (3 min) in `nativeRun` for requests whose context carries no deadline, so no future lost reply can hang a worker indefinitely.
