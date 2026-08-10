@@ -15,9 +15,21 @@ func testLogger() *zap.SugaredLogger {
 	return logger.Sugar()
 }
 
+// withHealth wraps a mock handler so it also answers the /api/v1/health
+// alive probe that gates client operations.
+func withHealth(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		h(w, r)
+	}
+}
+
 func TestEnsureZone_ExistingZone(t *testing.T) {
 	zones := []Zone{{ID: "zone-123", Name: "gt.lo"}}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withHealth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/zones" {
 			_ = json.NewEncoder(w).Encode(zones)
 			return
@@ -37,7 +49,7 @@ func TestEnsureZone_ExistingZone(t *testing.T) {
 }
 
 func TestEnsureZone_CreatesZone(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withHealth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/zones" {
 			_ = json.NewEncoder(w).Encode([]Zone{})
 			return
@@ -65,7 +77,7 @@ func TestEnsureZone_CreatesZone(t *testing.T) {
 
 func TestRegisterHost(t *testing.T) {
 	var receivedReq createRecordRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withHealth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/zones/zone-123/records" {
 			_ = json.NewDecoder(r.Body).Decode(&receivedReq)
 			w.WriteHeader(http.StatusCreated)
@@ -103,7 +115,7 @@ func TestDeregisterHost(t *testing.T) {
 		{ID: "rec-3", Name: "myapp", Type: "CNAME", Data: RecordData{Type: "CNAME", Data: "alias"}},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withHealth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/zones/zone-123/records" {
 			_ = json.NewEncoder(w).Encode(records)
 			return
@@ -133,6 +145,27 @@ func TestDeregisterHost(t *testing.T) {
 	}
 	if deleted["/api/v1/zones/zone-123/records/rec-3"] {
 		t.Error("rec-3 (CNAME) should not have been deleted")
+	}
+}
+
+func TestEndpointAlive_DownEndpointCachedSkip(t *testing.T) {
+	probes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/health" {
+			probes++
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := NewClient(testLogger())
+	for i := 0; i < 3; i++ {
+		if err := c.RegisterHost(context.Background(), srv.URL, "zone-1", "host", "1.2.3.4", 60); err == nil {
+			t.Fatal("expected error for down endpoint")
+		}
+	}
+	if probes != 1 {
+		t.Errorf("expected 1 health probe within TTL, got %d", probes)
 	}
 }
 

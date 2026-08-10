@@ -143,10 +143,6 @@ func (m *Manager) InitDNSZones(ctx context.Context) {
 	if m.dns == nil {
 		return
 	}
-	// Enable batch mode to cache record lists while checking/registering per zone
-	m.dns.BeginBatch()
-	defer m.dns.EndBatch()
-
 	for _, name := range m.netOrder {
 		ns := m.networks[name]
 		if ns.def.DNS.Endpoint == "" || ns.def.DNS.Zone == "" {

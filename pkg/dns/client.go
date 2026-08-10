@@ -49,22 +49,30 @@ type DHCPLease struct {
 }
 
 // Client is a REST client for MicroDNS instances.
-// It is stateless — each call takes the endpoint URL as a parameter,
+// It is stateless per call — each call takes the endpoint URL as a parameter,
 // so a single client can talk to multiple MicroDNS servers.
 //
-// Use BeginBatch/EndBatch to cache record lists across multiple calls,
-// avoiding repeated HTTP GETs of the same zone in a single reconcile.
-// During batch mode, endpoints that return errors are blacklisted for
-// the remainder of the batch to avoid repeated 10s timeouts.
+// Operations gate on a TTL-cached GET /api/v1/health alive probe
+// (endpointAlive), so a dead instance costs one short probe per TTL
+// window instead of a full HTTP timeout on every call.
 type Client struct {
 	http *http.Client
 	log  *zap.SugaredLogger
 
-	mu             sync.Mutex
-	batchMode      bool
-	recordCache    map[string][]Record // "endpoint:zoneID" -> records
-	failedEndpoints map[string]bool    // endpoints that timed out this batch
+	mu     sync.Mutex
+	health map[string]endpointHealth // endpoint -> last alive-probe result
 }
+
+// endpointHealth is the cached result of the last /api/v1/health probe.
+type endpointHealth struct {
+	alive     bool
+	checkedAt time.Time
+}
+
+const (
+	healthTTL          = 15 * time.Second
+	healthProbeTimeout = 1500 * time.Millisecond
+)
 
 // Zone represents a MicroDNS zone.
 type Zone struct {
@@ -109,87 +117,68 @@ func NewClient(log *zap.SugaredLogger) *Client {
 				IdleConnTimeout:     30 * time.Second,
 			},
 		},
-		log: log,
+		log:    log,
+		health: make(map[string]endpointHealth),
 	}
 }
 
-// BeginBatch enables record caching. While batch mode is active,
-// ListRecords results are cached per zone and reused by RegisterHost,
-// CleanStaleRecords, etc. This avoids O(N) HTTP GETs during reconcile.
-// Call EndBatch when done to release the cache.
-func (c *Client) BeginBatch() {
+// endpointAlive reports whether the microdns instance at endpoint is
+// serving its API. microdns is database-driven, so a 200 from
+// /api/v1/health means the instance and its database are usable.
+// Results are cached for healthTTL; only up/down transitions are logged.
+func (c *Client) endpointAlive(ctx context.Context, endpoint string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.batchMode = true
-	c.recordCache = make(map[string][]Record)
-	c.failedEndpoints = make(map[string]bool)
-}
-
-// EndBatch disables record caching and clears the cache.
-func (c *Client) EndBatch() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.batchMode = false
-	c.recordCache = nil
-	c.failedEndpoints = nil
-}
-
-// invalidateCache removes the cached records for a zone.
-// Called after mutations (create, delete) to keep the cache consistent.
-func (c *Client) invalidateCache(endpoint, zoneID string) {
-	if c.recordCache != nil {
-		delete(c.recordCache, endpoint+":"+zoneID)
-	}
-}
-
-// listRecordsCached returns cached records if in batch mode, otherwise fetches fresh.
-// In batch mode, endpoints that previously failed are skipped immediately.
-func (c *Client) listRecordsCached(ctx context.Context, endpoint, zoneID string) ([]Record, error) {
-	c.mu.Lock()
-	if c.batchMode {
-		// Skip endpoints that already failed this batch
-		if c.failedEndpoints[endpoint] {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
-		}
-		key := endpoint + ":" + zoneID
-		if cached, ok := c.recordCache[key]; ok {
-			c.mu.Unlock()
-			return cached, nil
-		}
+	h, cached := c.health[endpoint]
+	if cached && time.Since(h.checkedAt) < healthTTL {
 		c.mu.Unlock()
-		// Fetch and cache
-		records, err := c.ListRecords(ctx, endpoint, zoneID)
-		if err != nil {
-			// Blacklist endpoint for remainder of this batch
-			c.mu.Lock()
-			if c.failedEndpoints != nil {
-				c.failedEndpoints[endpoint] = true
-			}
-			c.mu.Unlock()
-			return nil, err
+		if h.alive {
+			return nil
 		}
-		c.mu.Lock()
-		if c.recordCache != nil {
-			c.recordCache[key] = records
-		}
-		c.mu.Unlock()
-		return records, nil
+		return fmt.Errorf("endpoint %s failed last health probe, skipping", endpoint)
 	}
 	c.mu.Unlock()
-	return c.ListRecords(ctx, endpoint, zoneID)
+
+	probeCtx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+
+	var probeErr error
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint+"/api/v1/health", nil)
+	if err != nil {
+		probeErr = err
+	} else if resp, doErr := c.http.Do(req); doErr != nil {
+		probeErr = doErr
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			probeErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+	}
+
+	alive := probeErr == nil
+	c.mu.Lock()
+	prev, had := c.health[endpoint]
+	c.health[endpoint] = endpointHealth{alive: alive, checkedAt: time.Now()}
+	c.mu.Unlock()
+
+	switch {
+	case !alive && (!had || prev.alive):
+		c.log.Warnw("microdns endpoint down", "endpoint", endpoint, "error", probeErr)
+	case alive && had && !prev.alive:
+		c.log.Infow("microdns endpoint recovered", "endpoint", endpoint)
+	}
+
+	if !alive {
+		return fmt.Errorf("endpoint %s not alive: %v", endpoint, probeErr)
+	}
+	return nil
 }
 
 // EnsureZone finds an existing zone by name or creates it.
 // Returns the zone UUID.
 func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (string, error) {
-	// Skip endpoints known to be unreachable this batch
-	c.mu.Lock()
-	if c.batchMode && c.failedEndpoints[endpoint] {
-		c.mu.Unlock()
-		return "", fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
+	if err := c.endpointAlive(ctx, endpoint); err != nil {
+		return "", err
 	}
-	c.mu.Unlock()
 
 	// List existing zones
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/v1/zones", nil)
@@ -199,11 +188,6 @@ func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (str
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.mu.Lock()
-		if c.failedEndpoints != nil {
-			c.failedEndpoints[endpoint] = true
-		}
-		c.mu.Unlock()
 		return "", fmt.Errorf("listing zones from %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
@@ -268,16 +252,12 @@ func (c *Client) EnsureZone(ctx context.Context, endpoint, zoneName string) (str
 // It is idempotent: if a matching A record (same hostname + IP) already
 // exists, the call is a no-op.
 func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, ip string, ttl int) error {
-	// Skip endpoints known to be unreachable this batch
-	c.mu.Lock()
-	if c.batchMode && c.failedEndpoints[endpoint] {
-		c.mu.Unlock()
-		return fmt.Errorf("endpoint %s previously failed this batch, skipping", endpoint)
+	if err := c.endpointAlive(ctx, endpoint); err != nil {
+		return err
 	}
-	c.mu.Unlock()
 
 	// Check for existing record to avoid creating duplicates.
-	records, err := c.listRecordsCached(ctx, endpoint, zoneID)
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
 	if err == nil {
 		for _, r := range records {
 			if r.Type == "A" && r.Name == hostname && r.Data.Data == ip {
@@ -301,11 +281,6 @@ func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, i
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.mu.Lock()
-		if c.failedEndpoints != nil {
-			c.failedEndpoints[endpoint] = true
-		}
-		c.mu.Unlock()
 		return fmt.Errorf("registering host %s in zone %s: %w", hostname, zoneID, err)
 	}
 	defer resp.Body.Close()
@@ -315,7 +290,6 @@ func (c *Client) RegisterHost(ctx context.Context, endpoint, zoneID, hostname, i
 		return fmt.Errorf("registering host: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	c.invalidateCache(endpoint, zoneID)
 	c.log.Infow("DNS record registered", "hostname", hostname, "ip", ip, "zone", zoneID)
 	return nil
 }
@@ -342,6 +316,10 @@ func (c *Client) DeleteRecord(ctx context.Context, endpoint, zoneID, recordID st
 
 // ListRecords returns all DNS records in a zone.
 func (c *Client) ListRecords(ctx context.Context, endpoint, zoneID string) ([]Record, error) {
+	if err := c.endpointAlive(ctx, endpoint); err != nil {
+		return nil, err
+	}
+
 	var all []Record
 	const pageSize = 100
 	offset := 0
@@ -385,24 +363,18 @@ func (c *Client) ListRecords(ctx context.Context, endpoint, zoneID string) ([]Re
 
 // DeregisterHost removes all A records matching the given hostname from a zone.
 func (c *Client) DeregisterHost(ctx context.Context, endpoint, zoneID, hostname string) error {
-	records, err := c.listRecordsCached(ctx, endpoint, zoneID)
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
 	if err != nil {
 		return err
 	}
 
-	deleted := false
 	for _, r := range records {
 		if r.Name == hostname && r.Type == "A" {
 			if err := c.DeleteRecord(ctx, endpoint, zoneID, r.ID); err != nil {
 				return err
 			}
-			deleted = true
 			c.log.Infow("DNS record deregistered", "hostname", hostname, "record_id", r.ID, "zone", zoneID)
 		}
-	}
-
-	if deleted {
-		c.invalidateCache(endpoint, zoneID)
 	}
 	return nil
 }
@@ -412,24 +384,18 @@ func (c *Client) DeregisterHost(ctx context.Context, endpoint, zoneID, hostname 
 // removes the specific record for one IP — used for cleaning up pod-level
 // round-robin records without removing other containers' entries.
 func (c *Client) DeregisterHostByIP(ctx context.Context, endpoint, zoneID, hostname, ip string) error {
-	records, err := c.listRecordsCached(ctx, endpoint, zoneID)
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
 	if err != nil {
 		return err
 	}
 
-	deleted := false
 	for _, r := range records {
 		if r.Name == hostname && r.Type == "A" && r.Data.Data == ip {
 			if err := c.DeleteRecord(ctx, endpoint, zoneID, r.ID); err != nil {
 				return err
 			}
-			deleted = true
 			c.log.Infow("DNS record deregistered by IP", "hostname", hostname, "ip", ip, "record_id", r.ID, "zone", zoneID)
 		}
-	}
-
-	if deleted {
-		c.invalidateCache(endpoint, zoneID)
 	}
 	return nil
 }
@@ -438,12 +404,11 @@ func (c *Client) DeregisterHostByIP(ctx context.Context, endpoint, zoneID, hostn
 // match the given current IP. Used to clean up stale records when a pod
 // gets a new IP on recreation.
 func (c *Client) CleanStaleRecords(ctx context.Context, endpoint, zoneID, hostname, currentIP string) error {
-	records, err := c.listRecordsCached(ctx, endpoint, zoneID)
+	records, err := c.ListRecords(ctx, endpoint, zoneID)
 	if err != nil {
 		return err
 	}
 
-	deleted := false
 	for _, r := range records {
 		if r.Name == hostname && r.Type == "A" && r.Data.Data != currentIP {
 			if err := c.DeleteRecord(ctx, endpoint, zoneID, r.ID); err != nil {
@@ -451,15 +416,11 @@ func (c *Client) CleanStaleRecords(ctx context.Context, endpoint, zoneID, hostna
 					"hostname", hostname, "stale_ip", r.Data.Data,
 					"current_ip", currentIP, "error", err)
 			} else {
-				deleted = true
 				c.log.Infow("removed stale DNS record",
 					"hostname", hostname, "stale_ip", r.Data.Data,
 					"current_ip", currentIP)
 			}
 		}
-	}
-	if deleted {
-		c.invalidateCache(endpoint, zoneID)
 	}
 	return nil
 }
@@ -903,7 +864,6 @@ func (c *Client) CreateFullRecord(ctx context.Context, endpoint, zoneID string, 
 	if err := json.Unmarshal(body, &rec); err != nil {
 		return nil, fmt.Errorf("decoding created record: %w", err)
 	}
-	c.invalidateCache(endpoint, zoneID)
 	return &rec, nil
 }
 
@@ -936,7 +896,6 @@ func (c *Client) UpdateFullRecord(ctx context.Context, endpoint, zoneID, recordI
 	if err := json.Unmarshal(body, &rec); err != nil {
 		return nil, fmt.Errorf("decoding updated record: %w", err)
 	}
-	c.invalidateCache(endpoint, zoneID)
 	return &rec, nil
 }
 
