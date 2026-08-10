@@ -197,32 +197,27 @@ func (p *MicroKubeProvider) RunFormatProbe(ctx context.Context) *FormatProbeRepo
 	return rep
 }
 
-// handleInspect lists a device path — read-only, for diagnosing what is
-// actually on a mounted clone (RouterOS's /file index lags fresh mounts,
-// so treat an empty result as "unknown" for the first minute or two).
-// GET /api/v1/probes/inspect?path=iscsi15
+// handleInspect reports what a mounted clone actually looks like — disk
+// rows, this container's mount entries, and targeted existence checks.
+//
+// Deliberately avoids ListDirectory and unfiltered ListMounts on paths
+// outside raid1: both fall back to a full /file or /container/mounts print,
+// which takes minutes on this box (the very thing the local-file-ops work
+// removed from the hot paths).
+//
+// GET /api/v1/probes/inspect?path=iscsi15&container=gt_cow-test_cow-test
 func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Query().Get("path"), "/")
-	if path == "" {
-		http.Error(w, "path query parameter required", http.StatusBadRequest)
-		return
-	}
+	container := r.URL.Query().Get("container")
 	ros := p.getRouterOSClient()
 	if ros == nil {
 		http.Error(w, "RouterOS backend required", http.StatusServiceUnavailable)
 		return
 	}
+	ctx := r.Context()
 	out := map[string]any{"path": path}
 
-	if entries, err := ros.ListDirectory(r.Context(), path); err == nil {
-		out["entries"] = entries
-	} else {
-		out["entriesError"] = err.Error()
-	}
-	if tree, err := ros.LocalTree(path, 60); err == nil {
-		out["localTree"] = tree
-	}
-	if disks, err := ros.ListDisks(r.Context()); err == nil {
+	if disks, err := ros.ListDisks(ctx); err == nil {
 		var rows []string
 		for i := range disks {
 			d := &disks[i]
@@ -232,15 +227,35 @@ func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request
 			}
 		}
 		out["disks"] = rows
+	} else {
+		out["disksError"] = err.Error()
 	}
-	if mounts, err := ros.ListMounts(r.Context()); err == nil {
-		var rows []string
-		for _, m := range mounts {
-			if strings.Contains(m.Src, "iscsi") || strings.Contains(m.Dst, "payload") {
-				rows = append(rows, fmt.Sprintf("list=%s src=%s dst=%s", m.List, m.Src, m.Dst))
+
+	if container != "" {
+		if mounts, err := ros.ListMountsByList(ctx, container); err == nil {
+			var rows []string
+			for _, m := range mounts {
+				rows = append(rows, fmt.Sprintf("src=%s dst=%s", m.Src, m.Dst))
+			}
+			out["mounts"] = rows
+		} else {
+			out["mountsError"] = err.Error()
+		}
+	}
+
+	// Targeted, name-filtered existence checks only.
+	checks := map[string]any{}
+	if path != "" {
+		for _, sub := range []string{"", "/rootfs", "/rootfs/bin", "/rootfs/usr"} {
+			target := path + sub
+			exists, err := ros.FileExists(ctx, target)
+			if err != nil {
+				checks[target] = "error: " + err.Error()
+			} else {
+				checks[target] = exists
 			}
 		}
-		out["cowMounts"] = rows
 	}
+	out["exists"] = checks
 	podWriteJSON(w, http.StatusOK, out)
 }
