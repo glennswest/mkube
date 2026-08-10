@@ -276,18 +276,42 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		return "", err
 	}
 
+	// Roll back both the attach and the volume when anything past this point
+	// fails — a failed format left an attached disk and an exported volume
+	// behind (observed live 2026-08-10), and the next attempt provisions a
+	// fresh volume, so partial state only leaks.
+	rollback := func() {
+		if err := rosClient.RemoveDisk(ctx, diskID); err != nil {
+			log.Warnw("could not roll back attached stormblock disk", "diskID", diskID, "error", err)
+		}
+		if delErr := sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil); delErr != nil {
+			log.Warnw("could not roll back stormblock volume", "volumeID", created.ID, "error", delErr)
+		}
+	}
+
+	// The per-volume export listens on its own port — the formatter dials
+	// the portal directly, so it needs host:port, not just the host (a bare
+	// host means default 3260, which is stormblockmk's SHARED portal where
+	// the per-volume IQN does not exist).
+	formatPortal := attach.Address
+	if attach.Port != 0 {
+		formatPortal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
+	}
+
 	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 	if err != nil {
 		// A fresh volume from a template already carries a filesystem; a raw
 		// one does not, and RouterOS will not mount what it cannot recognise.
 		if template == "" {
 			log.Infow("formatting stormblock volume as ext4", "diskID", diskID)
-			if fErr := p.formatISCSITargetExt4(ctx, attach.Address, sbTargetName(attach), name); fErr != nil {
+			if fErr := p.formatISCSITargetExt4(ctx, formatPortal, sbTargetName(attach), name); fErr != nil {
+				rollback()
 				return "", fmt.Errorf("formatting stormblock volume: %w", fErr)
 			}
 			mountPoint, err = p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 		}
 		if err != nil {
+			rollback()
 			return "", fmt.Errorf("waiting for stormblock disk to mount: %w", err)
 		}
 	}

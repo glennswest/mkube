@@ -19,12 +19,23 @@ struct Cli {
     #[arg(long, env = "ROUTEROS_PASSWORD")]
     password: String,
 
-    /// iSCSI portal IP (for initiator connections)
+    /// iSCSI portal IP or IP:port (for initiator connections; default port 3260)
     #[arg(long, env = "ISCSI_PORTAL", default_value = "192.168.200.1")]
     portal: String,
 
     #[command(subcommand)]
     command: Commands,
+}
+
+
+/// Parse a portal as "ip" (default port 3260) or "ip:port" — per-volume
+/// stormblockmk exports listen on non-default ports.
+fn portal_addr(portal: &str) -> Result<SocketAddr, std::net::AddrParseError> {
+    if portal.contains(':') {
+        portal.parse()
+    } else {
+        format!("{portal}:3260").parse()
+    }
 }
 
 #[derive(Subcommand)]
@@ -153,7 +164,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Probe { iqn } => {
-            let portal: SocketAddr = format!("{}:3260", cli.portal).parse()?;
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
             println!("Connecting to iSCSI target...");
             println!("  Portal: {portal}");
             println!("  IQN: {iqn}");
@@ -182,7 +193,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Format { iqn, label } => {
-            let portal: SocketAddr = format!("{}:3260", cli.portal).parse()?;
+            let portal: SocketAddr = portal_addr(&cli.portal)?;
             println!("Formatting iSCSI target as ext4...");
             println!("  Portal: {portal}");
             println!("  IQN: {iqn}");

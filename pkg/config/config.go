@@ -214,6 +214,19 @@ type RouterOSConfig struct {
 	UseTLS         bool   `yaml:"useTLS"`
 	CACert         string `yaml:"caCert"`
 	InsecureVerify bool   `yaml:"insecureVerify"`
+
+	// LocalFileRoot: container-internal path where the device's storage disk
+	// is bind-mounted when mkube runs ON the device (e.g. "/hostraid1" for
+	// /raid1). When set and present, file operations (exists/mkdir/remove/
+	// rename/list/du) run against the local filesystem instead of the
+	// RouterOS API — /file print enumerates the whole file tree server-side
+	// and takes minutes once /raid1 holds registry blobs. Device paths under
+	// LocalFileDevicePrefix map into this root; everything else falls back
+	// to the API.
+	LocalFileRoot string `yaml:"localFileRoot,omitempty"`
+	// LocalFileDevicePrefix is the device-side path prefix LocalFileRoot is
+	// a mount of. Default "raid1".
+	LocalFileDevicePrefix string `yaml:"localFileDevicePrefix,omitempty"`
 }
 
 // StormBaseConfig holds connection settings for a stormd gRPC endpoint.

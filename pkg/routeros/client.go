@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -57,6 +60,30 @@ type Client struct {
 	// but an unbroken run of them can mean a half-open TCP session that
 	// only a reconnect will clear.
 	timeoutStreak atomic.Int32
+
+	// localRoot / localPrefix: when mkube runs ON the device with the
+	// storage disk bind-mounted into its container, file operations run
+	// against the local filesystem instead of the API (see
+	// RouterOSConfig.LocalFileRoot). Empty ⇒ API only.
+	localRoot   string
+	localPrefix string
+}
+
+// localPath maps a device-side path (e.g. "raid1/volumes/x") to its
+// container-local equivalent, or ("", false) when local file ops are
+// unavailable or the path is outside the mounted prefix.
+func (c *Client) localPath(devicePath string) (string, bool) {
+	if c.localRoot == "" {
+		return "", false
+	}
+	p := strings.TrimPrefix(devicePath, "/")
+	if p == c.localPrefix {
+		return c.localRoot, true
+	}
+	if strings.HasPrefix(p, c.localPrefix+"/") {
+		return filepath.Join(c.localRoot, strings.TrimPrefix(p, c.localPrefix+"/")), true
+	}
+	return "", false
 }
 
 // Container represents a RouterOS container as returned by /container/print.
@@ -137,6 +164,19 @@ func NewClient(cfg config.RouterOSConfig) (*Client, error) {
 		},
 	}
 	c.exec = c.nativeRun // wire up the production executor
+
+	// Enable local file ops only when the mount is actually present — the
+	// config may be deployed before the container has the bind mount.
+	if cfg.LocalFileRoot != "" {
+		if st, err := os.Stat(cfg.LocalFileRoot); err == nil && st.IsDir() {
+			c.localRoot = cfg.LocalFileRoot
+			c.localPrefix = cfg.LocalFileDevicePrefix
+			if c.localPrefix == "" {
+				c.localPrefix = "raid1"
+			}
+		}
+	}
+
 	// Connection is established lazily on first command via nativeRun.
 	return c, nil
 }
@@ -829,6 +869,21 @@ func (c *Client) ListVeths(ctx context.Context) ([]NetworkInterface, error) {
 // This is the one operation that still uses HTTP — the native API has
 // no file transfer facility.
 func (c *Client) UploadFile(ctx context.Context, remotePath string, data io.Reader) error {
+	if lp, ok := c.localPath(remotePath); ok {
+		if err := os.MkdirAll(filepath.Dir(lp), 0o755); err != nil {
+			return fmt.Errorf("creating parent for %s locally: %w", remotePath, err)
+		}
+		f, err := os.Create(lp)
+		if err != nil {
+			return fmt.Errorf("creating %s locally: %w", remotePath, err)
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, data); err != nil {
+			return fmt.Errorf("writing %s locally: %w", remotePath, err)
+		}
+		return nil
+	}
+
 	body, err := io.ReadAll(data)
 	if err != nil {
 		return fmt.Errorf("reading file data: %w", err)
@@ -872,6 +927,9 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]map[string]inter
 // working.
 func (c *Client) RemoveFile(ctx context.Context, path string) error {
 	path = strings.TrimPrefix(path, "/")
+	if lp, ok := c.localPath(path); ok {
+		return os.RemoveAll(lp) // nil when already gone, matching API semantics
+	}
 	err := c.restPOST(ctx, "/file/remove", map[string]string{"numbers": path}, nil)
 	if err == nil || strings.Contains(err.Error(), "no such item") {
 		return nil
@@ -900,6 +958,13 @@ func (c *Client) RemoveDirectory(ctx context.Context, path string) error {
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
 		return fmt.Errorf("refusing to remove root directory")
+	}
+
+	if lp, ok := c.localPath(path); ok {
+		if lp == c.localRoot {
+			return fmt.Errorf("refusing to remove storage root %s", path)
+		}
+		return os.RemoveAll(lp)
 	}
 
 	// Try simple removal first (works on newer RouterOS 7.x)
@@ -959,6 +1024,17 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 	if oldPath == "" || newPath == "" {
 		return fmt.Errorf("MoveDirectory: empty source or destination path")
 	}
+	if lo, okO := c.localPath(oldPath); okO {
+		if ln, okN := c.localPath(newPath); okN {
+			if err := os.Rename(lo, ln); err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+				}
+				return err
+			}
+			return nil
+		}
+	}
 	// Name-addressed set — same rationale as RemoveFile: no /file print.
 	err := c.restPOST(ctx, "/file/set", map[string]string{"numbers": oldPath, "name": newPath}, nil)
 	if err == nil {
@@ -996,6 +1072,13 @@ func (c *Client) EnsureDirectory(ctx context.Context, path string) error {
 		return nil
 	}
 
+	if lp, ok := c.localPath(path); ok {
+		if err := os.MkdirAll(lp, 0o755); err != nil {
+			return fmt.Errorf("creating directory %s locally: %w", path, err)
+		}
+		return nil
+	}
+
 	cur := ""
 	for _, seg := range strings.Split(path, "/") {
 		if seg == "" {
@@ -1028,6 +1111,15 @@ func (c *Client) EnsureDirectory(ctx context.Context, path string) error {
 // FileExists checks whether a file or directory exists on the RouterOS filesystem.
 func (c *Client) FileExists(ctx context.Context, path string) (bool, error) {
 	path = strings.TrimPrefix(path, "/")
+	if lp, ok := c.localPath(path); ok {
+		if _, err := os.Stat(lp); err == nil {
+			return true, nil
+		} else if os.IsNotExist(err) {
+			return false, nil
+		} else {
+			return false, err
+		}
+	}
 	files, err := c.ListFiles(ctx, path)
 	if err != nil {
 		return false, err
@@ -1038,6 +1130,20 @@ func (c *Client) FileExists(ctx context.Context, path string) (bool, error) {
 // ListDirectory returns the names of entries under a directory on RouterOS.
 func (c *Client) ListDirectory(ctx context.Context, path string) ([]string, error) {
 	path = strings.TrimPrefix(path, "/")
+	if lp, ok := c.localPath(path); ok {
+		ents, err := os.ReadDir(lp)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("listing directory %s locally: %w", path, err)
+		}
+		names := make([]string, 0, len(ents))
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		return names, nil
+	}
 	prefix := path + "/"
 
 	var allFiles []map[string]interface{}
@@ -1062,6 +1168,24 @@ func (c *Client) ListDirectory(ctx context.Context, path string) ([]string, erro
 // DirectoryDiskUsage returns the total size in bytes of all files under a directory.
 func (c *Client) DirectoryDiskUsage(ctx context.Context, path string) (int64, error) {
 	path = strings.TrimPrefix(path, "/")
+	if lp, ok := c.localPath(path); ok {
+		var total int64
+		err := filepath.WalkDir(lp, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil // count what we can
+			}
+			if !d.IsDir() {
+				if info, ierr := d.Info(); ierr == nil {
+					total += info.Size()
+				}
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			return 0, err
+		}
+		return total, nil
+	}
 	prefix := path + "/"
 
 	var allFiles []map[string]interface{}
@@ -1101,6 +1225,36 @@ type fileUsageEntry struct {
 
 // FetchFileUsageIndex fetches /file once and builds a reusable index.
 func (c *Client) FetchFileUsageIndex(ctx context.Context) (*FileUsageIndex, error) {
+	if c.localRoot != "" {
+		// Walk the mounted disk locally; store device-side names so
+		// DirectoryUsage lookups by device path keep matching.
+		idx := &FileUsageIndex{}
+		err := filepath.WalkDir(c.localRoot, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, ierr := d.Info()
+			if ierr != nil {
+				return nil
+			}
+			rel, rerr := filepath.Rel(c.localRoot, p)
+			if rerr != nil {
+				return nil
+			}
+			idx.files = append(idx.files, fileUsageEntry{
+				name: c.localPrefix + "/" + filepath.ToSlash(rel),
+				size: info.Size(),
+			})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return idx, nil
+	}
 	var allFiles []map[string]interface{}
 	if err := c.restGET(ctx, "/file", &allFiles); err != nil {
 		return nil, fmt.Errorf("fetching file index: %w", err)
