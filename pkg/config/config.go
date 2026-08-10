@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
@@ -319,6 +320,24 @@ type StormblockConfig struct {
 	// "nvme-tcp". RouterOS 7.22 supports both; NVMe-TCP keeps a persistent
 	// controller and is the faster path.
 	Transport string `yaml:"transport,omitempty"`
+
+	// Who builds the CoW golden templates (`img-<digest12>` fstemplates):
+	//
+	//   "mkube"      — mkube seeds them itself with a RouterOS seeder
+	//                  container. Honest but currently broken: RouterOS
+	//                  force-detaches without flushing, so the seal guard
+	//                  rejects the volume as not cleanly unmounted.
+	//   "sbregistry" — an external builder (stormblock-registry) writes
+	//                  image layers straight into the volume and seals it.
+	//                  mkube only consumes: it waits for the sealed template
+	//                  to appear and clones it. This is the design endgame.
+	//
+	// Empty means "mkube" for compatibility.
+	GoldenSource string `yaml:"goldenSource,omitempty"`
+
+	// How long to wait for an external builder's sealed template before
+	// giving up on a pod create. Default 5m.
+	GoldenWait time.Duration `yaml:"goldenWait,omitempty"`
 }
 
 // MountMapping maps a container-internal path to its host-visible path.

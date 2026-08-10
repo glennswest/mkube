@@ -50,6 +50,10 @@ const (
 
 	cowStubDevicePath = "raid1/cache/cow-generic-stub.tar"
 	cowPayloadDst     = "/payload"
+
+	// goldenSource values.
+	goldenSourceMkube      = "mkube"
+	goldenSourceSbRegistry = "sbregistry"
 )
 
 // isCoWPod reports whether the pod opted into the CoW image catalog.
@@ -191,6 +195,39 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 				return "", fmt.Errorf("removing half-built fstemplate %s: %w", name, derr)
 			}
 		}
+	}
+
+	// External builder (stormblock-registry): mkube never seeds. It writes
+	// image layers straight into the volume — no RouterOS mount in the write
+	// path, so the filesystem is clean by construction and the seal guard
+	// passes, which mkube's own seeder cannot manage. Wait for the sealed
+	// template to appear rather than racing it with a build that would fail.
+	if strings.EqualFold(p.deps.Config.Storage.Stormblock.GoldenSource, goldenSourceSbRegistry) {
+		wait := p.deps.Config.Storage.Stormblock.GoldenWait
+		if wait <= 0 {
+			wait = 5 * time.Minute
+		}
+		log.Infow("waiting for external golden template", "template", name, "wait", wait)
+		deadline := time.Now().Add(wait)
+		for time.Now().Before(deadline) {
+			var poll struct {
+				Items []sbTemplate `json:"items"`
+			}
+			if err := sb.do(ctx, http.MethodGet, "/mk/v1/fstemplates", nil, &poll); err == nil {
+				for _, t := range poll.Items {
+					if t.Name == name && (strings.EqualFold(t.State, "ready") || strings.EqualFold(t.State, "sealed")) {
+						log.Infow("external golden template ready", "template", name)
+						return name, nil
+					}
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+		}
+		return "", fmt.Errorf("golden template %s not published by the external builder within %s (goldenSource=sbregistry)", name, wait)
 	}
 
 	// Size: generous thin headroom over the tarball (thin volumes only cost
@@ -550,6 +587,12 @@ func (p *MicroKubeProvider) prewarmGoldenTemplates(repo string) {
 				}
 				digest := p.deps.StorageMgr.TarballDigest(tarball)
 				if digest == "" {
+					continue
+				}
+				if strings.EqualFold(p.deps.Config.Storage.Stormblock.GoldenSource, goldenSourceSbRegistry) {
+					// The external builder owns creation; a prewarm here would
+					// only wait. Record what we expect so the gap is visible.
+					p.deps.Logger.Infow("cow prewarm: awaiting external golden", "image", img, "template", cowTemplateName(digest))
 					continue
 				}
 				if _, terr := p.ensureGoldenTemplate(ctx, ros, img, tarball, digest); terr != nil {

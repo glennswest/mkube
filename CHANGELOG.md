@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### 2026-08-10
+- **feat:** NVMe-TCP is live end to end. stormblockmk v0.3.0 built on dev.g8.lo and published (`registry.gt.lo:5000/stormblockmk:edge`, release [v0.3.0](https://github.com/glennswest/stormblockmk/releases/tag/v0.3.0)); the pod self-rolled and `POST /api/v1/probes/nvme` then reported `honorsProtocol: yes`, `initiatorNvmeTcp: supported`, `endToEnd: attached` — RouterOS 7.22.2 attached `nqn.2026-08.lo.gt:vol-…@192.168.200.21:3304` as `slot=nvme-tcp1`. Cluster rode the engine swap intact (22/22 pods; exports re-wired at their original LUN ids).
+- **feat(cow):** `storage.stormblock.goldenSource: sbregistry|mkube` (+ `goldenWait`, default 5m). In `sbregistry` mode mkube never seeds goldens — it waits for the external builder's sealed `img-<digest12>` template and clones it, and push-time prewarm only records what it is waiting for. That is the mode to run once stormblock-registry ships: it writes image layers straight into the volume, so no RouterOS mount sits in the write path and the seal guard passes (mkube's own seeder cannot manage that — see the writeback finding above).
+- **known gap:** a *raw* NVMe PVC cannot be formatted yet — `formatISCSITargetExt4` drives the iSCSI-only `iscsi-pvc` tool, which cannot log into an NVMe export. NVMe works today for attach and for template clones (`from_template`, pre-formatted); mkfs-on-demand over NVMe needs one of: a temporary iSCSI export for the format pass (v0.3.0 accepts `protocol` on `POST /mk/v1/exports`), a RouterOS-side `format-drive`, or a configured template.
+
+### 2026-08-10
 - **feat(probe):** NVMe-TCP capability probe (`POST /api/v1/probes/nvme`). First run answers both switchover questions: **RouterOS 7.22.2 supports the NVMe-TCP initiator** — it accepted `/disk add type=nvme-tcp` and created a disk row against a deliberately absent target — retiring the ≥7.9 support risk; and the deployed **stormblockmk 0.2.0 ignores `protocol`** and exports iSCSI, so the switchover waits only on the v0.3.0 image. The probe classifies the device's complaint (`invalid value for argument type` = no support vs a connect/no-target error = supported) so it answers the initiator question regardless of which engine build is deployed, and purges its volume and any disk row on every path.
 
 ### 2026-08-10
