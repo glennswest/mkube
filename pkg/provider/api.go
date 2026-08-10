@@ -245,6 +245,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/probes/layerdir", p.handleLayerDirProbe)
 	mux.HandleFunc("POST /api/v1/probes/format", p.handleFormatProbe)
 	mux.HandleFunc("GET /api/v1/probes/inspect", p.handleInspect)
+	mux.HandleFunc("GET /api/v1/probes/lsmount", p.handleLsMount)
 	mux.HandleFunc("POST /api/v1/import", p.handleImport)
 
 	// Consistency
