@@ -27,8 +27,9 @@ import (
 
 func (p *MicroKubeProvider) handleLsMount(w http.ResponseWriter, r *http.Request) {
 	slot := strings.Trim(r.URL.Query().Get("slot"), "/")
-	if slot == "" {
-		http.Error(w, "slot query parameter required (e.g. iscsi15)", http.StatusBadRequest)
+	volumeID := r.URL.Query().Get("volume")
+	if slot == "" && volumeID == "" {
+		http.Error(w, "slot or volume query parameter required", http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
@@ -50,6 +51,46 @@ func (p *MicroKubeProvider) handleLsMount(w http.ResponseWriter, r *http.Request
 	if ros == nil {
 		out["error"] = "RouterOS backend required"
 		return
+	}
+
+	// Given a volume id, export/attach/mount it ourselves — this is how we
+	// look inside a GOLDEN rather than a clone, which distinguishes "the
+	// seed never persisted" from "the clone fails to carry it".
+	if volumeID != "" {
+		sb, sErr := p.newStormblockClient()
+		if sErr != nil {
+			out["error"] = sErr.Error()
+			return
+		}
+		var ex sbExport
+		if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
+			map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &ex); err != nil {
+			out["error"] = fmt.Sprintf("exporting %s: %v", volumeID, err)
+			return
+		}
+		defer func() {
+			if ex.ExportID != "" {
+				_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+ex.ExportID, nil, nil)
+			}
+		}()
+		attach := ex.Attach
+		if attach.Transport == "" {
+			attach.Transport = ex.Protocol
+		}
+		diskID, aErr := p.attachStormblockDisk(ctx, attach)
+		if aErr != nil {
+			out["error"] = fmt.Sprintf("attaching %s: %v", volumeID, aErr)
+			return
+		}
+		defer func() { _ = ros.RemoveDisk(context.Background(), diskID) }()
+		mp, mErr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second)
+		if mErr != nil {
+			out["error"] = fmt.Sprintf("volume %s attached but did not mount: %v", volumeID, mErr)
+			return
+		}
+		slot = strings.TrimPrefix(mp, "/")
+		out["slot"] = slot
+		step("volume %s mounted at %s", volumeID, mp)
 	}
 
 	tarball, err := p.deps.StorageMgr.EnsureImage(ctx, "192.168.200.3:5000/nats:edge")
