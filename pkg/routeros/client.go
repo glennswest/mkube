@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"reflect"
 	"sort"
@@ -1592,13 +1593,24 @@ func (c *Client) AttachNetworkDisk(ctx context.Context, transport, address, targ
 		return existing.ID, nil
 	}
 
+	// RouterOS takes the port as its own argument — passing "host:port" as
+	// the address is rejected with "invalid value for argument iscsi-address"
+	// (observed live 2026-08-10 attaching a stormblockmk per-volume target
+	// on a non-default port).
+	host, port := splitDiskAddress(address)
 	params := map[string]string{"type": transport}
 	switch transport {
 	case "nvme-tcp":
-		params["nvme-tcp-address"] = address
+		params["nvme-tcp-address"] = host
+		if port != "" {
+			params["nvme-tcp-port"] = port
+		}
 		params["nvme-tcp-nqn"] = target
 	case "iscsi":
-		params["iscsi-address"] = address
+		params["iscsi-address"] = host
+		if port != "" {
+			params["iscsi-port"] = port
+		}
 		params["iscsi-iqn"] = target
 	default:
 		return "", fmt.Errorf("unsupported disk transport %q", transport)
@@ -1625,6 +1637,10 @@ func (c *Client) FindNetworkDisk(ctx context.Context, transport, address, target
 	if err := c.restGET(ctx, "/disk", &disks); err != nil {
 		return nil, fmt.Errorf("listing disks: %w", err)
 	}
+	// The device stores the bare host (port is a separate field), so match
+	// on the host part. Target names (IQN/NQN) are per-volume unique, which
+	// carries the discrimination when several targets share one host.
+	host, _ := splitDiskAddress(address)
 	for i := range disks {
 		d := &disks[i]
 		if d.Type != transport {
@@ -1632,16 +1648,25 @@ func (c *Client) FindNetworkDisk(ctx context.Context, transport, address, target
 		}
 		switch transport {
 		case "nvme-tcp":
-			if d.NVMeTCPNQN == target && (address == "" || strings.HasPrefix(d.NVMeTCPAddress, address)) {
+			if d.NVMeTCPNQN == target && (host == "" || d.NVMeTCPAddress == host) {
 				return d, nil
 			}
 		case "iscsi":
-			if d.ISCSIIQN == target && (address == "" || strings.HasPrefix(d.ISCSIAddress, address)) {
+			if d.ISCSIIQN == target && (host == "" || d.ISCSIAddress == host) {
 				return d, nil
 			}
 		}
 	}
 	return nil, nil
+}
+
+// splitDiskAddress splits "host:port" into its parts; an address without a
+// port returns (address, "").
+func splitDiskAddress(address string) (string, string) {
+	if h, p, err := net.SplitHostPort(address); err == nil {
+		return h, p
+	}
+	return address, ""
 }
 
 // RemoveDisk removes any disk entry by id (file-backed or attached target).
