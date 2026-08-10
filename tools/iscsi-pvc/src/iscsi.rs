@@ -466,11 +466,20 @@ impl IscsiInitiator {
                     self.exp_stat_sn = BigEndian::read_u32(&resp_bhs[24..28]) + 1;
                     let status = resp_bhs[3];
                     if status != 0 {
-                        // Check for sense data
-                        if !data_buf.is_empty() {
-                            tracing::debug!("SCSI sense data: {:02x?}", &data_buf);
+                        // Decode sense data so a CHECK CONDITION names its
+                        // cause. iSCSI prepends a 2-byte SenseLength to the
+                        // fixed-format sense block: key at byte 2, ASC/ASCQ
+                        // at bytes 12/13 of the sense block.
+                        if data_buf.len() >= 16 {
+                            let key = data_buf[2 + 2] & 0x0f;
+                            let asc = data_buf[2 + 12];
+                            let ascq = data_buf[2 + 13];
+                            bail!(
+                                "SCSI response status=0x{status:02x} sense-key=0x{key:x} asc=0x{asc:02x} ascq=0x{ascq:02x} (raw: {:02x?})",
+                                &data_buf[..data_buf.len().min(20)]
+                            );
                         }
-                        bail!("SCSI response status=0x{status:02x}");
+                        bail!("SCSI response status=0x{status:02x} (no sense data)");
                     }
                     break;
                 }
