@@ -227,6 +227,39 @@ func (p *MicroKubeProvider) RunLayerDirProbe(ctx context.Context) *LayerDirProbe
 	}
 	_ = ros.RemoveDirectory(ctx, "raid1/images/layerdir-c")
 
+	// ── 5. No root-dir at all. RouterOS allows root-dir to be unset (7.21.4
+	// fixed startup for exactly that case) and unpacks layers relative to it
+	// (7.18). If a container runs from the layer store alone, that IS the
+	// overlay model: layers as the lower, RouterOS owning the upper — and
+	// nothing per-pod to extract.
+	for _, v := range []struct {
+		label  string
+		params map[string]string
+	}{
+		{"layer-dir + image, NO root-dir", map[string]string{
+			"name": name, "interface": veth, "remote-image": image,
+			"layer-dir": layerStore, "logging": "yes", "start-on-boot": "no",
+		}},
+		{"layer-dir ONLY (no image, no root-dir)", map[string]string{
+			"name": name, "interface": veth,
+			"layer-dir": layerStore, "logging": "yes", "start-on-boot": "no",
+		}},
+	} {
+		if err := ros.ContainerAddRaw(ctx, v.params); err != nil {
+			step("%s: REJECTED (%v)", v.label, err)
+			continue
+		}
+		step("%s: ACCEPTED", v.label)
+		ros.InvalidateContainerCache()
+		if ct, gerr := ros.GetContainer(ctx, name); gerr == nil {
+			step("   → root-dir RouterOS chose: %q (running=%q stopped=%q)", ct.RootDir, ct.Running, ct.Stopped)
+			if v.params["remote-image"] == "" {
+				rep.StubStillNeeded = "no"
+			}
+		}
+		remove()
+	}
+
 	switch {
 	case d2 < d1/3:
 		rep.Verdict = "layers-reused-from-clone"
