@@ -323,7 +323,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 
 	// Seed via a transient guarded container: RouterOS's own untar delivers
 	// the rootfs with modes intact.
-	if err := p.runCoWSeeder(ctx, ros, digest, tarballPath, mountPoint); err != nil {
+	if err := p.runCoWSeeder(ctx, ros, sb, created.Template.RawVolumeID, tarballPath, mountPoint); err != nil {
 		cleanupDisk()
 		return "", fmt.Errorf("seeding template: %w", err)
 	}
@@ -360,7 +360,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 // runCoWSeeder extracts the image tarball onto the mounted template volume
 // via a throwaway container, then detaches the volume and removes the
 // seeder (whose root-dir wipe then hits a path that no longer resolves).
-func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Client, digest, tarballPath, mountPoint string) error {
+func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Client, sb *sbClient, rawVolumeID, tarballPath, mountPoint string) error {
 	unguard := p.cowProbeGuardPod() // same shields as the probe
 	defer unguard()
 
@@ -385,16 +385,53 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 		return fmt.Errorf("seeder add: %w", err)
 	}
 
-	// Wait for extraction to finish (container reaches stopped).
+	// Wait for extraction by watching BYTES LAND ON THE VOLUME, not by
+	// watching the container: a freshly-added container reports stopped
+	// while RouterOS extracts in the background, so the old check returned
+	// in ~6 seconds and we sealed an empty filesystem. stormblockmk knows
+	// exactly how much has been written.
+	allocated := func() int64 {
+		var list struct {
+			Items []struct {
+				ID        string `json:"id"`
+				Allocated int64  `json:"allocated_bytes"`
+			} `json:"items"`
+		}
+		if err := sb.do(ctx, http.MethodGet, "/mk/v1/volumes", nil, &list); err != nil {
+			return -1
+		}
+		for _, v := range list.Items {
+			if v.ID == rawVolumeID {
+				return v.Allocated
+			}
+		}
+		return -1
+	}
+
 	extracted := false
-	deadline := time.Now().Add(5 * time.Minute)
+	var last int64 = -1
+	stableFor := 0
+	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		ros.InvalidateContainerCache()
-		if ct, err := ros.GetContainer(ctx, seederName); err == nil && ct.IsStopped() {
+		time.Sleep(3 * time.Second)
+		cur := allocated()
+		switch {
+		case cur < 0:
+			continue
+		case cur != last:
+			if last >= 0 {
+				p.deps.Logger.Debugw("cow seeder: extracting", "allocatedMB", cur/(1024*1024))
+			}
+			last, stableFor = cur, 0
+		default:
+			stableFor += 3
+		}
+		// Growth stopped for 15s after real data landed ⇒ extraction done.
+		if last > 4*1024*1024 && stableFor >= 15 {
 			extracted = true
+			p.deps.Logger.Infow("cow seeder: extraction complete", "allocatedMB", last/(1024*1024))
 			break
 		}
-		time.Sleep(3 * time.Second)
 	}
 
 	removeSeeder := func() {
