@@ -133,6 +133,28 @@ func readDockerSaveConfig(tarballPath string) (*dockerSaveConfig, error) {
 	}, nil
 }
 
+// parseImageConfigJSON reads entrypoint/cmd/env out of an OCI image config
+// blob (the few-KB document, not the tarball).
+func parseImageConfigJSON(blob []byte) (*dockerSaveConfig, error) {
+	var cfg struct {
+		Config struct {
+			Entrypoint []string `json:"Entrypoint"`
+			Cmd        []string `json:"Cmd"`
+			Env        []string `json:"Env"`
+			WorkingDir string   `json:"WorkingDir"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(blob, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing image config: %w", err)
+	}
+	return &dockerSaveConfig{
+		Entrypoint: cfg.Config.Entrypoint,
+		Cmd:        cfg.Config.Cmd,
+		Env:        cfg.Config.Env,
+		WorkingDir: cfg.Config.WorkingDir,
+	}, nil
+}
+
 // sbTemplate is a stormblockmk fstemplate row.
 type sbTemplate struct {
 	ID    string `json:"id"`

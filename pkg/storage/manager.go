@@ -904,3 +904,28 @@ func (m *Manager) runGC(ctx context.Context) {
 func (m *Manager) TarballDigest(tarballPath string) string {
 	return m.readTarballDigest(tarballPath)
 }
+
+// RemoteImageConfig fetches ONLY an image's config blob from the registry —
+// a few KB, no layers. The CoW path needs entrypoint/cmd to rewrite them
+// into the payload mount; fetching the config directly means a cow pod
+// never has to stage a full docker-save tarball just to read two fields.
+func (m *Manager) RemoteImageConfig(ctx context.Context, imageRef string) ([]byte, error) {
+	imageRef = m.rewriteLocalhost(imageRef)
+
+	cfgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	opts := []crane.Option{crane.WithContext(cfgCtx)}
+	opts = append(opts, crane.WithPlatform(&v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}))
+	if m.isLocalRegistry(imageRef) {
+		opts = append(opts, crane.WithTransport(m.transport()))
+	} else {
+		opts = append(opts, crane.WithAuthFromKeychain(
+			authn.NewMultiKeychain(authn.DefaultKeychain, dockersave.AnonymousKeychain{}),
+		))
+	}
+	return crane.Config(imageRef, opts...)
+}

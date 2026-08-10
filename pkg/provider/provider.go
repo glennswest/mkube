@@ -790,13 +790,20 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 
 		tracker.done()
 
-		// 1. Resolve image → tarball path
+		// 1. Resolve image → tarball path.
+		//
+		// CoW pods deliberately skip this: their rootfs comes from a golden
+		// clone, and the container is fed a 5 KB stub. Staging the full
+		// docker-save tarball here would defeat the point — with an external
+		// golden builder mkube would still hold every image on disk purely
+		// to read a digest and an entrypoint. Step 1b resolves those from
+		// the registry and stages only if that fails.
 		tracker.start(PhaseImageResolve)
 		var tarballPath string
 		if filePath := pod.Annotations[annotationFile]; filePath != "" {
 			// Use local tarball directly (skip OCI pull)
 			tarballPath = filePath
-		} else {
+		} else if !isCoWPod(pod) {
 			var err error
 			tarballPath, err = p.deps.StorageMgr.EnsureImage(ctx, container.Image)
 			if err != nil {
@@ -819,13 +826,41 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			if err := p.ensureGenericStub(ctx, rosC); err != nil {
 				return fmt.Errorf("ensuring cow stub: %w", err)
 			}
-			digest := p.deps.StorageMgr.TarballDigest(tarballPath)
-			if digest == "" {
-				return fmt.Errorf("cow image mode: no digest recorded for %s", tarballPath)
+			// Digest and entrypoint come from the REGISTRY (a manifest HEAD
+			// and a few-KB config blob), not from a staged tarball: with an
+			// external golden builder a cow pod otherwise stages the full
+			// image just to read two fields. Fall back to the tarball when
+			// the registry cannot answer.
+			digest, dErr := p.deps.StorageMgr.GetCurrentDigest(ctx, container.Image)
+			var imgCfg *dockerSaveConfig
+			if blob, cErr := p.deps.StorageMgr.RemoteImageConfig(ctx, container.Image); cErr == nil {
+				if parsed, pErr := parseImageConfigJSON(blob); pErr == nil {
+					imgCfg = parsed
+				} else {
+					log.Warnw("cow: cannot parse registry image config", "error", pErr)
+				}
+			} else {
+				log.Debugw("cow: registry config fetch failed, will use staged tarball", "error", cErr)
 			}
-			imgCfg, cfgErr := readDockerSaveConfig(tarballPath)
-			if cfgErr != nil {
-				log.Warnw("cow: cannot read image config, relying on pod command", "error", cfgErr)
+			if digest == "" || dErr != nil || imgCfg == nil {
+				staged, sErr := p.deps.StorageMgr.EnsureImage(ctx, container.Image)
+				if sErr != nil {
+					return fmt.Errorf("cow: staging image %s: %w", container.Image, sErr)
+				}
+				tarballPath = staged
+				if digest == "" {
+					digest = p.deps.StorageMgr.TarballDigest(tarballPath)
+				}
+				if imgCfg == nil {
+					if parsed, rErr := readDockerSaveConfig(tarballPath); rErr == nil {
+						imgCfg = parsed
+					} else {
+						log.Warnw("cow: cannot read image config, relying on pod command", "error", rErr)
+					}
+				}
+			}
+			if digest == "" {
+				return fmt.Errorf("cow image mode: no digest available for %s", container.Image)
 			}
 			templateName, err := p.ensureGoldenTemplate(ctx, rosC, container.Image, tarballPath, digest)
 			if err != nil {
