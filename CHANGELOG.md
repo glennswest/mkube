@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-08-10
+- **perf(routeros):** `EnsureDirectory` no longer runs `FileExists` (a `/file print` that enumerates the entire file tree server-side even with a name filter — minutes of device CPU with /raid1 full of registry blobs, and the source of a flat 3-minute stall in every PVC-backed pod create) and no longer relies on the marker-file HTTP upload (which has been silently failing with 415 Unsupported Media Type on its zero-byte body — every "failed to ensure PVC directory" warning ever logged). It now issues `/file/add type=directory` per path segment (RouterOS 7.13+, "already exists" = success), with a 1-byte marker upload kept as fallback for older devices. Follow-up: `MoveDirectory`/`RemoveDirectory`/`RemoveFile` still sit on `/file print` and deserve the same treatment.
+
 ## [v6.2.1] — 2026-08-10
 
 ### Fixed

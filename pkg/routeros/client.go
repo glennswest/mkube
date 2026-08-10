@@ -962,25 +962,44 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 }
 
 // EnsureDirectory ensures a directory exists on the RouterOS filesystem.
-// RouterOS auto-creates intermediate directories when a file is uploaded.
-// We upload a tiny marker file to force directory creation, then verify.
+//
+// Uses /file/add type=directory (RouterOS 7.13+), one fast native call per
+// path segment with "already exists" treated as success. This deliberately
+// does NOT check existence first: FileExists runs a /file print, which
+// enumerates the entire file tree server-side even with a name filter —
+// minutes of device CPU on a /raid1 holding registry blobs (observed
+// 2026-08-10: every PVC-backed pod create stalling 3 minutes here).
 func (c *Client) EnsureDirectory(ctx context.Context, path string) error {
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
 		return nil
 	}
 
-	// Check if directory already exists
-	exists, err := c.FileExists(ctx, path)
-	if err == nil && exists {
+	cur := ""
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		if cur == "" {
+			cur = seg
+		} else {
+			cur += "/" + seg
+		}
+		err := c.restPOST(ctx, "/file/add", map[string]string{
+			"type": "directory",
+			"name": cur,
+		}, nil)
+		if err == nil || strings.Contains(err.Error(), "already exist") {
+			continue
+		}
+		// Older RouterOS without directory add: fall back to a marker
+		// upload. One byte, not zero — the REST upload rejects an empty
+		// body with 415 Unsupported Media Type.
+		markerPath := path + "/.keep"
+		if uploadErr := c.UploadFile(ctx, markerPath, bytes.NewReader([]byte("\n"))); uploadErr != nil {
+			return fmt.Errorf("creating directory %s: %w (native add: %s)", path, uploadErr, err)
+		}
 		return nil
-	}
-
-	// Upload a zero-byte marker file to force directory creation.
-	// RouterOS creates parent directories automatically.
-	markerPath := path + "/.keep"
-	if uploadErr := c.UploadFile(ctx, markerPath, bytes.NewReader(nil)); uploadErr != nil {
-		return fmt.Errorf("creating directory %s: %w", path, uploadErr)
 	}
 	return nil
 }
