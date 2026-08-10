@@ -536,8 +536,11 @@ func (p *MicroKubeProvider) cowProbeGuardPod() func() {
 	// CreatePod stale-cleanups, not sweeps).
 	p.redeploying.Set(key, true)
 	return func() {
-		p.redeploying.Delete(key)
+		// Pod first, flag second: with the flag gone while the pod is still
+		// tracked, one reconcile tick can enqueue a create for the guard
+		// (observed: "creating pod gt/cowprobe" right after unguard).
 		p.pods.Delete(key)
+		p.redeploying.Delete(key)
 	}
 }
 

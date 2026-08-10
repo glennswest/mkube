@@ -211,9 +211,15 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 		return "", fmt.Errorf("creating fstemplate %s: %w", name, err)
 	}
 
-	var attach sbAttach
-	if err := json.Unmarshal(created.Attach, &attach); err != nil || attach.Address == "" {
+	// The attach field is the full wiring object: {protocol, state,
+	// attach:{address,port,iqn,...}} — same shape as a volume export.
+	var wiring sbExport
+	if err := json.Unmarshal(created.Attach, &wiring); err != nil || wiring.Attach.Address == "" {
 		return "", fmt.Errorf("fstemplate %s returned no usable attach block", name)
+	}
+	attach := wiring.Attach
+	if attach.Transport == "" {
+		attach.Transport = wiring.Protocol
 	}
 	if attach.Transport == "" {
 		attach.Transport = "iscsi" // template formatting attach is documented iSCSI
