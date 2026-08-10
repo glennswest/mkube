@@ -243,19 +243,10 @@ func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Targeted, name-filtered existence checks only.
-	checks := map[string]any{}
-	if path != "" {
-		for _, sub := range []string{"", "/rootfs", "/rootfs/bin", "/rootfs/usr"} {
-			target := path + sub
-			exists, err := ros.FileExists(ctx, target)
-			if err != nil {
-				checks[target] = "error: " + err.Error()
-			} else {
-				checks[target] = exists
-			}
-		}
-	}
-	out["exists"] = checks
+	// No FileExists here: even name-filtered, /file print walks the whole
+	// tree on this box (a documented ~3-minute stall — it is why
+	// EnsureDirectory stopped using it). The disk rows and mount entries
+	// answer the question that matters: which slot the clone is really on
+	// versus which path the container was told to mount.
 	podWriteJSON(w, http.StatusOK, out)
 }
