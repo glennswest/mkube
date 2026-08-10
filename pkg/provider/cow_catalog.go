@@ -253,6 +253,20 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 		return "", fmt.Errorf("golden template %s not published by the external builder within %s (goldenSource=sbregistry)", name, wait)
 	}
 
+	// Only NOW does a full image need to be on disk: mkube is about to seed
+	// the golden itself, and the seeder feeds RouterOS `file=<tarball>`.
+	// Pod creates skip staging entirely (digest and entrypoint come from the
+	// registry), and sbregistry mode returned above without ever reaching
+	// here — so this is once per digest, on the build path only.
+	if tarballPath == "" {
+		staged, sErr := p.deps.StorageMgr.EnsureImage(ctx, imageRef)
+		if sErr != nil {
+			return "", fmt.Errorf("staging %s to seed the golden: %w", imageRef, sErr)
+		}
+		tarballPath = staged
+		log.Infow("staged image to seed the golden", "tarball", tarballPath)
+	}
+
 	// Size: generous thin headroom over the tarball (thin volumes only cost
 	// what is written).
 	st, err := os.Stat(tarballPath)
