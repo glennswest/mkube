@@ -48,21 +48,38 @@ func (p *MicroKubeProvider) RunSuperblockProbe(ctx context.Context, volumeID str
 	// Reuse the volume's existing export when it has one; otherwise add a
 	// temporary one and withdraw it again, so this never disturbs a volume
 	// a pod is using.
-	var vol struct {
-		ID     string    `json:"id"`
-		Export *sbExport `json:"export"`
+	// stormblockmk has no GET on a single volume (405), so find it in the
+	// listing.
+	var list struct {
+		Items []struct {
+			ID     string    `json:"id"`
+			Name   string    `json:"name"`
+			Export *sbExport `json:"export"`
+		} `json:"items"`
 	}
-	if err := sb.do(ctx, http.MethodGet, "/mk/v1/volumes/"+volumeID, nil, &vol); err != nil {
-		rep.Error = "reading volume: " + err.Error()
+	if err := sb.do(ctx, http.MethodGet, "/mk/v1/volumes", nil, &list); err != nil {
+		rep.Error = "listing volumes: " + err.Error()
+		return rep
+	}
+	var export *sbExport
+	found := false
+	for _, v := range list.Items {
+		if v.ID == volumeID {
+			found, export = true, v.Export
+			break
+		}
+	}
+	if !found {
+		rep.Error = fmt.Sprintf("volume %s not found", volumeID)
 		return rep
 	}
 
 	var attach sbAttach
 	temporary := ""
-	if vol.Export != nil && vol.Export.Attach.Address != "" {
-		attach = vol.Export.Attach
+	if export != nil && export.Attach.Address != "" {
+		attach = export.Attach
 		if attach.Transport == "" {
-			attach.Transport = vol.Export.Protocol
+			attach.Transport = export.Protocol
 		}
 	} else {
 		var ex sbExport
