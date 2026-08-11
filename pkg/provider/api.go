@@ -243,6 +243,7 @@ func (p *MicroKubeProvider) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/probes/cow/payload", p.handleCoWProbePayload)
 	mux.HandleFunc("POST /api/v1/probes/nvme", p.handleNVMeProbe)
 	mux.HandleFunc("POST /api/v1/probes/nvmemount", p.handleNVMeMountProbe)
+	mux.HandleFunc("POST /api/v1/probes/sb", p.handleSuperblockProbe)
 	mux.HandleFunc("POST /api/v1/probes/layers", p.handleLayersProbe)
 	mux.HandleFunc("POST /api/v1/probes/layerdir", p.handleLayerDirProbe)
 	mux.HandleFunc("POST /api/v1/probes/format", p.handleFormatProbe)
