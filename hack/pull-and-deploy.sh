@@ -13,6 +13,10 @@ IMAGE="${2:-ghcr.io/glennswest/mkube-update:edge}"
 SSH_USER="${SSH_USER:-admin}"
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 SSH="ssh ${SSH_OPTS} ${SSH_USER}@${DEVICE}"
+# Extra flags for crane. A local registry (registry.gt.lo:5000) serves a
+# self-signed cert, so deploying a locally-built image needs --insecure;
+# GHCR does not. Set CRANE_OPTS="--insecure" for the former.
+CRANE_OPTS="${CRANE_OPTS:-}"
 PLATFORM="linux/arm64"
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -43,13 +47,18 @@ wait_state() {
     local name="$1" target="$2" max="${3:-30}" i=0
     printf "  Waiting for %s -> %s " "$name" "$target"
     while [ $i -lt $max ]; do
-        local output
-        output=$(ros "/container/print" 2>/dev/null || true)
+        # TERSE, deliberately: plain `/container/print` puts the state flag and
+        # the name on DIFFERENT lines, so matching "index + flag" against the
+        # name line never succeeded and every wait here ran to timeout — the
+        # stop was reported as failed while the container was still running,
+        # and the remove/add that followed then failed for real.
+        local line
+        line=$(ros "/container/print terse" 2>/dev/null | grep "name=${name}" || true)
         if [ "$target" = "missing" ]; then
-            if ! echo "$output" | grep -q "$name"; then
+            if [ -z "$line" ]; then
                 printf "done\n"; return 0
             fi
-        elif echo "$output" | grep "$name" | grep -qE "^\s*[0-9]+\s+${target}\s"; then
+        elif echo "$line" | grep -qE "^[[:space:]]*[0-9]+[[:space:]]+${target}[[:space:]]"; then
             printf "done\n"; return 0
         fi
         printf "."; i=$((i + 1)); sleep 2
@@ -80,10 +89,10 @@ trap "rm -rf ${WORK}" EXIT
 
 # Export flat rootfs
 echo "  Exporting rootfs from ${IMAGE}..."
-crane export --platform "${PLATFORM}" "${IMAGE}" "${WORK}/rootfs.tar"
+crane export ${CRANE_OPTS} --platform "${PLATFORM}" "${IMAGE}" "${WORK}/rootfs.tar"
 
 # Get image config for entrypoint/cmd
-IMG_CONFIG=$(crane config --platform "${PLATFORM}" "${IMAGE}")
+IMG_CONFIG=$(crane config ${CRANE_OPTS} --platform "${PLATFORM}" "${IMAGE}")
 ENTRYPOINT=$(echo "${IMG_CONFIG}" | jq -r '(.config.Entrypoint // []) | join(" ")' 2>/dev/null || true)
 CMD_VAL=$(echo "${IMG_CONFIG}" | jq -r '(.config.Cmd // []) | join(" ")' 2>/dev/null || true)
 WORKDIR=$(echo "${IMG_CONFIG}" | jq -r '.config.WorkingDir // "/"' 2>/dev/null || true)
@@ -233,6 +242,10 @@ fi
 # ── Step 10: Create and start container ──────────────────────────────────────
 echo ""
 echo "▸ Creating container '${CONTAINER_NAME}'..."
+# RouterOS refuses to create a container whose root-dir still exists, and a
+# removed container leaves its rootfs behind. Move it aside first.
+ros "/file/remove [find name~\"${ROOT_DIR#/}\"]" 2>/dev/null || true
+
 ros "/container/add file=${REMOTE_TARBALL} interface=${VETH_NAME} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config"
 echo "  ✓ Container created"
 

@@ -1,0 +1,8 @@
+# mkube-update — the on-device image watcher.
+#
+# Single-layer scratch image matching what RouterOS expects: the deploy
+# script converts it to a docker-save tarball and hands that to
+# /container/add, so anything beyond one flat rootfs layer is wasted.
+FROM scratch
+COPY mkube-update /mkube-update
+ENTRYPOINT ["/mkube-update"]
