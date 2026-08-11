@@ -31,8 +31,21 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// containsAny reports whether s contains any of the given substrings,
+// case-insensitively.
+func containsAny(s string, subs ...string) bool {
+	s = strings.ToLower(s)
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 type nvmeMountLeg struct {
 	Name      string `json:"name"`
@@ -233,6 +246,49 @@ func (p *MicroKubeProvider) RunNVMeMountProbe(ctx context.Context) *NVMeMountRep
 			rep.Legs = append(rep.Legs, fmtLeg)
 			detach(fmtDisk)
 			dropExport(fmtEx.ExportID)
+		}
+	}
+
+	// --- leg 4: diagnosis — is the namespace simply not being selected? ----
+	//
+	// `block-device=false` on an attached nvme-tcp row is the whole story: a
+	// disk RouterOS does not consider a block device is never probed, so no
+	// filesystem can be found however well-formed it is. Two candidate
+	// explanations: RouterOS has no NVMe block layer at all, or it needs to
+	// be told which namespace to bind. The second is testable — RouterOS
+	// answers "unknown parameter X" for vocabulary it does not have and
+	// "invalid value for argument X" for vocabulary it does, so a deliberate
+	// bad value maps the parameter space without needing a live target.
+	v3, err := newVolume("nvmemount-probe-v3")
+	if err == nil {
+		defer dropVolume(v3)
+		if diagEx, err := addExport(v3, "nvme-tcp"); err == nil {
+			defer dropExport(diagEx.ExportID)
+			diskID, err := p.attachStormblockDisk(ctx, diagEx.Attach)
+			if err == nil {
+				defer detach(diskID)
+				if rows, err := ros.ListRaw(ctx, "/disk"); err == nil {
+					for _, row := range rows {
+						if fmt.Sprint(row[".id"]) != diskID {
+							continue
+						}
+						for k, v := range row {
+							step("  raw nvme-tcp field %s = %v", k, v)
+						}
+					}
+				}
+				for _, cand := range []string{"nvme-tcp-nsid", "nsid", "namespace", "nvme-tcp-namespace", "nvme-namespace"} {
+					err := ros.SetDiskField(ctx, diskID, cand, "999999")
+					switch {
+					case err == nil:
+						step("  namespace vocabulary: %s ACCEPTED", cand)
+					case containsAny(err.Error(), "unknown parameter", "no such argument"):
+						step("  namespace vocabulary: %s does not exist", cand)
+					default:
+						step("  namespace vocabulary: %s EXISTS (rejected value: %s)", cand, err.Error())
+					}
+				}
+			}
 		}
 	}
 

@@ -2263,6 +2263,14 @@ func (c *Client) EjectDisk(ctx context.Context, id string) error {
 	return err
 }
 
+// SetDiskField sets one field on a disk row. Used to probe which parameters
+// a menu actually has: RouterOS distinguishes "unknown parameter" (no such
+// vocabulary) from "invalid value for argument" (vocabulary exists), so a
+// deliberately bad value maps the parameter space without a live target.
+func (c *Client) SetDiskField(ctx context.Context, id, field, value string) error {
+	return c.restPOST(ctx, "/disk/set", map[string]string{".id": id, field: value}, nil)
+}
+
 // FormatDrive asks RouterOS to lay down a filesystem on a disk itself.
 //
 // This is the strongest available test of whether the initiator can really
