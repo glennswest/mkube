@@ -72,8 +72,11 @@ func (p *MicroKubeProvider) MigratePVCTransport(ctx context.Context, namespace, 
 		return rep
 	}
 
+	// The store keys PVCs as "<namespace>.<name>" (NATS KV keys cannot carry
+	// a slash); `key` above is only the display form.
+	storeKey := namespace + "." + name
 	var stored corev1.PersistentVolumeClaim
-	if _, err := p.deps.Store.PersistentVolumeClaims.GetJSON(ctx, key, &stored); err != nil {
+	if _, err := p.deps.Store.PersistentVolumeClaims.GetJSON(ctx, storeKey, &stored); err != nil {
 		rep.Error = fmt.Sprintf("PVC %s not found: %v", key, err)
 		return rep
 	}
@@ -215,7 +218,7 @@ func (p *MicroKubeProvider) annotatePVC(ctx context.Context, pvc *corev1.Persist
 	}
 	ann[key] = value
 	pvc.SetAnnotations(ann)
-	storeKey := pvc.Namespace + "/" + pvc.Name
+	storeKey := pvc.Namespace + "." + pvc.Name
 	if _, err := p.deps.Store.PersistentVolumeClaims.PutJSON(ctx, storeKey, pvc); err != nil {
 		p.deps.Logger.Warnw("persisting PVC annotation", "pvc", storeKey, "key", key, "error", err)
 	}
