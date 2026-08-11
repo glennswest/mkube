@@ -80,10 +80,27 @@ const FCTYPE_PROPERTY_SET: u8 = 0x00;
 const FCTYPE_CONNECT: u8 = 0x01;
 const FCTYPE_PROPERTY_GET: u8 = 0x04;
 
-/// SGL descriptor: transport data block, transferred out of capsule.
+/// SGL descriptor: transport data block, transferred out of capsule (R2T).
 const SGL_TRANSPORT_DATA: u8 = 0x55;
+/// SGL descriptor: data block at an offset INSIDE the command capsule.
+const SGL_IN_CAPSULE: u8 = 0x51;
 /// Command flags: SGL used for the data pointer.
 const CMD_FLAG_SGL: u8 = 0x40;
+
+/// How long to wait on the controller before declaring the session wedged.
+/// Without this a protocol mistake on our side reads as an indefinite hang
+/// rather than an error — which is exactly how the first cut of this module
+/// stalled a probe for twelve minutes.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Where a command's outbound data travels.
+enum DataOut<'a> {
+    None,
+    /// Carried inside the command capsule. Fabrics Connect requires this.
+    InCapsule(&'a [u8]),
+    /// Sent as H2CData PDUs once the controller asks with an R2T.
+    Transfer(&'a [u8]),
+}
 
 // Controller properties.
 const PROP_CAP: u32 = 0x00;
@@ -182,11 +199,16 @@ impl Queue {
 
     async fn recv_exact(&mut self, n: usize) -> Result<Vec<u8>> {
         let mut buf = vec![0u8; n];
-        self.stream
-            .read_exact(&mut buf)
-            .await
-            .with_context(|| format!("reading {n} bytes from the controller"))?;
-        Ok(buf)
+        match tokio::time::timeout(IO_TIMEOUT, self.stream.read_exact(&mut buf)).await {
+            Ok(r) => {
+                r.with_context(|| format!("reading {n} bytes from the controller"))?;
+                Ok(buf)
+            }
+            Err(_) => bail!(
+                "timed out after {}s waiting for {n} bytes from the controller",
+                IO_TIMEOUT.as_secs()
+            ),
+        }
     }
 
     async fn recv_pdu(&mut self) -> Result<Pdu> {
@@ -280,19 +302,26 @@ impl Queue {
     async fn execute(
         &mut self,
         sqe: &[u8; SQE_LEN],
-        write_data: Option<&[u8]>,
+        data_out: DataOut<'_>,
         expect_read: usize,
     ) -> Result<(u64, Vec<u8>)> {
         let cmd_id = u16::from_le_bytes([sqe[2], sqe[3]]);
-        self.send_capsule(sqe, None).await?;
+        // In-capsule data rides along with the command; transfer data waits
+        // for the controller to ask for it.
+        let (capsule_data, transfer_data) = match data_out {
+            DataOut::None => (None, None),
+            DataOut::InCapsule(d) => (Some(d), None),
+            DataOut::Transfer(d) => (None, Some(d)),
+        };
+        self.send_capsule(sqe, capsule_data).await?;
 
         let mut read_buf = Vec::with_capacity(expect_read);
         loop {
             let pdu = self.recv_pdu().await?;
             match pdu.pdu_type {
                 PDU_R2T => {
-                    let data = write_data
-                        .ok_or_else(|| anyhow::anyhow!("controller sent R2T for a command with no data"))?;
+                    let data = transfer_data
+                        .ok_or_else(|| anyhow::anyhow!("controller sent R2T for a command with no transfer data"))?;
                     let ttag = u16::from_le_bytes(pdu.header[10..12].try_into().unwrap());
                     let offset = u32::from_le_bytes(pdu.header[12..16].try_into().unwrap());
                     let length = u32::from_le_bytes(pdu.header[16..20].try_into().unwrap());
@@ -350,10 +379,19 @@ fn sqe(opcode: u8, cmd_id: u16, nsid: u32) -> [u8; SQE_LEN] {
 
 /// Point a command's data pointer at a host transfer of `len` bytes.
 fn set_sgl(s: &mut [u8; SQE_LEN], len: u32) {
-    s[24..32].copy_from_slice(&0u64.to_le_bytes()); // address
+    set_sgl_kind(s, len, SGL_TRANSPORT_DATA)
+}
+
+/// Point a command's data pointer at data carried inside the capsule.
+fn set_sgl_inline(s: &mut [u8; SQE_LEN], len: u32) {
+    set_sgl_kind(s, len, SGL_IN_CAPSULE)
+}
+
+fn set_sgl_kind(s: &mut [u8; SQE_LEN], len: u32, kind: u8) {
+    s[24..32].copy_from_slice(&0u64.to_le_bytes()); // address / icdoff
     s[32..36].copy_from_slice(&len.to_le_bytes());
     s[36..39].copy_from_slice(&[0, 0, 0]);
-    s[39] = SGL_TRANSPORT_DATA;
+    s[39] = kind;
 }
 
 fn set_cdw(s: &mut [u8; SQE_LEN], index: usize, value: u32) {
@@ -416,14 +454,14 @@ impl NvmeInitiator {
         let mut s = sqe(NVME_ADMIN_SET_FEATURES, admin.next_cmd_id(), 0);
         set_cdw(&mut s, 10, 0x07); // Number of Queues
         set_cdw(&mut s, 11, 0x0000_0000); // 1 submission, 1 completion
-        admin.execute(&s, None, 0).await?;
+        admin.execute(&s, DataOut::None, 0).await?;
 
         // --- namespace geometry ------------------------------------------
         let nsid = 1u32;
         let mut s = sqe(NVME_ADMIN_IDENTIFY, admin.next_cmd_id(), nsid);
         set_sgl(&mut s, 4096);
         set_cdw(&mut s, 10, 0x00); // CNS 0 = Identify Namespace
-        let (_, ident) = admin.execute(&s, None, 4096).await?;
+        let (_, ident) = admin.execute(&s, DataOut::None, 4096).await?;
         if ident.len() < 132 {
             bail!("Identify Namespace returned {} bytes", ident.len());
         }
@@ -481,7 +519,7 @@ impl NvmeInitiator {
         set_cdw(&mut s, 10, lba);
         set_cdw(&mut s, 11, 0);
         set_cdw(&mut s, 12, (count - 1) as u32); // zero-based block count
-        let (_, data) = self.io.execute(&s, None, len as usize).await?;
+        let (_, data) = self.io.execute(&s, DataOut::None, len as usize).await?;
         if data.len() < len as usize {
             bail!(
                 "short read at lba {lba}: wanted {len} bytes, got {}",
@@ -512,7 +550,7 @@ impl NvmeInitiator {
         set_cdw(&mut s, 10, lba);
         set_cdw(&mut s, 11, 0);
         set_cdw(&mut s, 12, (count - 1) as u32);
-        self.io.execute(&s, Some(data), 0).await?;
+        self.io.execute(&s, DataOut::Transfer(data), 0).await?;
         Ok(())
     }
 
@@ -522,7 +560,7 @@ impl NvmeInitiator {
     pub async fn synchronize_cache(&mut self) -> Result<()> {
         let cmd_id = self.io.next_cmd_id();
         let s = sqe(NVME_OP_FLUSH, cmd_id, self.nsid);
-        self.io.execute(&s, None, 0).await?;
+        self.io.execute(&s, DataOut::None, 0).await?;
         Ok(())
     }
 
@@ -555,14 +593,14 @@ async fn fabrics_connect(
     let mut s = sqe(NVME_OP_FABRICS, cmd_id, 0);
     s[4] = FCTYPE_CONNECT; // fabrics reuses the nsid field for fctype
     s[5..8].copy_from_slice(&[0, 0, 0]);
-    set_sgl(&mut s, CONNECT_DATA_LEN as u32);
+    set_sgl_inline(&mut s, CONNECT_DATA_LEN as u32);
     s[40..42].copy_from_slice(&0u16.to_le_bytes()); // recfmt
     s[42..44].copy_from_slice(&qid.to_le_bytes());
     s[44..46].copy_from_slice(&sqsize.to_le_bytes());
     s[46] = 0; // cattr
     s[48..52].copy_from_slice(&0u32.to_le_bytes()); // kato
 
-    let (result, _) = q.execute(&s, Some(&data), 0).await.with_context(|| {
+    let (result, _) = q.execute(&s, DataOut::InCapsule(&data), 0).await.with_context(|| {
         format!("fabrics Connect for queue {qid} to {subnqn}")
     })?;
     Ok((result & 0xFFFF) as u16)
@@ -574,7 +612,7 @@ async fn property_get(q: &mut Queue, offset: u32, wide: bool) -> Result<u64> {
     s[4] = FCTYPE_PROPERTY_GET;
     s[40] = if wide { 1 } else { 0 }; // attrib: 1 = 64-bit property
     s[44..48].copy_from_slice(&offset.to_le_bytes());
-    let (result, _) = q.execute(&s, None, 0).await?;
+    let (result, _) = q.execute(&s, DataOut::None, 0).await?;
     Ok(if wide { result } else { result & 0xFFFF_FFFF })
 }
 
@@ -585,7 +623,7 @@ async fn property_set(q: &mut Queue, offset: u32, value: u64) -> Result<()> {
     s[40] = 0;
     s[44..48].copy_from_slice(&offset.to_le_bytes());
     s[48..56].copy_from_slice(&value.to_le_bytes());
-    q.execute(&s, None, 0).await?;
+    q.execute(&s, DataOut::None, 0).await?;
     Ok(())
 }
 

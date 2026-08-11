@@ -37,6 +37,11 @@ const (
 	annSBPortal   = "vkube.io/stormblock-portal"
 )
 
+// volumeToolBinary is the NVMe/TCP volume tool mkube ships in its own image:
+// format, re-identify, flush and pattern-verify a stormblock volume by
+// talking to the export directly.
+const volumeToolBinary = "/usr/local/bin/nvme-pvc"
+
 // isStormblockPVC reports whether a PVC asks for a stormblock volume.
 func isStormblockPVC(pvc *corev1.PersistentVolumeClaim) bool {
 	if pvc == nil {
@@ -189,91 +194,77 @@ func (c *sbClient) do(ctx context.Context, method, path string, body any, out an
 	return nil
 }
 
-// formatStormblockVolume formats a freshly-created volume as ext4.
+// sbToolTarget renders an export's address as the "host:port" the nvme-pvc
+// tool expects.
 //
-// The formatter (iscsi-pvc) speaks iSCSI only, so an NVMe-exported volume
-// cannot be formatted through its own export. stormblockmk v0.3.0 accepts
-// `protocol` on POST /mk/v1/exports, so we add a TEMPORARY iSCSI export for
-// the format pass and withdraw it again — the volume keeps its NVMe export
-// for the actual attach.
-func (p *MicroKubeProvider) formatStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach, label string) error {
-	if sbTransport(attach) == "iscsi" {
-		portal := attach.Address
-		if attach.Port != 0 {
-			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-		}
-		return p.formatISCSITargetExt4(ctx, portal, sbTargetName(attach), label)
+// The port is mandatory. stormblockmk gives every export its own port and
+// the shared 4420 serves discovery only, so an address without one reaches a
+// controller that answers the handshake and then fails every I/O.
+func sbToolTarget(a sbAttach) (string, error) {
+	if a.Address == "" {
+		return "", fmt.Errorf("export carries no address")
 	}
-
-	p.deps.Logger.Infow("adding a temporary iSCSI export to format an NVMe volume", "volume", volumeID)
-	var tmp sbExport
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
-		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
-		return fmt.Errorf("creating temporary iscsi export: %w", err)
+	if a.Port == 0 {
+		return "", fmt.Errorf("export %s carries no port", sbTargetName(a))
 	}
-	exportID := tmp.ExportID
-	defer func() {
-		if exportID == "" {
-			return
-		}
-		if err := sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+exportID, nil, nil); err != nil {
-			p.deps.Logger.Warnw("could not withdraw the temporary format export", "export", exportID, "error", err)
-		}
-	}()
-	if tmp.Attach.Address == "" {
-		return fmt.Errorf("temporary iscsi export returned no attach parameters")
-	}
-	portal := tmp.Attach.Address
-	if tmp.Attach.Port != 0 {
-		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
-	}
-	return p.formatISCSITargetExt4(ctx, portal, sbTargetName(tmp.Attach), label)
+	return fmt.Sprintf("%s:%d", a.Address, a.Port), nil
 }
 
-// flushStormblockVolume issues SCSI SYNCHRONIZE CACHE so the engine commits
-// everything it is holding.
+// runVolumeTool invokes nvme-pvc against a volume's own export.
 //
-// stormblock allocates in 4 MB slab slots and implements SYNCHRONIZE CACHE
-// as device.flush(). RouterOS appears never to issue it for a network disk,
-// which strands small scattered writes — filesystem metadata — while bulk
-// file data that fills whole slots persists. That is exactly the damage we
-// see on a seeded golden: 60 MB allocated, directory entries gone.
+// Every one of these operations used to have a second code path that created
+// a TEMPORARY iSCSI export, because the tool spoke only iSCSI and could not
+// reach an NVMe-exported volume through its own export. The tool now speaks
+// NVMe/TCP, so the volume is addressed directly and that fallback is gone.
+func (p *MicroKubeProvider) runVolumeTool(ctx context.Context, attach sbAttach, op string, extra ...string) (string, error) {
+	target, err := sbToolTarget(attach)
+	if err != nil {
+		return "", err
+	}
+	// Bound the tool independently of the caller's deadline. A protocol
+	// mistake against a controller that simply stops answering would
+	// otherwise hold a pod-worker slot for as long as the caller allows.
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+	args := []string{
+		"--url", p.deps.Config.RouterOS.RESTURL,
+		"--user", p.deps.Config.RouterOS.User,
+		"--password", p.deps.Config.RouterOS.Password,
+		"--target", target,
+		op, sbTargetName(attach),
+	}
+	args = append(args, extra...)
+	out, err := exec.CommandContext(ctx, volumeToolBinary, args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("nvme-pvc %s: %w: %s", op, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// formatStormblockVolume formats a freshly-created volume as ext4 over its
+// own NVMe export.
+func (p *MicroKubeProvider) formatStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach, label string) error {
+	out, err := p.runVolumeTool(ctx, attach, "format", "--label", label)
+	if err != nil {
+		return err
+	}
+	p.deps.Logger.Infow("volume formatted ext4", "volume", volumeID, "label", label, "output", out)
+	return nil
+}
+
+// flushStormblockVolume issues an NVMe FLUSH so the engine commits everything
+// it is holding.
+//
+// stormblock allocates in 4 MB slab slots and implements FLUSH as
+// device.flush(). Without it, small scattered writes — filesystem metadata —
+// can sit in partial slab slots while bulk file data that fills whole slots
+// persists, which is how a volume ends up mounting cleanly and empty.
 func (p *MicroKubeProvider) flushStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach) error {
-	run := func(portal, target string) error {
-		out, err := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
-			"--url", p.deps.Config.RouterOS.RESTURL,
-			"--user", p.deps.Config.RouterOS.User,
-			"--password", p.deps.Config.RouterOS.Password,
-			"--portal", portal,
-			"flush", target).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("iscsi-pvc flush: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		p.deps.Logger.Infow("target cache flushed", "volume", volumeID)
-		return nil
+	if _, err := p.runVolumeTool(ctx, attach, "flush"); err != nil {
+		return err
 	}
-	if sbTransport(attach) == "iscsi" {
-		portal := attach.Address
-		if attach.Port != 0 {
-			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-		}
-		return run(portal, sbTargetName(attach))
-	}
-	var tmp sbExport
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
-		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
-		return fmt.Errorf("creating temporary iscsi export: %w", err)
-	}
-	defer func() {
-		if tmp.ExportID != "" {
-			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+tmp.ExportID, nil, nil)
-		}
-	}()
-	portal := tmp.Attach.Address
-	if tmp.Attach.Port != 0 {
-		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
-	}
-	return run(portal, sbTargetName(tmp.Attach))
+	p.deps.Logger.Infow("volume cache flushed", "volume", volumeID)
+	return nil
 }
 
 // reidentifyStormblockVolume gives a volume's filesystem a fresh UUID (and
@@ -282,55 +273,20 @@ func (p *MicroKubeProvider) flushStormblockVolume(ctx context.Context, sb *sbCli
 // A CoW clone is byte-identical to its golden, so without this every clone
 // on the host claims the same filesystem identity — which is what makes
 // mount-by-UUID and blkid caching misbehave. `clean` additionally repairs
-// the flag RouterOS leaves cleared when it force-detaches without
-// unmounting; only pass it once writes have quiesced.
+// the flag left cleared by a force-detach; only pass it once writes have
+// quiesced.
 func (p *MicroKubeProvider) reidentifyStormblockVolume(ctx context.Context, sb *sbClient, volumeID string, attach sbAttach, label string, clean bool) error {
-	run := func(portal, target string) error {
-		args := []string{
-			"--url", p.deps.Config.RouterOS.RESTURL,
-			"--user", p.deps.Config.RouterOS.User,
-			"--password", p.deps.Config.RouterOS.Password,
-			"--portal", portal,
-			"reid", target, "--label", label,
-		}
-		if clean {
-			args = append(args, "--clean")
-		}
-		out, err := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc", args...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("iscsi-pvc reid: %w: %s", err, strings.TrimSpace(string(out)))
-		}
-		p.deps.Logger.Infow("filesystem re-identified", "volume", volumeID, "label", label, "clean", clean,
-			"output", strings.TrimSpace(string(out)))
-		return nil
+	extra := []string{"--label", label}
+	if clean {
+		extra = append(extra, "--clean")
 	}
-
-	if sbTransport(attach) == "iscsi" {
-		portal := attach.Address
-		if attach.Port != 0 {
-			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-		}
-		return run(portal, sbTargetName(attach))
+	out, err := p.runVolumeTool(ctx, attach, "reid", extra...)
+	if err != nil {
+		return err
 	}
-
-	var tmp sbExport
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
-		map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &tmp); err != nil {
-		return fmt.Errorf("creating temporary iscsi export: %w", err)
-	}
-	defer func() {
-		if tmp.ExportID != "" {
-			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+tmp.ExportID, nil, nil)
-		}
-	}()
-	if tmp.Attach.Address == "" {
-		return fmt.Errorf("temporary iscsi export returned no attach parameters")
-	}
-	portal := tmp.Attach.Address
-	if tmp.Attach.Port != 0 {
-		portal = fmt.Sprintf("%s:%d", tmp.Attach.Address, tmp.Attach.Port)
-	}
-	return run(portal, sbTargetName(tmp.Attach))
+	p.deps.Logger.Infow("filesystem re-identified",
+		"volume", volumeID, "label", label, "clean", clean, "output", out)
+	return nil
 }
 
 // provisionStormblockPVC creates (or recovers) the volume behind a PVC and
