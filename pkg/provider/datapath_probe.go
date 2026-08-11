@@ -136,7 +136,8 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 	// arguing about.
 	var tmpl sbCreateTemplateResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates",
-		map[string]any{"name": "datapath-tpl", "fs": "ext4", "size_bytes": 512 * 1024 * 1024}, &tmpl); err != nil {
+		map[string]any{"name": "datapath-tpl", "fs": "ext4", "size_bytes": 512 * 1024 * 1024,
+			"protocol": p.sbProtocol()}, &tmpl); err != nil {
 		rep.FromClone = "template create failed: " + err.Error()
 		return rep
 	}

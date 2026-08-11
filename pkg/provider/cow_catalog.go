@@ -281,7 +281,8 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	log.Infow("building golden template", "template", name, "size", sizeBytes)
 	var created sbCreateTemplateResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates",
-		map[string]any{"name": name, "fs": "ext4", "size_bytes": sizeBytes}, &created); err != nil {
+		map[string]any{"name": name, "fs": "ext4", "size_bytes": sizeBytes,
+			"protocol": p.sbProtocol()}, &created); err != nil {
 		return "", fmt.Errorf("creating fstemplate %s: %w", name, err)
 	}
 
