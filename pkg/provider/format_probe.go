@@ -2,7 +2,7 @@ package provider
 
 // Format-signature comparison.
 //
-// mkube formats stormblock volumes with `iscsi-pvc`, a hand-written ext4
+// mkube formats stormblock volumes with `nvme-pvc`, a hand-written ext4
 // writer — not mkfs.ext4. It clearly produces something RouterOS mounts
 // over iSCSI, but "one path mounts it" is not "the same signature and
 // layout RouterOS itself writes", and a stricter probe (the NVMe path, for
@@ -17,7 +17,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -62,7 +61,7 @@ func (p *MicroKubeProvider) RunFormatProbe(ctx context.Context) *FormatProbeRepo
 	makeVol := func(name string) (string, sbAttach, string, error) {
 		var created sbCreateVolumeResp
 		if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", map[string]any{
-			"name": name, "size_bytes": 512 * 1024 * 1024, "export": true, "protocol": "iscsi",
+			"name": name, "size_bytes": 512 * 1024 * 1024, "export": true, "protocol": p.sbProtocol(),
 		}, &created); err != nil {
 			return "", sbAttach{}, "", err
 		}
@@ -83,19 +82,9 @@ func (p *MicroKubeProvider) RunFormatProbe(ctx context.Context) *FormatProbeRepo
 	}
 
 	dumpSB := func(attach sbAttach) []string {
-		portal := attach.Address
-		if attach.Port != 0 {
-			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-		}
-		cmd := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
-			"--url", p.deps.Config.RouterOS.RESTURL,
-			"--user", p.deps.Config.RouterOS.User,
-			"--password", p.deps.Config.RouterOS.Password,
-			"--portal", portal,
-			"sb", sbTargetName(attach))
-		out, err := cmd.CombinedOutput()
+		out, err := p.runVolumeTool(ctx, attach, "sb")
 		if err != nil {
-			return []string{fmt.Sprintf("superblock read failed: %v: %s", err, strings.TrimSpace(string(out)))}
+			return []string{fmt.Sprintf("superblock read failed: %v", err)}
 		}
 		var lines []string
 		for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -118,7 +107,7 @@ func (p *MicroKubeProvider) RunFormatProbe(ctx context.Context) *FormatProbeRepo
 		rep.Error = fmt.Sprintf("our format: %v", ferr)
 		return rep
 	}
-	step("formatted by iscsi-pvc")
+	step("formatted by nvme-pvc")
 	_ = ros.RemoveDisk(ctx, diskA)
 	if d, aerr := p.attachStormblockDisk(ctx, attachA); aerr == nil {
 		diskA = d

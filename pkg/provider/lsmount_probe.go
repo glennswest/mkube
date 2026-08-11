@@ -64,7 +64,7 @@ func (p *MicroKubeProvider) handleLsMount(w http.ResponseWriter, r *http.Request
 		}
 		var ex sbExport
 		if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
-			map[string]any{"volume_id": volumeID, "protocol": "iscsi"}, &ex); err != nil {
+			map[string]any{"volume_id": volumeID, "protocol": p.sbProtocol()}, &ex); err != nil {
 			out["error"] = fmt.Sprintf("exporting %s: %v", volumeID, err)
 			return
 		}

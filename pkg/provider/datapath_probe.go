@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -55,20 +54,11 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 		return rep
 	}
 
-	// iscsi-pvc pattern helper.
+	// nvme-pvc pattern helper.
 	pattern := func(attach sbAttach, mode string) (string, error) {
-		portal := attach.Address
-		if attach.Port != 0 {
-			portal = fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-		}
-		out, err := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
-			"--url", p.deps.Config.RouterOS.RESTURL,
-			"--user", p.deps.Config.RouterOS.User,
-			"--password", p.deps.Config.RouterOS.Password,
-			"--portal", portal,
-			"pattern", sbTargetName(attach), "--mode", mode,
-			"--lba", "8192", "--count", "64").CombinedOutput()
-		txt := strings.TrimSpace(string(out))
+		out, err := p.runVolumeTool(ctx, attach, "pattern",
+			"--mode", mode, "--lba", "8192", "--count", "64")
+		txt := strings.TrimSpace(out)
 		for _, l := range strings.Split(txt, "\n") {
 			if strings.HasPrefix(l, "wrote") || strings.HasPrefix(l, "checked") {
 				txt = l
@@ -83,7 +73,7 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 	// ── A volume, exported over iSCSI ──────────────────────────────────
 	var created sbCreateVolumeResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", map[string]any{
-		"name": "datapath-probe", "size_bytes": 512 * 1024 * 1024, "export": true, "protocol": "iscsi",
+		"name": "datapath-probe", "size_bytes": 512 * 1024 * 1024, "export": true, "protocol": p.sbProtocol(),
 	}, &created); err != nil {
 		rep.Error = fmt.Sprintf("creating volume: %v", err)
 		return rep
@@ -120,7 +110,7 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 	}
 	var re sbExport
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/exports",
-		map[string]any{"volume_id": created.ID, "protocol": "iscsi"}, &re); err != nil {
+		map[string]any{"volume_id": created.ID, "protocol": p.sbProtocol()}, &re); err != nil {
 		rep.AfterDetach = "re-export failed: " + err.Error()
 	} else {
 		a2 := re.Attach
@@ -194,7 +184,7 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 
 	var clone sbCreateVolumeResp
 	if err := sb.do(ctx, http.MethodPost, "/mk/v1/volumes", map[string]any{
-		"name": "datapath-clone", "from_template": tmpl.Template.Name, "export": true, "protocol": "iscsi",
+		"name": "datapath-clone", "from_template": tmpl.Template.Name, "export": true, "protocol": p.sbProtocol(),
 	}, &clone); err != nil {
 		rep.FromClone = "clone failed: " + err.Error()
 		return rep

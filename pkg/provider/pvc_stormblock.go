@@ -548,3 +548,15 @@ func sbTargetName(a sbAttach) string {
 	}
 	return a.IQN
 }
+
+// sbProtocol is the transport mkube asks stormblockmk to export with.
+//
+// Probes and the PVC path both go through this rather than naming a
+// transport inline, so there is exactly one place that decides and no way
+// for a helper to quietly disagree with the configured data path.
+func (p *MicroKubeProvider) sbProtocol() string {
+	if t := p.deps.Config.Storage.Stormblock.Transport; t != "" {
+		return t
+	}
+	return "nvme-tcp"
+}
