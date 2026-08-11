@@ -202,17 +202,19 @@ storage:
   stormblock:
     endpoint: "http://192.168.200.21:9090"
     tokenSecret: "gt/stormblock-token"   # key: token
-    # iSCSI, deliberately — NOT nvme-tcp.
+    # NVMe-TCP end to end. RouterOS 7.22.2 attaches, probes and MOUNTS an
+    # NVMe-TCP volume — verified 2026-08-11 by /api/v1/probes/nvmemount, which
+    # mounts one volume over both transports in a single run:
     #
-    # RouterOS 7.22.2 ATTACHES an NVMe-TCP target correctly (verified end to
-    # end: nqn…@:3304 → slot=nvme-tcp1) but never probes a filesystem on it:
-    # after a verified-good ext4 format the disk row still reads `fs=-` and
-    # nothing mounts, while the same volume over iSCSI mounts at /iscsiN.
-    # Anything mkube has to MOUNT — PVCs, CoW clones — therefore stays on
-    # iSCSI. NVMe is the right transport for consumers that mount the device
-    # themselves (a bare-metal host, or a container once device passthrough
-    # is wired up), not for the router's own mount path.
-    transport: "iscsi"
+    #   iscsi     fs=ext4 mount=iscsi16     block-device=true
+    #   nvme-tcp  fs=ext4 mount=nvme-tcp1   block-device=true  state=live
+    #
+    # An earlier reading of "RouterOS cannot mount NVMe" was a bug on this
+    # side: the per-volume port was dropped from the attach, so the initiator
+    # went to its built-in default of 4420 and asked there for an NQN only the
+    # volume's own port serves. That left state=I/O error with zero reads,
+    # which looks identical to an initiator that lacks a block layer.
+    transport: "nvme-tcp"
     # Golden CoW templates are built by stormblock-registry, not by mkube.
     #
     # mkube cannot build them on this platform: RouterOS writes container
@@ -227,7 +229,11 @@ storage:
     # construction. In this mode mkube waits for the sealed
     # img-<digest12> template and clones it.
     goldenSource: "sbregistry"
-    # template: "ext4-1g"   # clone a pre-formatted fs instead of mkfs per PVC
+    # Every stormblock PVC is a CoW CLONE of this template. mkube does not
+    # format: a raw volume comes back with no filesystem (verified live
+    # 2026-08-11 — fs=- on a freshly created volume), so the template is what
+    # gives a PVC a filesystem at all. The registry builds and seals it.
+    # template: "ext4-1g"
   selfRootDir: raid1/images/kube.gt.lo
   iscsiPortalIP: "192.168.10.1"
   persistentMounts:

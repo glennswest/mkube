@@ -330,10 +330,10 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 
 	// Ask stormblockmk for a thin volume, exported and ready to attach.
 	//
-	// `from_template` is the mkfs-once path: the volume is a CoW clone of a
-	// pre-formatted filesystem, so there is nothing to format here and the
-	// clone costs metadata rather than a full format. Without a template
-	// configured we fall back to formatting below.
+	// `from_template` is how a PVC gets a filesystem at all: the volume is a
+	// CoW clone of a template the registry built and formatted. A raw volume
+	// comes back empty (verified live 2026-08-11: fs=- on a freshly created
+	// volume), so without a template there is nothing for RouterOS to mount.
 	name := fmt.Sprintf("pvc-%s-%s", pvc.Namespace, pvc.Name)
 	reqBody := map[string]any{
 		"name":       name,
@@ -344,11 +344,9 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	if template != "" {
 		reqBody["from_template"] = template
 	}
-	// Requested transport ("iscsi" | "nvme-tcp"). stormblockmk currently
-	// hardcodes iSCSI and ignores unknown fields, so this is forward-safe —
-	// the spec asking stormblockmk to honor it lives in that project's
-	// enhancements/. mkube already attaches whatever protocol the export
-	// reports, so no further change is needed here when it lands.
+	// Transport for the export. stormblockmk honors this from v0.3.0; mkube
+	// attaches whatever protocol the export actually reports, so a target
+	// that ignored the field would still be attached correctly.
 	if t := p.deps.Config.Storage.Stormblock.Transport; t != "" {
 		reqBody["protocol"] = t
 	}
@@ -400,37 +398,24 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	}
 
 
+	// mkube does not format. A stormblock PVC is a CoW clone of a template
+	// the registry built and formatted, so the filesystem exists before the
+	// volume does and a clone costs metadata rather than a full mkfs.
+	//
+	// This used to fall back to formatting a raw volume in place, which also
+	// needed a detach/re-attach afterwards because RouterOS probes a
+	// consumed target's filesystem at ATTACH time only. Both are gone: with
+	// the clone arriving pre-formatted there is nothing to write and nothing
+	// to re-probe.
 	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 	if err != nil {
-		// A fresh volume from a template already carries a filesystem; a raw
-		// one does not, and RouterOS will not mount what it cannot recognise.
+		rollback()
 		if template == "" {
-			log.Infow("formatting stormblock volume as ext4", "diskID", diskID)
-			if fErr := p.formatStormblockVolume(ctx, sb, created.ID, attach, name); fErr != nil {
-				rollback()
-				return "", fmt.Errorf("formatting stormblock volume: %w", fErr)
-			}
-			// RouterOS probes a consumed target's filesystem at ATTACH time
-			// only — formatting after attach changes content it never
-			// re-reads, so the mount wait times out no matter how long
-			// (observed live: format verified OK, no mount in 120s). Bounce
-			// the disk so it probes the fresh ext4 — the equivalent of the
-			// iscsi class's export-disable kick.
-			log.Infow("re-attaching stormblock disk to trigger filesystem probe", "diskID", diskID)
-			if rmErr := rosClient.RemoveDisk(ctx, diskID); rmErr != nil {
-				log.Warnw("could not detach stormblock disk for re-probe", "diskID", diskID, "error", rmErr)
-			}
-			diskID, err = p.attachStormblockDisk(ctx, attach)
-			if err != nil {
-				rollback()
-				return "", fmt.Errorf("re-attaching stormblock disk after format: %w", err)
-			}
-			mountPoint, err = p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
+			return "", fmt.Errorf("stormblock volume %s has no filesystem and none was requested: "+
+				"PVCs are clones of a pre-formatted template, so set storage.stormblock.template "+
+				"to a template the registry has sealed (%w)", created.ID, err)
 		}
-		if err != nil {
-			rollback()
-			return "", fmt.Errorf("waiting for stormblock disk to mount: %w", err)
-		}
+		return "", fmt.Errorf("waiting for stormblock disk to mount: %w", err)
 	}
 
 	disk, err := rosClient.GetISCSIDisk(ctx, diskID)
