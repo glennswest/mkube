@@ -2263,6 +2263,30 @@ func (c *Client) EjectDisk(ctx context.Context, id string) error {
 	return err
 }
 
+// FormatDrive asks RouterOS to lay down a filesystem on a disk itself.
+//
+// This is the strongest available test of whether the initiator can really
+// use a transport: RouterOS can only format what it can write to and then
+// re-read, and it mounts a drive it has just formatted. A network disk that
+// formats and mounts is usable for PVCs; one that attaches but will not
+// format is a device node and nothing more.
+func (c *Client) FormatDrive(ctx context.Context, id, fs, label string) error {
+	params := map[string]string{".id": id, "file-system": fs}
+	if label != "" {
+		params["label"] = label
+	}
+	err := c.restPOST(ctx, "/disk/format-drive", params, nil)
+	if err == nil {
+		return nil
+	}
+	delete(params, ".id")
+	params["numbers"] = id
+	if err2 := c.restPOST(ctx, "/disk/format-drive", params, nil); err2 == nil {
+		return nil
+	}
+	return err
+}
+
 // DisableDisk disables a disk entry. RouterOS refuses to eject a network
 // disk ("can eject only hardware disks, disable or remove it instead"), and
 // remove force-detaches without flushing — so disable is the remaining
