@@ -197,9 +197,9 @@ func (p *MicroKubeProvider) RunNVMeMountProbe(ctx context.Context) *NVMeMountRep
 	defer dropVolume(v1)
 	step("control volume %s created (%d MiB)", v1, size/1024/1024)
 
-	iscsiEx, err := addExport(v1, "iscsi")
+	iscsiEx, err := addExport(v1, p.sbProtocol())
 	if err != nil {
-		rep.Error = "iscsi export: " + err.Error()
+		rep.Error = "export: " + err.Error()
 		return rep
 	}
 	if err := p.formatStormblockVolume(ctx, sb, v1, iscsiEx.Attach, "nvmeprobe"); err != nil {
@@ -207,23 +207,23 @@ func (p *MicroKubeProvider) RunNVMeMountProbe(ctx context.Context) *NVMeMountRep
 		rep.Error = "formatting control volume: " + err.Error()
 		return rep
 	}
-	step("control volume formatted ext4 over iscsi")
+	step("control volume formatted ext4 over %s", p.sbProtocol())
 
-	controlLeg, controlDisk := runLeg("CONTROL iscsi pre-formatted", iscsiEx, false)
+	controlLeg, controlDisk := runLeg("pre-formatted, freshly exported", iscsiEx, false)
 	rep.Legs = append(rep.Legs, controlLeg)
 	detach(controlDisk)
 	dropExport(iscsiEx.ExportID)
-	step("control leg torn down (disk detached, iscsi export withdrawn)")
+	step("first leg torn down (disk detached, export withdrawn)")
 
 	// --- leg 2: same volume, same filesystem, NVMe instead -----------------
 
-	nvmeEx, err := addExport(v1, "nvme-tcp")
+	nvmeEx, err := addExport(v1, p.sbProtocol())
 	if err != nil {
 		rep.Legs = append(rep.Legs, nvmeMountLeg{
 			Name: "NVMe pre-formatted", Transport: "nvme-tcp",
 			Error: "nvme-tcp export: " + err.Error()})
 	} else {
-		preLeg, preDisk := runLeg("NVMe pre-formatted (same volume)", nvmeEx, false)
+		preLeg, preDisk := runLeg("re-exported and re-attached (same volume)", nvmeEx, false)
 		rep.Legs = append(rep.Legs, preLeg)
 		detach(preDisk)
 		dropExport(nvmeEx.ExportID)
@@ -236,7 +236,7 @@ func (p *MicroKubeProvider) RunNVMeMountProbe(ctx context.Context) *NVMeMountRep
 		rep.Error = "creating format-leg volume: " + err.Error()
 	} else {
 		defer dropVolume(v2)
-		fmtEx, err := addExport(v2, "nvme-tcp")
+		fmtEx, err := addExport(v2, p.sbProtocol())
 		if err != nil {
 			rep.Legs = append(rep.Legs, nvmeMountLeg{
 				Name: "NVMe RouterOS-formatted", Transport: "nvme-tcp",
@@ -262,7 +262,7 @@ func (p *MicroKubeProvider) RunNVMeMountProbe(ctx context.Context) *NVMeMountRep
 	v3, err := newVolume("nvmemount-probe-v3")
 	if err == nil {
 		defer dropVolume(v3)
-		if diagEx, err := addExport(v3, "nvme-tcp"); err == nil {
+		if diagEx, err := addExport(v3, p.sbProtocol()); err == nil {
 			defer dropExport(diagEx.ExportID)
 			diskID, err := p.attachStormblockDisk(ctx, diagEx.Attach)
 			if err == nil {
