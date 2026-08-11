@@ -311,9 +311,15 @@ type StormblockConfig struct {
 	TokenFile      string `yaml:"tokenFile,omitempty"`
 	Token          string `yaml:"token,omitempty"`
 
-	// Filesystem template to clone new volumes from ("mkfs once"). When set,
-	// a PVC is a CoW clone of a pre-formatted filesystem and no format runs
-	// per claim. Empty means format each new volume.
+	// Filesystem template to clone new volumes from, pinned by name.
+	//
+	// Leave EMPTY in normal operation: mkube then picks the smallest ready
+	// template from the size ladder stormblockmk publishes (pvc-ext4-1m …
+	// pvc-ext4-10240m) that fits each claim. Set this only to force one
+	// specific template for every claim regardless of size.
+	//
+	// Either way no format runs — a PVC is a CoW clone of a pre-formatted
+	// filesystem.
 	Template string `yaml:"template,omitempty"`
 
 	// Preferred transport for attaching volumes: "iscsi" (default) or

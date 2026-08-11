@@ -229,11 +229,15 @@ storage:
     # construction. In this mode mkube waits for the sealed
     # img-<digest12> template and clones it.
     goldenSource: "sbregistry"
-    # Every stormblock PVC is a CoW CLONE of this template. mkube does not
-    # format: a raw volume comes back with no filesystem (verified live
-    # 2026-08-11 — fs=- on a freshly created volume), so the template is what
-    # gives a PVC a filesystem at all. The registry builds and seals it.
-    # template: "ext4-1g"
+    # Every stormblock PVC is a CoW CLONE of a pre-formatted, empty template.
+    # mkube does not format: a raw volume comes back with no filesystem
+    # (verified live 2026-08-11 — fs=- on a freshly created volume).
+    #
+    # Left unset ON PURPOSE. stormblockmk publishes a size ladder
+    # (pvc-ext4-1m … pvc-ext4-10240m) and mkube picks the smallest ready
+    # template that fits each claim, which one pinned name cannot do. Set
+    # `template:` only to force a single template for every claim.
+    # template: "pvc-ext4-256m"
   selfRootDir: raid1/images/kube.gt.lo
   iscsiPortalIP: "192.168.10.1"
   persistentMounts:

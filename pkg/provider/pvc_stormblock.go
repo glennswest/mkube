@@ -340,10 +340,14 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		"size_bytes": sizeBytes,
 		"export":     true,
 	}
-	template := p.deps.Config.Storage.Stormblock.Template
-	if template != "" {
-		reqBody["from_template"] = template
+	// Which pre-formatted template to clone. Chosen per claim from the size
+	// ladder stormblockmk publishes, because one configured name cannot
+	// serve claims of different sizes.
+	template, err := p.pickStormblockTemplate(ctx, sb, sizeBytes)
+	if err != nil {
+		return "", err
 	}
+	reqBody["from_template"] = template
 	// Transport for the export. stormblockmk honors this from v0.3.0; mkube
 	// attaches whatever protocol the export actually reports, so a target
 	// that ignored the field would still be attached correctly.
@@ -410,12 +414,8 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
 	if err != nil {
 		rollback()
-		if template == "" {
-			return "", fmt.Errorf("stormblock volume %s has no filesystem and none was requested: "+
-				"PVCs are clones of a pre-formatted template, so set storage.stormblock.template "+
-				"to a template the registry has sealed (%w)", created.ID, err)
-		}
-		return "", fmt.Errorf("waiting for stormblock disk to mount: %w", err)
+		return "", fmt.Errorf("stormblock volume %s (clone of template %s) did not mount: %w",
+			created.ID, template, err)
 	}
 
 	disk, err := rosClient.GetISCSIDisk(ctx, diskID)
