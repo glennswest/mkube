@@ -28,6 +28,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -225,6 +226,39 @@ type Updater struct {
 	kickPoll chan struct{}     // SSE-triggered immediate poll
 	trashCh  chan string       // root-dirs swapped aside (".trash-<uuid>"), pending lazy deletion
 	swapFails map[string]int   // "repo@digest" → consecutive failed swap attempts (circuit-breaker)
+
+	// Containers this updater is DELIBERATELY replacing right now.
+	//
+	// A swap necessarily stops and removes the container, and the socket
+	// watchdog polls every 3s — so without this it sees "container missing",
+	// calls that a fault, and races the swap with a second bootstrap. Both
+	// then try /container/add and the loser dies on "root-dir overlap",
+	// which is what turned every deploy into a multi-minute outage.
+	swappingMu sync.Mutex
+	swapping   map[string]bool
+}
+
+// beginSwap marks a container as deliberately being replaced and returns the
+// function that clears the mark.
+func (u *Updater) beginSwap(name string) func() {
+	u.swappingMu.Lock()
+	if u.swapping == nil {
+		u.swapping = map[string]bool{}
+	}
+	u.swapping[name] = true
+	u.swappingMu.Unlock()
+	return func() {
+		u.swappingMu.Lock()
+		delete(u.swapping, name)
+		u.swappingMu.Unlock()
+	}
+}
+
+// isSwapping reports whether a planned replacement is in flight.
+func (u *Updater) isSwapping(name string) bool {
+	u.swappingMu.Lock()
+	defer u.swappingMu.Unlock()
+	return u.swapping[name]
 }
 
 func (u *Updater) run(ctx context.Context) {
@@ -406,6 +440,12 @@ func (u *Updater) checkAndRestart(ctx context.Context, name string) {
 		// Container doesn't exist — if it's the bootstrap container (mkube),
 		// re-bootstrap it instead of silently skipping.
 		if u.cfg.Bootstrap.Enabled && name == u.cfg.Bootstrap.Container.Name {
+			if u.isSwapping(name) {
+				// A planned replacement is mid-flight; it will create the
+				// container itself.
+				u.log.Debugw("watchdog: container absent during a planned swap, leaving it alone", "container", name)
+				return
+			}
 			u.log.Warnw("watchdog: bootstrap container missing, re-bootstrapping", "container", name)
 			if err := u.bootstrap(ctx); err != nil {
 				u.log.Errorw("watchdog: re-bootstrap failed", "container", name, "error", err)
@@ -918,6 +958,11 @@ func trashParentDir(p string) string {
 
 func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) error {
 	log := u.log.With("container", name, "image", imageRef)
+
+	// Hold the swap mark for the whole replace: between the remove and the
+	// create this container is *supposed* to be absent, and the watchdog
+	// must not read that as a crash.
+	defer u.beginSwap(name)()
 
 	// Step 1: Pre-pull tarball WHILE old container is still running.
 	// This is the key improvement — the registry is still up during this step.
