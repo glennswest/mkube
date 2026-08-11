@@ -500,10 +500,19 @@ func (p *MicroKubeProvider) attachStormblockDisk(ctx context.Context, a sbAttach
 		return "", fmt.Errorf("no RouterOS client")
 	}
 	transport := sbTransport(a)
-	// iSCSI portals are addressed host:port; the NVMe initiator takes the
-	// address alone and finds the subsystem by NQN.
+	// Both transports are addressed host:port. stormblockmk gives every
+	// export its OWN port — the shared portal (3260 iSCSI / 4420 NVMe) is a
+	// discovery endpoint that does not serve per-volume targets — so the
+	// port is not optional on either side.
+	//
+	// Dropping it for NVMe sent the initiator to RouterOS's built-in default
+	// of 4420 and asked there for a per-volume NQN that port never serves.
+	// The attach still "succeeded" (the row appears) and then sat at
+	// `state=I/O error, block-device=false, read-ops=0`, which read exactly
+	// like "RouterOS cannot mount NVMe" and cost a day of chasing the
+	// initiator instead of the address.
 	address := a.Address
-	if transport == "iscsi" && a.Port != 0 {
+	if a.Port != 0 {
 		address = fmt.Sprintf("%s:%d", a.Address, a.Port)
 	}
 	id, err := ros.AttachNetworkDisk(ctx, transport, address, sbTargetName(a))

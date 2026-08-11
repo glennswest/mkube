@@ -1679,8 +1679,10 @@ type FileDisk struct {
 	// Populated for disks that are *consumed* from a remote target rather
 	// than exported by this device (type=iscsi / type=nvme-tcp).
 	ISCSIAddress   string `json:"iscsi-address,omitempty"`
+	ISCSIPort      string `json:"iscsi-port,omitempty"`
 	ISCSIIQN       string `json:"iscsi-iqn,omitempty"`
 	NVMeTCPAddress string `json:"nvme-tcp-address,omitempty"`
+	NVMeTCPPort    string `json:"nvme-tcp-port,omitempty"`
 	NVMeTCPNQN     string `json:"nvme-tcp-nqn,omitempty"`
 	BlockDevice    string `json:"block-device,omitempty"`
 }
@@ -1883,7 +1885,16 @@ func (c *Client) FindNetworkDisk(ctx context.Context, transport, address, target
 	// The device stores the bare host (port is a separate field), so match
 	// on the host part. Target names (IQN/NQN) are per-volume unique, which
 	// carries the discrimination when several targets share one host.
-	host, _ := splitDiskAddress(address)
+	//
+	// The port is part of identity, not decoration: stormblockmk serves each
+	// export on its own port, so the same NQN reached on a different port is
+	// a different (and generally broken) attachment. Reusing one would hand
+	// back a disk stuck at `state=I/O error` and silently defeat a corrected
+	// attach, so only treat a row as ours when the port agrees too.
+	host, port := splitDiskAddress(address)
+	samePort := func(have string) bool {
+		return port == "" || have == "" || have == port
+	}
 	for i := range disks {
 		d := &disks[i]
 		if d.Type != transport {
@@ -1891,11 +1902,11 @@ func (c *Client) FindNetworkDisk(ctx context.Context, transport, address, target
 		}
 		switch transport {
 		case "nvme-tcp":
-			if d.NVMeTCPNQN == target && (host == "" || d.NVMeTCPAddress == host) {
+			if d.NVMeTCPNQN == target && (host == "" || d.NVMeTCPAddress == host) && samePort(d.NVMeTCPPort) {
 				return d, nil
 			}
 		case "iscsi":
-			if d.ISCSIIQN == target && (host == "" || d.ISCSIAddress == host) {
+			if d.ISCSIIQN == target && (host == "" || d.ISCSIAddress == host) && samePort(d.ISCSIPort) {
 				return d, nil
 			}
 		}
