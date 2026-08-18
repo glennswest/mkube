@@ -54,6 +54,17 @@ const (
 	// happily keep the broken one forever.
 	cowStubDevicePath = "raid1/cache/cow-generic-stub-v2.tar"
 	cowPayloadDst     = "/payload"
+	// The image lives in a subdirectory of the golden, not at its root.
+	//
+	// This is RouterOS's constraint, not a preference. A container mount
+	// whose src is a disk's own mount-point does not present that disk's
+	// contents — the entrypoint then dies with
+	// `execvpe /payload/...: No such file or directory` while the disk is
+	// mounted and full. Mounting a subdirectory of it works; the CoW probe
+	// runs a binary out of <mount>/rootfs every time it is run. And `dst=/`
+	// is rejected outright ("dst cannot be root"), so the image cannot simply
+	// become the container's root either.
+	cowImageSubdir = "/rootfs"
 
 	// goldenSource values.
 	goldenSourceMkube      = "mkube"
@@ -436,12 +447,7 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 	}
 	defer func() { _ = p.deps.NetworkMgr.ReleaseInterface(ctx, seederVeth) }()
 
-	// Extract at the volume root, not into a rootfs/ subdirectory: a golden's
-	// filesystem IS the image's filesystem, so / is /. That is what the
-	// integration contract asks for, it is what sbregistry writes, and it is
-	// what a Linux root looks like anywhere else. The extra level only ever
-	// existed because a docker-save tarball was unpacked into a directory.
-	rootfs := strings.TrimPrefix(mountPoint, "/")
+	rootfs := strings.TrimPrefix(mountPoint, "/") + cowImageSubdir
 	devTarball := strings.TrimPrefix(tarballPath, "/")
 	spec := routeros.ContainerSpec{
 		Name:        seederName,
@@ -603,7 +609,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		if attach, ok := p.findCoWVolumeAttach(ctx, sb, volID); ok {
 			if diskID, aerr := p.attachStormblockDisk(ctx, attach); aerr == nil {
 				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second); merr == nil {
-					return mp, volID, nil
+					return mp + cowImageSubdir, volID, nil
 				}
 				_ = ros.RemoveDisk(ctx, diskID)
 			}
@@ -664,7 +670,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 	// while) and a full /file print costs minutes — the diagnostic check
 	// this replaced both lied and stalled every provision. The container
 	// start is the real verification.
-	return mountPoint, created.ID, nil
+	return mountPoint + cowImageSubdir, created.ID, nil
 }
 
 // findCoWVolumeAttach locates an existing volume by id and returns its
