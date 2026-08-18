@@ -623,20 +623,19 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		}
 		return "", "", fmt.Errorf("cow volume %s: no attach parameters", created.ID)
 	}
-	// A clone is byte-identical to its golden, UUID and label included.
-	// Give it its own identity BEFORE RouterOS ever sees it, so no two
-	// mounted filesystems on this host claim to be the same one.
-	shortID := created.ID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
-	// New UUID *and* a clean flag: a clone inherits both from its golden, so
-	// one that was cloned while the golden carried a mount's dirty flag would
-	// start life looking unclean through no fault of its own. The clone is a
-	// snapshot of quiesced data, so state=1 is the truth.
-	if rErr := p.reidentifyStormblockVolume(ctx, sb, created.ID, attach, "cow-"+shortID, true); rErr != nil {
-		p.deps.Logger.Warnw("could not re-identify the cow clone", "volume", created.ID, "error", rErr)
-	}
+	// NO re-identify here. The engine stamps every clone with a fresh
+	// filesystem UUID at clone time (stamp_uuid defaults on, and it verifies
+	// the result), so a clone already has its own identity before anything
+	// sees it.
+	//
+	// Doing it again from this side actively broke the mount. Rewriting the
+	// UUID invalidates every checksum seeded from it, and the volume tool
+	// writes the superblock without recomputing any of them — it has no
+	// checksum code at all — while these goldens are formatted with
+	// metadata_csum. The result is a filesystem RouterOS probes as ext4 and
+	// then refuses to mount: `fs=ext4` with an empty mount-point, for the
+	// full 120s wait, on every CoW pod. A clone of the same golden attached
+	// by hand, without this step, mounts in under ten seconds.
 
 	diskID, err := p.attachStormblockDisk(ctx, attach)
 	if err != nil {
