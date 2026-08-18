@@ -48,7 +48,11 @@ const (
 	annCoWVolumeID = "vkube.io/cow-volume-id"
 	annCoWTemplate = "vkube.io/cow-template"
 
-	cowStubDevicePath = "raid1/cache/cow-generic-stub.tar"
+	// Name carries the stub's shape. The first version had no payload/
+	// directory, so a cached copy of it would still break every CoW pod —
+	// ensureGenericStub skips the upload when the file exists, and would
+	// happily keep the broken one forever.
+	cowStubDevicePath = "raid1/cache/cow-generic-stub-v2.tar"
 	cowPayloadDst     = "/payload"
 
 	// goldenSource values.

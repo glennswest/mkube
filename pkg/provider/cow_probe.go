@@ -486,6 +486,16 @@ func cowStubTar() []byte {
 	content := []byte("cow-probe\n")
 	_ = lw.WriteHeader(&tar.Header{Name: "cow-probe-placeholder", Mode: 0o644, Size: int64(len(content))})
 	_, _ = lw.Write(content)
+	// The mount target must already exist. RouterOS does not create a
+	// container mount's destination the way docker does, so without this
+	// directory /payload is simply absent and the entrypoint dies with
+	// `execvpe /payload/bin/sh: No such file or directory` — with the clone
+	// mounted, healthy, and mapped correctly the whole time.
+	_ = lw.WriteHeader(&tar.Header{
+		Name:     strings.TrimPrefix(cowPayloadDst, "/") + "/",
+		Mode:     0o755,
+		Typeflag: tar.TypeDir,
+	})
 	_ = lw.Close()
 
 	layerSum := sha256.Sum256(layer.Bytes())
