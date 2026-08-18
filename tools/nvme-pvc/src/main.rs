@@ -1,11 +1,18 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use iscsi_pvc::iscsi::IscsiInitiator;
-use iscsi_pvc::routeros::RouterOsClient;
+use nvme_pvc::nvme::NvmeInitiator;
+use nvme_pvc::routeros::RouterOsClient;
 use std::net::SocketAddr;
 
+/// NQN this tool presents as. Stable across runs so a controller sees one
+/// host reconnecting rather than a new host each time.
+const HOST_NQN: &str = "nqn.2024-01.io.vkube:mkube-tool";
+
 #[derive(Parser)]
-#[command(name = "iscsi-pvc", about = "iSCSI PVC management tool for RouterOS")]
+#[command(
+    name = "nvme-pvc",
+    about = "NVMe/TCP volume tool: format, re-identify, flush and verify stormblock volumes"
+)]
 struct Cli {
     /// RouterOS REST API base URL (e.g. http://192.168.200.1)
     #[arg(long, env = "ROUTEROS_URL", default_value = "http://192.168.200.1")]
@@ -19,24 +26,22 @@ struct Cli {
     #[arg(long, env = "ROUTEROS_PASSWORD")]
     password: String,
 
-    /// iSCSI portal IP or IP:port (for initiator connections; default port 3260)
-    #[arg(long, env = "ISCSI_PORTAL", default_value = "192.168.200.1")]
-    portal: String,
+    /// NVMe/TCP target as IP or IP:port. stormblockmk gives every export its
+    /// OWN port; 4420 is the shared discovery endpoint and does NOT serve
+    /// per-volume subsystems, so pass the export's port explicitly.
+    #[arg(long, env = "NVME_TARGET", default_value = "192.168.200.21")]
+    target: String,
 
     #[command(subcommand)]
     command: Commands,
 }
 
-
-/// Parse a portal as "ip" (default port 3260) or "ip:port" — per-volume
-/// stormblockmk exports listen on non-default ports.
-
 /// Read the ext4 superblock area (file bytes 1024..1024+len) regardless of
-/// the device block size, returning the buffer and the in-buffer offset of
-/// byte 1024. Hardcoding "LBA 2" assumed 512-byte sectors and read the wrong
+/// the namespace block size, returning the buffer and the in-buffer offset of
+/// byte 1024. Hardcoding "LBA 2" assumes 512-byte sectors and reads the wrong
 /// place on 4096-byte devices (stormblockmk volumes).
 async fn read_superblock(
-    session: &mut IscsiInitiator,
+    session: &mut NvmeInitiator,
     block_size: u32,
 ) -> anyhow::Result<(Vec<u8>, usize)> {
     let bs = block_size.max(1) as u64;
@@ -47,12 +52,17 @@ async fn read_superblock(
     Ok((data, skip))
 }
 
-fn portal_addr(portal: &str) -> Result<SocketAddr, std::net::AddrParseError> {
-    if portal.contains(':') {
-        portal.parse()
+fn target_addr(target: &str) -> Result<SocketAddr, std::net::AddrParseError> {
+    if target.contains(':') {
+        target.parse()
     } else {
-        format!("{portal}:3260").parse()
+        format!("{target}:4420").parse()
     }
+}
+
+async fn open(target: &str, nqn: &str) -> Result<NvmeInitiator> {
+    let addr = target_addr(target)?;
+    Ok(NvmeInitiator::connect(addr, nqn, HOST_NQN).await?)
 }
 
 #[derive(Subcommand)]
@@ -60,36 +70,12 @@ enum Commands {
     /// Test connectivity to RouterOS
     Ping,
 
-    /// List all file-backed disks
-    ListDisks,
-
-    /// Create an iSCSI-backed PVC (file + disk + iSCSI export)
-    Create {
-        /// PVC name
-        name: String,
-        /// Size (e.g. "1G", "500M")
-        #[arg(long, default_value = "1G")]
-        size: String,
-        /// Storage pool mount point
-        #[arg(long, default_value = "raid1")]
-        pool: String,
-    },
-
-    /// Delete an iSCSI-backed PVC
-    Delete {
-        /// PVC name
-        name: String,
-        /// Storage pool mount point
-        #[arg(long, default_value = "raid1")]
-        pool: String,
-    },
-
     /// Write a known pattern at a block offset (each block stamped with its
     /// own LBA), then optionally verify it. The point is to answer "are we
     /// actually storing bytes?" without trusting allocation counters.
     Pattern {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
         /// write | check
         #[arg(long, default_value = "check")]
         mode: String,
@@ -101,25 +87,23 @@ enum Commands {
         count: u32,
     },
 
-    /// Tell the target to commit its cache (SCSI SYNCHRONIZE CACHE)
+    /// Tell the controller to commit its cache (NVMe FLUSH)
     Flush {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
     },
 
     /// Give a filesystem a fresh UUID (and optionally label) — a CoW clone
     /// inherits its golden's identity byte for byte, and duplicate ext4
     /// UUIDs on one host confuse mount-by-UUID and blkid
     Reid {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
         /// New filesystem label
         #[arg(long)]
         label: Option<String>,
         /// Also restore the "cleanly unmounted" flag (state=1). Only valid
-        /// once writes have quiesced: RouterOS force-detaches without
-        /// unmounting, so a golden it seeded is left flagged dirty and
-        /// stormblockmk refuses to seal it.
+        /// once writes have quiesced.
         #[arg(long)]
         clean: bool,
     },
@@ -127,30 +111,23 @@ enum Commands {
     /// Dump ext4 superblock fields (for comparing our format against one
     /// RouterOS wrote itself — signatures and layouts must match)
     Sb {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
     },
 
-    /// Connect to iSCSI target and read capacity
+    /// Connect to the subsystem and report namespace geometry
     Probe {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
     },
 
-    /// Format an iSCSI target with ext4
+    /// Format a namespace with ext4
     Format {
-        /// Target IQN
-        iqn: String,
+        /// Subsystem NQN
+        nqn: String,
         /// Volume label
         #[arg(long, default_value = "pvc-data")]
         label: String,
-    },
-
-    /// Full lifecycle test: create → export → connect → format → verify → cleanup
-    Test {
-        /// Test PVC name
-        #[arg(default_value = "iscsi-pvc-test")]
-        name: String,
     },
 }
 
@@ -164,10 +141,10 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let ros = RouterOsClient::new(&cli.url, &cli.user, &cli.password)?;
 
     match cli.command {
         Commands::Ping => {
+            let ros = RouterOsClient::new(&cli.url, &cli.user, &cli.password)?;
             let info = ros.system_resource().await?;
             println!("Connected to RouterOS:");
             println!("  Board:   {}", info["board-name"].as_str().unwrap_or("?"));
@@ -177,61 +154,8 @@ async fn main() -> Result<()> {
             println!("  Uptime:  {}", info["uptime"].as_str().unwrap_or("?"));
         }
 
-        Commands::ListDisks => {
-            let disks = ros.list_file_disks().await?;
-            println!("{:<6} {:<60} {:<12} {:<8} {}", "ID", "FILE PATH", "SIZE", "iSCSI", "IQN");
-            println!("{}", "-".repeat(120));
-            for d in &disks {
-                println!(
-                    "{:<6} {:<60} {:<12} {:<8} {}",
-                    d.id,
-                    d.file_path,
-                    d.file_size,
-                    if d.is_iscsi_exported() { "yes" } else { "no" },
-                    d.iscsi_server_iqn,
-                );
-            }
-            println!("\n{} file-backed disks", disks.len());
-        }
-
-        Commands::Create { name, size, pool } => {
-            let file_path = format!("{pool}/volumes/pvc/{name}.raw");
-            println!("Creating PVC: {name}");
-            println!("  File: /{file_path}");
-            println!("  Size: {size}");
-
-            let (disk_id, iqn, port) = ros.create_iscsi_target(&file_path, Some(&size)).await?;
-            println!("  Disk ID: {disk_id}");
-            println!("  IQN: {iqn}");
-            println!("  Portal: {}:{port}", cli.portal);
-            println!("\nPVC created and exported via iSCSI.");
-        }
-
-        Commands::Delete { name, pool } => {
-            let file_path = format!("{pool}/volumes/pvc/{name}.raw");
-            println!("Deleting PVC: {name}");
-
-            let disk = ros
-                .find_disk_by_path(&file_path)
-                .await?;
-
-            match disk {
-                Some(d) => {
-                    ros.delete_iscsi_target(&d.id).await?;
-                    println!("  Removed disk {} ({})", d.id, d.slot);
-                    println!("PVC deleted.");
-                }
-                None => {
-                    println!("No disk found for path: /{file_path}");
-                }
-            }
-        }
-
-        Commands::Pattern { iqn, mode, lba, count } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            let mut session = IscsiInitiator::connect(
-                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            ).await?;
+        Commands::Pattern { nqn, mode, lba, count } => {
+            let mut session = open(&cli.target, &nqn).await?;
             let cap = session.read_capacity().await?;
             let bs = cap.block_size as usize;
             let stamp = |i: u32| -> Vec<u8> {
@@ -269,21 +193,15 @@ async fn main() -> Result<()> {
             session.logout().await?;
         }
 
-        Commands::Flush { iqn } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            let mut session = IscsiInitiator::connect(
-                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            ).await?;
+        Commands::Flush { nqn } => {
+            let mut session = open(&cli.target, &nqn).await?;
             session.synchronize_cache().await?;
-            println!("synchronize cache complete");
+            println!("flush complete");
             session.logout().await?;
         }
 
-        Commands::Reid { iqn, label, clean } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            let mut session = IscsiInitiator::connect(
-                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            ).await?;
+        Commands::Reid { nqn, label, clean } => {
+            let mut session = open(&cli.target, &nqn).await?;
             let cap = session.read_capacity().await?;
             let (mut sb, off) = read_superblock(&mut session, cap.block_size).await?;
             if sb.len() < off + 264 {
@@ -310,6 +228,7 @@ async fn main() -> Result<()> {
             let bs = cap.block_size.max(1) as u64;
             let lba = (1024 / bs) as u32;
             session.write_blocks(lba, &sb[..bs as usize]).await?;
+            session.synchronize_cache().await?;
             print!("new uuid ");
             for b in uuid { print!("{b:02x}"); }
             println!();
@@ -318,11 +237,8 @@ async fn main() -> Result<()> {
             session.logout().await?;
         }
 
-        Commands::Sb { iqn } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            let mut session = IscsiInitiator::connect(
-                portal, &iqn, "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            ).await?;
+        Commands::Sb { nqn } => {
+            let mut session = open(&cli.target, &nqn).await?;
             let cap = session.read_capacity().await?;
             let (sb, off) = read_superblock(&mut session, cap.block_size).await?;
             if sb.len() < off + 264 {
@@ -353,26 +269,18 @@ async fn main() -> Result<()> {
             session.logout().await?;
         }
 
-        Commands::Probe { iqn } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            println!("Connecting to iSCSI target...");
-            println!("  Portal: {portal}");
-            println!("  IQN: {iqn}");
+        Commands::Probe { nqn } => {
+            println!("Connecting to NVMe/TCP subsystem...");
+            println!("  Target: {}", cli.target);
+            println!("  NQN:    {nqn}");
 
-            let mut session = IscsiInitiator::connect(
-                portal,
-                &iqn,
-                "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            )
-            .await?;
-
+            let mut session = open(&cli.target, &nqn).await?;
             session.test_unit_ready().await?;
-            println!("  Unit ready: OK");
+            println!("  Controller ready: OK");
 
             let cap = session.read_capacity().await?;
             println!("  Capacity: {cap}");
 
-            // Read the superblock area (file byte 1024 onward)
             let (sb_data, off) = read_superblock(&mut session, cap.block_size).await?;
             if sb_data.len() >= off + 58 {
                 let has_ext4 = sb_data[off + 56] == 0x53 && sb_data[off + 57] == 0xEF;
@@ -382,33 +290,28 @@ async fn main() -> Result<()> {
             session.logout().await?;
         }
 
-        Commands::Format { iqn, label } => {
-            let portal: SocketAddr = portal_addr(&cli.portal)?;
-            println!("Formatting iSCSI target as ext4...");
-            println!("  Portal: {portal}");
-            println!("  IQN: {iqn}");
-            println!("  Label: {label}");
+        Commands::Format { nqn, label } => {
+            println!("Formatting namespace as ext4...");
+            println!("  Target: {}", cli.target);
+            println!("  NQN:    {nqn}");
+            println!("  Label:  {label}");
 
-            let mut session = IscsiInitiator::connect(
-                portal,
-                &iqn,
-                "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            )
-            .await?;
-
+            let mut session = open(&cli.target, &nqn).await?;
             let cap = session.read_capacity().await?;
             println!("  Capacity: {cap}");
 
-            // Create an iSCSI block writer adapter
             let uuid = generate_uuid();
             {
-                let mut writer = IscsiBlockWriter {
+                let mut writer = NvmeBlockWriter {
                     session: &mut session,
                     block_size: 4096,
                     sector_size: cap.block_size,
                 };
-                iscsi_pvc::ext4::format_ext4(&mut writer, cap.total_bytes, uuid, &label).await?;
+                nvme_pvc::ext4::format_ext4(&mut writer, cap.total_bytes, uuid, &label).await?;
             }
+            // Commit before anyone attaches: an unflushed format is exactly
+            // how a volume ends up mounting clean and empty.
+            session.synchronize_cache().await?;
             println!("  Format complete!");
 
             // Verify: superblock is at file byte 1024, magic 56 bytes in.
@@ -418,95 +321,33 @@ async fn main() -> Result<()> {
                 if magic == 0xEF53 {
                     println!("  Verification: ext4 superblock OK (magic=0xEF53)");
                 } else {
-                    println!("  Verification: unexpected magic 0x{magic:04x}");
+                    bail!("verification failed: unexpected magic 0x{magic:04x}");
                 }
             }
 
             session.logout().await?;
-            println!("\nDone. Target is now ext4-formatted.");
-        }
-
-        Commands::Test { name } => {
-            println!("=== Full iSCSI PVC Lifecycle Test ===\n");
-            let file_path = format!("raid1/volumes/pvc/{name}.raw");
-
-            // Step 1: Create
-            println!("Step 1: Creating PVC...");
-            let (disk_id, iqn, port) = ros.create_iscsi_target(&file_path, Some("100M")).await?;
-            println!("  Disk ID: {disk_id}");
-            println!("  IQN: {iqn}");
-            println!("  Portal: {}:{port}\n", cli.portal);
-
-            // Step 2: Connect and probe
-            println!("Step 2: Connecting iSCSI initiator...");
-            let portal: SocketAddr = format!("{}:{port}", cli.portal).parse()?;
-            let mut session = IscsiInitiator::connect(
-                portal,
-                &iqn,
-                "iqn.2024-01.io.vkube:iscsi-pvc-tool",
-            )
-            .await?;
-
-            session.test_unit_ready().await?;
-            let cap = session.read_capacity().await?;
-            println!("  Capacity: {cap}\n");
-
-            // Step 3: Format
-            println!("Step 3: Formatting as ext4...");
-            let uuid = generate_uuid();
-            {
-                let mut writer = IscsiBlockWriter {
-                    session: &mut session,
-                    block_size: 4096,
-                    sector_size: cap.block_size,
-                };
-                iscsi_pvc::ext4::format_ext4(&mut writer, cap.total_bytes, uuid, "pvc-test").await?;
-            }
-            println!("  Format complete!\n");
-
-            // Step 4: Verify — superblock at file byte 1024, magic at 1080 = LBA 2 offset 56
-            println!("Step 4: Verifying...");
-            let (sb_data, off) = read_superblock(&mut session, cap.block_size).await?;
-            if sb_data.len() >= off + 58 {
-                let magic = u16::from_le_bytes([sb_data[off + 56], sb_data[off + 57]]);
-                if magic == 0xEF53 {
-                    println!("  ext4 superblock: OK");
-                } else {
-                    bail!("superblock verification failed: magic=0x{magic:04x}");
-                }
-            }
-
-            // Step 5: Logout
-            println!("\nStep 5: Disconnecting...");
-            session.logout().await?;
-
-            // Step 6: Cleanup
-            println!("Step 6: Cleaning up...");
-            ros.delete_iscsi_target(&disk_id).await?;
-            println!("  PVC deleted.\n");
-
-            println!("=== Test PASSED ===");
+            println!("\nDone. Namespace is now ext4-formatted.");
         }
     }
 
     Ok(())
 }
 
-/// Adapter to write 4K ext4 blocks via iSCSI SCSI WRITE(10).
-struct IscsiBlockWriter<'a> {
-    session: &'a mut IscsiInitiator,
+/// Adapter to write 4K ext4 blocks via NVMe WRITE.
+struct NvmeBlockWriter<'a> {
+    session: &'a mut NvmeInitiator,
     block_size: u32,
     sector_size: u32,
 }
 
 #[async_trait::async_trait]
-impl iscsi_pvc::ext4::BlockWriter for IscsiBlockWriter<'_> {
+impl nvme_pvc::ext4::BlockWriter for NvmeBlockWriter<'_> {
     async fn write_block(&mut self, block_num: u64, data: &[u8]) -> Result<()> {
-        // Convert ext4 block number to iSCSI sector LBA
-        let sectors_per_block = self.block_size / self.sector_size;
+        // Convert an ext4 block number to a namespace LBA.
+        let sectors_per_block = (self.block_size / self.sector_size).max(1);
         let lba = (block_num * sectors_per_block as u64) as u32;
 
-        // Pad data to exact block size if needed
+        // Pad to exactly one ext4 block if the caller passed less.
         let mut buf = vec![0u8; self.block_size as usize];
         let copy_len = data.len().min(buf.len());
         buf[..copy_len].copy_from_slice(&data[..copy_len]);
@@ -539,4 +380,3 @@ fn generate_uuid() -> [u8; 16] {
     uuid[8] = (uuid[8] & 0x3F) | 0x80; // RFC 4122 variant
     uuid
 }
-

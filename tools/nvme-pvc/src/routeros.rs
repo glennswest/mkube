@@ -1,4 +1,4 @@
-//! RouterOS REST API client for disk and iSCSI management.
+//! RouterOS REST API client for disk management.
 
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
@@ -35,19 +35,9 @@ pub struct Disk {
     pub mount_point: String,
     #[serde(rename = "mount-filesystem", default)]
     pub mount_filesystem: String,
-    #[serde(rename = "iscsi-export", default)]
-    pub iscsi_export: String,
-    #[serde(rename = "iscsi-server-port", default)]
-    pub iscsi_server_port: String,
-    #[serde(rename = "iscsi-server-iqn", default)]
-    pub iscsi_server_iqn: String,
 }
 
 impl Disk {
-    pub fn is_iscsi_exported(&self) -> bool {
-        self.iscsi_export == "true" || self.iscsi_export == "yes"
-    }
-
     pub fn is_file_backed(&self) -> bool {
         self.disk_type == "file"
     }
@@ -168,34 +158,6 @@ impl RouterOsClient {
         Ok(disk.id)
     }
 
-    /// Enable iSCSI export on a disk.
-    pub async fn enable_iscsi_export(&self, disk_id: &str) -> Result<()> {
-        tracing::info!("enabling iSCSI export on disk {disk_id}");
-        self.post(
-            "/disk/set",
-            &serde_json::json!({
-                ".id": disk_id,
-                "iscsi-export": "yes",
-            }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// Disable iSCSI export on a disk.
-    pub async fn disable_iscsi_export(&self, disk_id: &str) -> Result<()> {
-        tracing::info!("disabling iSCSI export on disk {disk_id}");
-        self.post(
-            "/disk/set",
-            &serde_json::json!({
-                ".id": disk_id,
-                "iscsi-export": "no",
-            }),
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Remove a disk entry from RouterOS.
     pub async fn remove_disk(&self, disk_id: &str) -> Result<()> {
         tracing::info!("removing disk {disk_id}");
@@ -204,43 +166,6 @@ impl RouterOsClient {
             &serde_json::json!({ ".id": disk_id }),
         )
         .await?;
-        Ok(())
-    }
-
-    /// Create a file-backed disk and export it via iSCSI in one step.
-    /// Returns (disk_id, iqn, portal_port).
-    pub async fn create_iscsi_target(
-        &self,
-        file_path: &str,
-        file_size: Option<&str>,
-    ) -> Result<(String, String, u16)> {
-        let disk_id = self.create_file_disk(file_path, file_size).await?;
-        self.enable_iscsi_export(&disk_id).await?;
-
-        // Re-fetch to get the IQN
-        let disk = self
-            .find_disk_by_path(file_path)
-            .await?
-            .with_context(|| "disk disappeared after iSCSI enable")?;
-
-        let port = disk
-            .iscsi_server_port
-            .parse::<u16>()
-            .unwrap_or(3260);
-
-        tracing::info!(
-            "iSCSI target ready: iqn={} port={}",
-            disk.iscsi_server_iqn,
-            port
-        );
-
-        Ok((disk_id, disk.iscsi_server_iqn, port))
-    }
-
-    /// Delete an iSCSI target: disable export, remove disk entry.
-    pub async fn delete_iscsi_target(&self, disk_id: &str) -> Result<()> {
-        self.disable_iscsi_export(disk_id).await?;
-        self.remove_disk(disk_id).await?;
         Ok(())
     }
 

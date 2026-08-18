@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -221,6 +222,10 @@ func (p *MicroKubeProvider) waitForDiskMount(ctx context.Context, ros *routeros.
 	}
 }
 
+// iscsiFormatBinary was the iSCSI-only formatter. It is no longer built or
+// shipped; the constant remains so the failure below can name what is missing.
+const iscsiFormatBinary = "/usr/local/bin/iscsi-pvc"
+
 // formatISCSITargetExt4 formats an iSCSI target as ext4 using the iscsi-pvc tool.
 func (p *MicroKubeProvider) formatISCSITargetExt4(ctx context.Context, portalIP, iqn, label string) error {
 	log := p.deps.Logger.With("portal", portalIP, "iqn", iqn)
@@ -229,9 +234,21 @@ func (p *MicroKubeProvider) formatISCSITargetExt4(ctx context.Context, portalIP,
 	password := p.deps.Config.RouterOS.Password
 	restURL := p.deps.Config.RouterOS.RESTURL
 
+	// The image no longer ships iscsi-pvc: the volume tool was rewritten for
+	// NVMe/TCP and renamed (nvme-pvc), and it speaks no iSCSI. Exec'ing the old
+	// path would fail with a bare "no such file or directory" that says nothing
+	// about why. Fail with the reason instead — this whole data path is being
+	// retired (#20), and stormblockmk has iSCSI disabled.
+	if _, statErr := os.Stat(iscsiFormatBinary); statErr != nil {
+		return fmt.Errorf(
+			"the iSCSI PVC path needs %s, which this image no longer ships: the volume "+
+				"tool is NVMe/TCP-only now (nvme-pvc). Provision this PVC over NVMe "+
+				"instead — see #20", iscsiFormatBinary)
+	}
+
 	log.Infow("executing iscsi-pvc format", "label", label)
 
-	cmd := exec.CommandContext(ctx, "/usr/local/bin/iscsi-pvc",
+	cmd := exec.CommandContext(ctx, iscsiFormatBinary,
 		"--url", restURL,
 		"--user", user,
 		"--password", password,

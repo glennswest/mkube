@@ -1,5 +1,5 @@
 [package]
-name = "iscsi-pvc"
+name = "nvme-pvc"
 version = "0.1.0"
 edition = "2021"
 

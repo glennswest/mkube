@@ -1,7 +1,7 @@
 FROM scratch
 COPY stormd /stormd
 COPY mkube /mkube
-COPY iscsi-pvc /usr/local/bin/iscsi-pvc
+COPY nvme-pvc /usr/local/bin/nvme-pvc
 COPY deploy/stormd-config.toml /etc/stormd/config.toml
 VOLUME ["/data"]
 EXPOSE 8082/tcp 9080/tcp 22/tcp

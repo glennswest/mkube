@@ -11,7 +11,7 @@ package provider
 //
 //  1. provision a small stormblock volume (attach, format, mount) — the
 //     exact path a clone would take
-//  2. lay a one-binary rootfs on it (the static iscsi-pvc binary mkube ships)
+//  2. lay a one-binary rootfs on it (the static nvme-pvc binary mkube ships)
 //  3. /container/add with root-dir=<mount>/rootfs and NO image source ← verdict
 //  4. start it and observe
 //  5. tear everything down
@@ -52,7 +52,7 @@ const (
 	cowProbeContainer = "gt_cowprobe_cowprobe"
 	cowProbeVeth      = "veth_gt_cowprobe_0"
 	// The static aarch64-musl binary mkube's image carries — a one-file rootfs.
-	cowProbeBinary = "/usr/local/bin/iscsi-pvc"
+	cowProbeBinary = volumeToolBinary
 )
 
 func (p *MicroKubeProvider) handleCoWProbe(w http.ResponseWriter, r *http.Request) {

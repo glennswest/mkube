@@ -1,7 +1,7 @@
 //! Minimal ext4 filesystem formatter.
 //!
 //! Writes enough ext4 structures to create a mountable filesystem
-//! directly over iSCSI block writes. No mkfs.ext4 dependency.
+//! directly over NVMe block writes. No mkfs.ext4 dependency.
 //!
 //! Supports multiple block groups (volumes > 128 MiB) with proper
 //! sparse_super backup superblock placement.
@@ -22,7 +22,7 @@ const EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
 const EXT4_FEATURE_RO_COMPAT_LARGE_FILE: u32 = 0x0002;
 const EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE: u32 = 0x0040;
 
-/// A block writer trait — abstracts over iSCSI or local file.
+/// A block writer trait — abstracts over an NVMe namespace or a local file.
 #[async_trait::async_trait]
 pub trait BlockWriter: Send {
     /// Write a full block at the given block number.
