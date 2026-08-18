@@ -887,12 +887,12 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				storeKey := pod.Namespace + "." + pod.Name
 				_, _ = p.deps.Store.Pods.PutJSON(ctx, storeKey, pod)
 			}
-			cowEntrypoint, cowCmd = rewriteEntrypointForCoW(pod, &container, imgCfg)
+			cowEntrypoint, cowCmd = cowEntrypointFor(pod, &container, imgCfg)
 			if cowEntrypoint == "" {
 				return fmt.Errorf("cow image mode: no entrypoint (set the pod command or use an image that has one)")
 			}
 			tarballPath = cowStubDevicePath
-			log.Infow("cow root provisioned", "template", templateName, "payload", cowPayloadMount, "entrypoint", cowEntrypoint)
+			log.Infow("cow root provisioned", "template", templateName, "root", cowPayloadMount, "entrypoint", cowEntrypoint)
 		}
 
 		// 2. Allocate network (registers containerName.podName in network zone)
@@ -1035,19 +1035,6 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			})
 		}
 
-		if cowMode && cowPayloadMount != "" {
-			// NOT IsPVC: the clone's mount slot drifts across re-attaches,
-			// and PVC-flagged entries are never removed by ReconcileMounts —
-			// a stale slot entry from the previous create then fails every
-			// container start ("error creating src /iscsiN/rootfs"). The
-			// mount is re-declared with the current slot on every create,
-			// so reconciler-managed is exactly right.
-			desiredMounts = append(desiredMounts, runtime.DesiredMount{
-				Src: cowPayloadMount,
-				Dst: cowPayloadDst,
-			})
-		}
-
 		mountListName := ""
 		if len(desiredMounts) > 0 {
 			mountListName = name
@@ -1071,7 +1058,20 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// deleting in-line also avoids the "root-dir overlap" wedge a slow/failed
 		// recursive delete would leave for the next retry (TODO #12).
 		rootDir := fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name)
-		p.swapRootDirAside(ctx, rootDir)
+		if cowMode && cowPayloadMount != "" {
+			// The container's root IS the mounted clone: / is the image, so
+			// there is no /payload and no entrypoint rewriting. RouterOS
+			// extracts the (empty) stub over it without wiping it.
+			rootDir = strings.TrimPrefix(cowPayloadMount, "/")
+		} else {
+			// Force re-extraction of the tarball. RouterOS skips extraction
+			// when root-dir already has content.
+			//
+			// Never for a CoW pod: root-dir is the clone, and renaming it
+			// aside would move the image out from under the container — or
+			// destroy it.
+			p.swapRootDirAside(ctx, rootDir)
+		}
 
 		// 6. Create the container
 		tracker.start(PhaseContainerCreate)

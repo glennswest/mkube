@@ -52,8 +52,7 @@ const (
 	// directory, so a cached copy of it would still break every CoW pod —
 	// ensureGenericStub skips the upload when the file exists, and would
 	// happily keep the broken one forever.
-	cowStubDevicePath = "raid1/cache/cow-generic-stub-v2.tar"
-	cowPayloadDst     = "/payload"
+	cowStubDevicePath = "raid1/cache/cow-generic-stub-empty.tar"
 
 	// goldenSource values.
 	goldenSourceMkube      = "mkube"
@@ -708,10 +707,10 @@ func (p *MicroKubeProvider) deprovisionCoWRoot(ctx context.Context, ros *routero
 	}
 }
 
-// rewriteEntrypointForCoW maps the effective entrypoint/cmd into the
-// mounted payload. Pod-spec command/args win over the image config, same
-// precedence as the normal path.
-func rewriteEntrypointForCoW(pod *corev1.Pod, c *corev1.Container, imgCfg *dockerSaveConfig) (entrypoint string, cmd string) {
+// cowEntrypointFor resolves the effective entrypoint/cmd for a CoW container.
+// Pod-spec command/args win over the image config, the same precedence as the
+// normal path. Paths are used as-is: the clone is the container's root.
+func cowEntrypointFor(pod *corev1.Pod, c *corev1.Container, imgCfg *dockerSaveConfig) (entrypoint string, cmd string) {
 	argv0 := ""
 	var rest []string
 	switch {
@@ -728,9 +727,10 @@ func rewriteEntrypointForCoW(pod *corev1.Pod, c *corev1.Container, imgCfg *docke
 	if argv0 == "" {
 		return "", ""
 	}
-	if !strings.HasPrefix(argv0, cowPayloadDst+"/") {
-		argv0 = cowPayloadDst + "/" + strings.TrimPrefix(argv0, "/")
-	}
+	// No rewriting: the clone is mounted as the container's root, so the
+	// image's own absolute paths are already correct. They used to be
+	// prefixed with /payload because the root was a stub and the image hung
+	// off a mount.
 	return argv0, strings.Join(rest, " ")
 }
 

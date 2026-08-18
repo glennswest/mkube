@@ -475,27 +475,22 @@ func cowPayloadTar(bin []byte) []byte {
 }
 
 // cowStubTar returns a minimal DOCKER-SAVE archive (manifest.json + config +
-// one layer) holding a single placeholder file. RouterOS's file= extractor
-// requires the docker-save layout — a plain tar fails with "no manifest.json
-// in archive" and the container is silently auto-removed (device log,
-// 2026-08-10).
+// cowStubTar returns a minimal DOCKER-SAVE archive (manifest.json + config +
+// one EMPTY layer). RouterOS's file= extractor requires the docker-save layout
+// — a plain tar fails with "no manifest.json in archive" and the container is
+// silently auto-removed (device log, 2026-08-10).
+//
+// The layer is empty on purpose. RouterOS will not create a container without
+// file= or remote-image=, but a CoW container's root-dir IS the mounted clone,
+// and whatever this layer holds is extracted straight into it. Empty satisfies
+// RouterOS and leaves the golden's filesystem exactly as it was sealed.
+//
+// Measured on rose1: extracting a one-file stub into a clone cost 3 inodes and
+// ~12 KB and did NOT wipe the clone. That RouterOS extracts *over* the existing
+// tree rather than replacing it is what makes clone-as-root viable at all.
 func cowStubTar() []byte {
-	// Inner layer: one placeholder file.
 	var layer bytes.Buffer
 	lw := tar.NewWriter(&layer)
-	content := []byte("cow-probe\n")
-	_ = lw.WriteHeader(&tar.Header{Name: "cow-probe-placeholder", Mode: 0o644, Size: int64(len(content))})
-	_, _ = lw.Write(content)
-	// The mount target must already exist. RouterOS does not create a
-	// container mount's destination the way docker does, so without this
-	// directory /payload is simply absent and the entrypoint dies with
-	// `execvpe /payload/bin/sh: No such file or directory` — with the clone
-	// mounted, healthy, and mapped correctly the whole time.
-	_ = lw.WriteHeader(&tar.Header{
-		Name:     strings.TrimPrefix(cowPayloadDst, "/") + "/",
-		Mode:     0o755,
-		Typeflag: tar.TypeDir,
-	})
 	_ = lw.Close()
 
 	layerSum := sha256.Sum256(layer.Bytes())
