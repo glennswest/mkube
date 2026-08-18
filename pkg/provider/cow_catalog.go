@@ -231,25 +231,6 @@ func (p *MicroKubeProvider) ensureGenericStub(ctx context.Context, ros *routeros
 	return ros.UploadFile(ctx, cowStubDevicePath, bytes.NewReader(cowStubTar()))
 }
 
-// cowPayloadRoot returns the path inside a mounted clone that holds the
-// image's filesystem.
-//
-// The two golden builders lay it out differently, and the difference is not
-// cosmetic — get it wrong and the container dies with
-// `execvpe /payload/bin/sh: No such file or directory`.
-//
-//   - sbregistry writes the image's rootfs at the **volume root**, which is
-//     what the integration contract asks for: "write the image's rootfs into
-//     it". A clone mounts and / is the image.
-//   - mkube's own seeder extracts a docker-save tarball into <mount>/rootfs,
-//     so the image sits one level down.
-func (p *MicroKubeProvider) cowPayloadRoot(mountPoint string) string {
-	if strings.EqualFold(p.deps.Config.Storage.Stormblock.GoldenSource, goldenSourceSbRegistry) {
-		return mountPoint
-	}
-	return mountPoint + "/rootfs"
-}
-
 // cowTemplateName derives the fstemplate name for an image digest.
 func cowTemplateName(digest string) string {
 	d := strings.TrimPrefix(digest, "sha256:")
@@ -451,7 +432,12 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 	}
 	defer func() { _ = p.deps.NetworkMgr.ReleaseInterface(ctx, seederVeth) }()
 
-	rootfs := strings.TrimPrefix(mountPoint, "/") + "/rootfs"
+	// Extract at the volume root, not into a rootfs/ subdirectory: a golden's
+	// filesystem IS the image's filesystem, so / is /. That is what the
+	// integration contract asks for, it is what sbregistry writes, and it is
+	// what a Linux root looks like anywhere else. The extra level only ever
+	// existed because a docker-save tarball was unpacked into a directory.
+	rootfs := strings.TrimPrefix(mountPoint, "/")
 	devTarball := strings.TrimPrefix(tarballPath, "/")
 	spec := routeros.ContainerSpec{
 		Name:        seederName,
@@ -598,7 +584,7 @@ func (p *MicroKubeProvider) runCoWSeeder(ctx context.Context, ros *routeros.Clie
 }
 
 // provisionCoWRoot clones the golden template for one container and returns
-// the mounted rootfs path (…/rootfs) plus the volume id for teardown.
+// the mounted clone's root (the image's /) plus the volume id for teardown.
 func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.Client, pod *corev1.Pod, containerName, templateName string) (string, string, error) {
 	sb, err := p.newStormblockClient()
 	if err != nil {
@@ -613,7 +599,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		if attach, ok := p.findCoWVolumeAttach(ctx, sb, volID); ok {
 			if diskID, aerr := p.attachStormblockDisk(ctx, attach); aerr == nil {
 				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second); merr == nil {
-					return p.cowPayloadRoot(mp), volID, nil
+					return mp, volID, nil
 				}
 				_ = ros.RemoveDisk(ctx, diskID)
 			}
@@ -674,7 +660,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 	// while) and a full /file print costs minutes — the diagnostic check
 	// this replaced both lied and stalled every provision. The container
 	// start is the real verification.
-	return p.cowPayloadRoot(mountPoint), created.ID, nil
+	return mountPoint, created.ID, nil
 }
 
 // findCoWVolumeAttach locates an existing volume by id and returns its
