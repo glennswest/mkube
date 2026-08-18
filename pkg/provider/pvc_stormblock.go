@@ -312,7 +312,7 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		if id := ann[annDiskID]; id != "" {
 			if disk, err := rosClient.GetISCSIDisk(ctx, id); err == nil && disk.MountPoint != "" {
 				mp := "/" + disk.MountPoint
-				p.setISCSIPVCAnnotations(ctx, pvc, disk.ID, disk.Slot, mp, disk.ISCSIServerIQN, ann[annSBPortal])
+				p.setPVCDiskAnnotations(ctx, pvc, pvcTypeStormblock, disk.ID, disk.Slot, mp, disk.ISCSIServerIQN, ann[annSBPortal])
 				return mp, nil
 			}
 		}
@@ -424,7 +424,7 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 		slot = disk.Slot
 	}
 	portal := fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-	p.setISCSIPVCAnnotations(ctx, pvc, diskID, slot, mountPoint, sbTargetName(attach), portal)
+	p.setPVCDiskAnnotations(ctx, pvc, pvcTypeStormblock, diskID, slot, mountPoint, sbTargetName(attach), portal)
 	p.setStormblockPVCAnnotations(ctx, pvc, created.ID, portal)
 	log.Infow("stormblock PVC ready", "mountPoint", mountPoint, "slot", slot, "portal", portal)
 	return mountPoint, nil

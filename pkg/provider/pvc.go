@@ -76,17 +76,6 @@ func (p *MicroKubeProvider) resolvePVCVolume(ctx context.Context, pod *corev1.Po
 			return hostPath, true
 		}
 
-		// iSCSI-backed PVC: uses file-backed disk with ext4, mounted by RouterOS
-		if isISCSIPVC(pvc) {
-			hostPath, err := p.resolveISCSIPVCVolume(ctx, pvc)
-			if err != nil {
-				p.deps.Logger.Errorw("failed to provision iSCSI PVC",
-					"pvc", key, "error", err)
-				return "", false
-			}
-			return hostPath, true
-		}
-
 		// Directory-backed PVC (default)
 		hostPath := p.pvcHostPath(pvc)
 		// Ensure the PVC directory exists on disk
@@ -190,9 +179,9 @@ func (p *MicroKubeProvider) handleCreatePVC(w http.ResponseWriter, r *http.Reque
 
 	p.pvcs.Set(key, &pvc)
 
-	// For iSCSI PVCs, the disk/format/mount is done lazily on first pod attach.
-	// For directory PVCs, ensure the directory exists now.
-	if !isISCSIPVC(&pvc) {
+	// A stormblock PVC is attached, formatted and mounted lazily on first pod
+	// attach. A directory PVC needs its directory now.
+	if !isStormblockPVC(&pvc) {
 		hostPath := p.pvcHostPath(&pvc)
 		if err := p.deps.Runtime.EnsureDirectory(r.Context(), hostPath); err != nil {
 			p.deps.Logger.Warnw("failed to ensure PVC directory on disk",
@@ -366,11 +355,7 @@ func (p *MicroKubeProvider) handleDeletePVC(w http.ResponseWriter, r *http.Reque
 
 	// Optionally purge the on-disk data
 	if r.URL.Query().Get("purge") == "true" {
-		if isISCSIPVC(pvc) {
-			if err := p.cleanupISCSIPVC(r.Context(), pvc); err != nil {
-				p.deps.Logger.Warnw("failed to cleanup iSCSI PVC", "pvc", key, "error", err)
-			}
-		} else if isStormblockPVC(pvc) {
+		if isStormblockPVC(pvc) {
 			// Detach the disk, then hand the volume back to stormblockmk —
 			// otherwise the thin volume, its export and its portal all leak.
 			if err := p.deprovisionStormblockPVC(r.Context(), pvc); err != nil {
@@ -668,7 +653,7 @@ func (p *MicroKubeProvider) refreshPVCUsage(ctx context.Context) {
 
 	hasDisk := false
 	for _, pvc := range p.pvcs.Snapshot() {
-		if isISCSIPVC(pvc) {
+		if isStormblockPVC(pvc) {
 			hasDisk = true
 			break
 		}
@@ -716,7 +701,7 @@ func (p *MicroKubeProvider) enrichPVCUsageBatch(_ context.Context, pvcs []corev1
 }
 
 func (p *MicroKubeProvider) enrichPVCFromIndexes(pvc *corev1.PersistentVolumeClaim, snap *pvcUsageIndexes) {
-	if isISCSIPVC(pvc) {
+	if isStormblockPVC(pvc) {
 		if snap.diskIdx == nil {
 			return
 		}

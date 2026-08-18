@@ -172,7 +172,7 @@ func (p *MicroKubeProvider) MigratePVCTransport(ctx context.Context, namespace, 
 		slot = d.Slot
 	}
 	portal := fmt.Sprintf("%s:%d", attach.Address, attach.Port)
-	p.setISCSIPVCAnnotations(ctx, pvc, diskID, slot, mountPoint, sbTargetName(attach), portal)
+	p.setPVCDiskAnnotations(ctx, pvc, pvcTypeStormblock, diskID, slot, mountPoint, sbTargetName(attach), portal)
 	if ex.ExportID != "" {
 		p.annotatePVC(ctx, pvc, annSBExportID, ex.ExportID)
 	}
