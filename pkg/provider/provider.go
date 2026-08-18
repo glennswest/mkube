@@ -796,8 +796,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 		// clone, and the container is fed a 5 KB stub. Staging the full
 		// docker-save tarball here would defeat the point — with an external
 		// golden builder mkube would still hold every image on disk purely
-		// to read a digest and an entrypoint. Step 1b resolves those from
-		// the registry and stages only if that fails.
+		// to read a digest and an entrypoint. Step 1b resolves both from the
+		// registry, and fails if the registry cannot answer — it never falls
+		// back to staging, because a digest from a staged tarball is not the
+		// manifest digest the golden is named for.
 		tracker.start(PhaseImageResolve)
 		var tarballPath string
 		if filePath := pod.Annotations[annotationFile]; filePath != "" {
@@ -826,12 +828,31 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			if err := p.ensureGenericStub(ctx, rosC); err != nil {
 				return fmt.Errorf("ensuring cow stub: %w", err)
 			}
-			// Digest and entrypoint come from the REGISTRY (a manifest HEAD
-			// and a few-KB config blob), not from a staged tarball: with an
-			// external golden builder a cow pod otherwise stages the full
-			// image just to read two fields. Fall back to the tarball when
-			// the registry cannot answer.
+			// Digest and entrypoint come from the REGISTRY and nowhere else: a
+			// manifest HEAD and a few-KB config blob.
+			//
+			// There used to be a fallback that staged the whole image as a
+			// docker-save tarball and read the digest from a sidecar beside
+			// it. That is wrong twice over. The golden is named for the OCI
+			// manifest digest, which is what the builder publishing
+			// img-<digest12> uses, and a tarball sidecar is a different
+			// number — so the two disagreed and the pod waited out goldenWait
+			// for a template nobody would ever publish. Observed live: a
+			// busybox pod waited for img-dabc0d074642, which is the digest of
+			// an unrelated image entirely. And staging defeats the point of a
+			// CoW pod, which exists so the image is never pulled to the device.
+			//
+			// If the registry cannot answer, that is the error. Do not guess.
 			digest, dErr := p.deps.StorageMgr.GetCurrentDigest(ctx, container.Image)
+			if dErr != nil {
+				return fmt.Errorf("cow image mode: resolving the manifest digest for %s: %w",
+					container.Image, dErr)
+			}
+			if digest == "" {
+				return fmt.Errorf("cow image mode: registry returned no manifest digest for %s",
+					container.Image)
+			}
+
 			var imgCfg *dockerSaveConfig
 			if blob, cErr := p.deps.StorageMgr.RemoteImageConfig(ctx, container.Image); cErr == nil {
 				if parsed, pErr := parseImageConfigJSON(blob); pErr == nil {
@@ -840,29 +861,15 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 					log.Warnw("cow: cannot parse registry image config", "error", pErr)
 				}
 			} else {
-				log.Debugw("cow: registry config fetch failed, will use staged tarball", "error", cErr)
+				// Not fatal: the pod's own command/args can carry it. Staging
+				// the image to recover two fields is not worth it here.
+				log.Warnw("cow: registry image config unavailable, relying on pod command",
+					"image", container.Image, "error", cErr)
 			}
-			if digest == "" || dErr != nil || imgCfg == nil {
-				staged, sErr := p.deps.StorageMgr.EnsureImage(ctx, container.Image)
-				if sErr != nil {
-					return fmt.Errorf("cow: staging image %s: %w", container.Image, sErr)
-				}
-				tarballPath = staged
-				if digest == "" {
-					digest = p.deps.StorageMgr.TarballDigest(tarballPath)
-				}
-				if imgCfg == nil {
-					if parsed, rErr := readDockerSaveConfig(tarballPath); rErr == nil {
-						imgCfg = parsed
-					} else {
-						log.Warnw("cow: cannot read image config, relying on pod command", "error", rErr)
-					}
-				}
-			}
-			if digest == "" {
-				return fmt.Errorf("cow image mode: no digest available for %s", container.Image)
-			}
-			templateName, err := p.ensureGoldenTemplate(ctx, rosC, container.Image, tarballPath, digest)
+
+			// No tarball: in sbregistry mode nothing is staged, and the
+			// mkube-seeding path stages for itself only if it actually builds.
+			templateName, err := p.ensureGoldenTemplate(ctx, rosC, container.Image, "", digest)
 			if err != nil {
 				return fmt.Errorf("cow golden template: %w", err)
 			}
