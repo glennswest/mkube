@@ -231,6 +231,25 @@ func (p *MicroKubeProvider) ensureGenericStub(ctx context.Context, ros *routeros
 	return ros.UploadFile(ctx, cowStubDevicePath, bytes.NewReader(cowStubTar()))
 }
 
+// cowPayloadRoot returns the path inside a mounted clone that holds the
+// image's filesystem.
+//
+// The two golden builders lay it out differently, and the difference is not
+// cosmetic — get it wrong and the container dies with
+// `execvpe /payload/bin/sh: No such file or directory`.
+//
+//   - sbregistry writes the image's rootfs at the **volume root**, which is
+//     what the integration contract asks for: "write the image's rootfs into
+//     it". A clone mounts and / is the image.
+//   - mkube's own seeder extracts a docker-save tarball into <mount>/rootfs,
+//     so the image sits one level down.
+func (p *MicroKubeProvider) cowPayloadRoot(mountPoint string) string {
+	if strings.EqualFold(p.deps.Config.Storage.Stormblock.GoldenSource, goldenSourceSbRegistry) {
+		return mountPoint
+	}
+	return mountPoint + "/rootfs"
+}
+
 // cowTemplateName derives the fstemplate name for an image digest.
 func cowTemplateName(digest string) string {
 	d := strings.TrimPrefix(digest, "sha256:")
@@ -594,7 +613,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		if attach, ok := p.findCoWVolumeAttach(ctx, sb, volID); ok {
 			if diskID, aerr := p.attachStormblockDisk(ctx, attach); aerr == nil {
 				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second); merr == nil {
-					return mp + "/rootfs", volID, nil
+					return p.cowPayloadRoot(mp), volID, nil
 				}
 				_ = ros.RemoveDisk(ctx, diskID)
 			}
@@ -655,7 +674,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 	// while) and a full /file print costs minutes — the diagnostic check
 	// this replaced both lied and stalled every provision. The container
 	// start is the real verification.
-	return mountPoint + "/rootfs", created.ID, nil
+	return p.cowPayloadRoot(mountPoint), created.ID, nil
 }
 
 // findCoWVolumeAttach locates an existing volume by id and returns its
