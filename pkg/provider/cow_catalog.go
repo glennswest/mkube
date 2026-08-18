@@ -170,6 +170,58 @@ type sbCreateTemplateResp struct {
 	Attach   json.RawMessage `json:"attach"`
 }
 
+// createTemplateForFormatting creates an fstemplate that is left unformatted,
+// and exports its raw volume so the caller can format over it.
+//
+// Two things changed under us when fstemplates moved into stormblock core:
+//
+//  1. create defaults to `format: true`, which formats **and seals** in the one
+//     call. That is right for a blank, and useless for anything that needs to
+//     put content in first — there would be no writable window. Passing
+//     `format: false` leaves the template in `awaiting_format`.
+//  2. create no longer returns an export or an attach block. The engine
+//     formats in-core when it owns the whole job, so it never needs an
+//     initiator. Anything that does need one asks for it.
+//
+// The caller must withdraw the returned export before sealing: seal refuses
+// while a session is still established on it.
+func (p *MicroKubeProvider) createTemplateForFormatting(
+	ctx context.Context, sb *sbClient, name string, sizeBytes int64,
+) (tmpl sbTemplate, attach sbAttach, exportID string, err error) {
+	var created sbCreateTemplateResp
+	if err = sb.do(ctx, http.MethodPost, "/api/v1/fstemplates",
+		map[string]any{
+			"name": name, "fs": "ext4", "size_bytes": sizeBytes,
+			"label": name, "format": false,
+		}, &created); err != nil {
+		return tmpl, attach, "", fmt.Errorf("creating fstemplate %s: %w", name, err)
+	}
+	tmpl = created.Template
+	if tmpl.RawVolumeID == "" {
+		return tmpl, attach, "", fmt.Errorf("fstemplate %s returned no raw_volume_id", name)
+	}
+
+	var ex sbExport
+	if err = sb.do(ctx, http.MethodPost, "/mk/v1/exports",
+		map[string]any{"volume_id": tmpl.RawVolumeID, "protocol": p.sbProtocol(),
+			"ephemeral": false}, &ex); err != nil {
+		_ = sb.do(context.Background(), http.MethodDelete,
+			"/api/v1/fstemplates/"+tmpl.ID+"?force=true", nil, nil)
+		return tmpl, attach, "", fmt.Errorf("exporting fstemplate %s: %w", name, err)
+	}
+	attach = ex.Attach
+	if attach.Transport == "" {
+		attach.Transport = ex.Protocol
+	}
+	if attach.Address == "" {
+		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+ex.ExportID, nil, nil)
+		_ = sb.do(context.Background(), http.MethodDelete,
+			"/api/v1/fstemplates/"+tmpl.ID+"?force=true", nil, nil)
+		return tmpl, attach, "", fmt.Errorf("fstemplate %s export returned no attach parameters", name)
+	}
+	return tmpl, attach, ex.ExportID, nil
+}
+
 // ensureGenericStub makes sure the generic CoW stub archive exists on the
 // device (one placeholder file; docker-save layout).
 func (p *MicroKubeProvider) ensureGenericStub(ctx context.Context, ros *routeros.Client) error {
@@ -204,7 +256,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	var list struct {
 		Items []sbTemplate `json:"items"`
 	}
-	if err := sb.do(ctx, http.MethodGet, "/mk/v1/fstemplates", nil, &list); err != nil {
+	if err := sb.do(ctx, http.MethodGet, "/api/v1/fstemplates", nil, &list); err != nil {
 		return "", fmt.Errorf("listing fstemplates: %w", err)
 	}
 	for _, t := range list.Items {
@@ -214,7 +266,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 			}
 			// Half-built template from a crashed attempt — remove and rebuild.
 			log.Warnw("removing half-built fstemplate", "template", name, "state", t.State)
-			if derr := sb.do(ctx, http.MethodDelete, "/mk/v1/fstemplates/"+t.ID+"?force=true", nil, nil); derr != nil {
+			if derr := sb.do(ctx, http.MethodDelete, "/api/v1/fstemplates/"+t.ID+"?force=true", nil, nil); derr != nil {
 				return "", fmt.Errorf("removing half-built fstemplate %s: %w", name, derr)
 			}
 		}
@@ -236,7 +288,7 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 			var poll struct {
 				Items []sbTemplate `json:"items"`
 			}
-			if err := sb.do(ctx, http.MethodGet, "/mk/v1/fstemplates", nil, &poll); err == nil {
+			if err := sb.do(ctx, http.MethodGet, "/api/v1/fstemplates", nil, &poll); err == nil {
 				for _, t := range poll.Items {
 					if t.Name == name && (strings.EqualFold(t.State, "ready") || strings.EqualFold(t.State, "sealed")) {
 						log.Infow("external golden template ready", "template", name)
@@ -279,23 +331,20 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	}
 
 	log.Infow("building golden template", "template", name, "size", sizeBytes)
-	var created sbCreateTemplateResp
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates",
-		map[string]any{"name": name, "fs": "ext4", "size_bytes": sizeBytes,
-			"protocol": p.sbProtocol()}, &created); err != nil {
-		return "", fmt.Errorf("creating fstemplate %s: %w", name, err)
+	// Unformatted, with an export of its own: the engine would otherwise
+	// format and seal in the same call, leaving nowhere to put the image.
+	tmpl, attach, exportID, err := p.createTemplateForFormatting(ctx, sb, name, sizeBytes)
+	if err != nil {
+		return "", err
 	}
-
-	// The attach field is the full wiring object: {protocol, state,
-	// attach:{address,port,iqn,...}} — same shape as a volume export.
-	var wiring sbExport
-	if err := json.Unmarshal(created.Attach, &wiring); err != nil || wiring.Attach.Address == "" {
-		return "", fmt.Errorf("fstemplate %s returned no usable attach block", name)
-	}
-	attach := wiring.Attach
-	if attach.Transport == "" {
-		attach.Transport = wiring.Protocol
-	}
+	created := sbCreateTemplateResp{Template: tmpl}
+	// Seal refuses while a session is still established on the export, so it
+	// has to be withdrawn once the writing is done.
+	defer func() {
+		if exportID != "" {
+			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+exportID, nil, nil)
+		}
+	}()
 	if attach.Transport == "" {
 		attach.Transport = "iscsi" // template formatting attach is documented iSCSI
 	}
@@ -350,8 +399,19 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 		p.deps.Logger.Warnw("could not restore the clean flag before sealing", "template", name, "error", rErr)
 	}
 
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+created.Template.ID+"/seal", nil, nil); err != nil {
-		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/fstemplates/"+created.Template.ID+"?force=true", nil, nil)
+	// Withdraw our export before sealing. Seal refuses while a session is
+	// still established on it, and the export is ours now — the engine no
+	// longer makes one at create time, so nothing else will take it down.
+	if exportID != "" {
+		if wErr := sb.do(ctx, http.MethodDelete, "/mk/v1/exports/"+exportID, nil, nil); wErr != nil {
+			p.deps.Logger.Warnw("could not withdraw the template export before sealing",
+				"template", name, "export", exportID, "error", wErr)
+		}
+		exportID = "" // the deferred cleanup has nothing left to do
+	}
+
+	if err := sb.do(ctx, http.MethodPost, "/api/v1/fstemplates/"+created.Template.ID+"/seal", nil, nil); err != nil {
+		_ = sb.do(ctx, http.MethodDelete, "/api/v1/fstemplates/"+created.Template.ID+"?force=true", nil, nil)
 		return "", fmt.Errorf("sealing fstemplate %s (ROS-seeded volumes cannot currently be cleanly unmounted — use an sbregistry-created golden): %w", name, err)
 	}
 	log.Infow("golden template sealed", "template", name)

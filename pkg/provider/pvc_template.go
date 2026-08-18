@@ -58,7 +58,7 @@ func (p *MicroKubeProvider) pickStormblockTemplate(ctx context.Context, sb *sbCl
 	}
 
 	var list sbTemplateList
-	if err := sb.do(ctx, http.MethodGet, "/mk/v1/fstemplates", nil, &list); err != nil {
+	if err := sb.do(ctx, http.MethodGet, "/api/v1/fstemplates", nil, &list); err != nil {
 		return "", fmt.Errorf("listing filesystem templates: %w", err)
 	}
 

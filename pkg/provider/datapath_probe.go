@@ -19,7 +19,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -134,26 +133,22 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 	// clone either reproduces those exact blocks or it does not, and that
 	// is independent of ext4, RouterOS, and every other layer we have been
 	// arguing about.
-	var tmpl sbCreateTemplateResp
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates",
-		map[string]any{"name": "datapath-tpl", "fs": "ext4", "size_bytes": 512 * 1024 * 1024,
-			"protocol": p.sbProtocol()}, &tmpl); err != nil {
-		rep.FromClone = "template create failed: " + err.Error()
+	tplRow, tAttach, tplExportID, terr := p.createTemplateForFormatting(
+		ctx, sb, "datapath-tpl", 512*1024*1024)
+	if terr != nil {
+		rep.FromClone = "template create failed: " + terr.Error()
 		return rep
 	}
+	tmpl := sbCreateTemplateResp{Template: tplRow}
 	defer func() {
-		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/fstemplates/"+tmpl.Template.ID+"?force=true", nil, nil)
+		if tplExportID != "" {
+			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/exports/"+tplExportID, nil, nil)
+		}
+	}()
+	defer func() {
+		_ = sb.do(context.Background(), http.MethodDelete, "/api/v1/fstemplates/"+tmpl.Template.ID+"?force=true", nil, nil)
 	}()
 
-	var wiring sbExport
-	if err := json.Unmarshal(tmpl.Attach, &wiring); err != nil || wiring.Attach.Address == "" {
-		rep.FromClone = "template returned no attach block"
-		return rep
-	}
-	tAttach := wiring.Attach
-	if tAttach.Transport == "" {
-		tAttach.Transport = wiring.Protocol
-	}
 	step("template %s raw volume exported at %s:%d", tmpl.Template.Name, tAttach.Address, tAttach.Port)
 
 	// Format so the seal guard has a valid, clean ext4 to verify...
@@ -176,7 +171,7 @@ func (p *MicroKubeProvider) RunDataPathProbe(ctx context.Context) *DataPathRepor
 		step("template volume verify before sealing: %s", out)
 	}
 
-	if err := sb.do(ctx, http.MethodPost, "/mk/v1/fstemplates/"+tmpl.Template.ID+"/seal", nil, nil); err != nil {
+	if err := sb.do(ctx, http.MethodPost, "/api/v1/fstemplates/"+tmpl.Template.ID+"/seal", nil, nil); err != nil {
 		rep.FromClone = "seal failed: " + err.Error()
 		step("seal failed: %v", err)
 		return rep
