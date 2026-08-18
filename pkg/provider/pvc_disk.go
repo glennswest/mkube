@@ -20,11 +20,13 @@ import (
 
 const (
 	// Annotations describing the RouterOS disk behind a PVC.
-	annPVCType    = "vkube.io/pvc-type"     // which provisioner owns it
-	annDiskID     = "vkube.io/disk-id"      // RouterOS .id for the disk
-	annDiskSlot   = "vkube.io/disk-slot"    // disk slot name (= mount-point name)
-	annMountPoint = "vkube.io/mount-point"  // RouterOS mount-point path
-	annDiskTarget = "vkube.io/disk-iqn"     // target name (NQN, or IQN historically)
+	annPVCType    = "vkube.io/pvc-type"    // which provisioner owns it
+	annDiskID     = "vkube.io/disk-id"     // RouterOS .id for the disk
+	annDiskSlot   = "vkube.io/disk-slot"   // disk slot name (= mount-point name)
+	annMountPoint = "vkube.io/mount-point" // RouterOS mount-point path
+	// Recorded for whoever is debugging a volume by hand; nothing reads them
+	// back. The historical spellings are kept so existing PVCs stay legible.
+	annDiskTarget = "vkube.io/disk-iqn"     // target name (an NQN now)
 	annDiskPortal = "vkube.io/iscsi-portal" // portal address:port
 )
 
@@ -115,16 +117,4 @@ func parsePVCSize(pvc *corev1.PersistentVolumeClaim) int64 {
 		}
 	}
 	return 0
-}
-
-// formatSizeForRouterOS formats bytes as a size RouterOS accepts.
-func formatSizeForRouterOS(bytes int64) string {
-	const (
-		gib = 1024 * 1024 * 1024
-		mib = 1024 * 1024
-	)
-	if bytes >= gib {
-		return fmt.Sprintf("%dG", bytes/gib)
-	}
-	return fmt.Sprintf("%dM", bytes/mib)
 }
