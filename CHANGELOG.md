@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### 2026-08-19 (the outage)
+- **fix(provider):** mkube carried its own copy of the root-dir rename bug —
+  `swapRootDirAside` in the pod path fell back to an in-place recursive delete
+  whenever the rename reported a missing source, which is the normal case
+  because removing a container wipes its root-dir. On RouterOS that fallback
+  walks the entire file table, so it is minutes of router CPU spent removing
+  nothing, degrading every other service on the device while it runs. Now
+  treats already-gone as done, same as the updater.
 - **fix(consistency):** **An empty desired state no longer authorises deleting
   a running fleet.** This caused the 2026-08-19 outage. Both orphan sweeps
   guarded on `Store.Connected()`, which is TCP connection state — after a

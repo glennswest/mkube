@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -562,11 +563,23 @@ func (p *MicroKubeProvider) swapRootDirAside(ctx context.Context, rootDir string
 			return // nothing to move
 		}
 		trash := fmt.Sprintf("%s%s%s", strings.TrimSuffix(rootDir, "/"), rootDirTrashSuffix, uuid.NewString())
-		if err := cli.MoveDirectory(ctx, rootDir, trash); err == nil {
+		err := cli.MoveDirectory(ctx, rootDir, trash)
+		if err == nil {
 			p.deps.Logger.Infow("swapped root-dir aside for lazy GC", "rootDir", rootDir, "trash", trash)
 			return
 		}
-		p.deps.Logger.Warnw("root-dir rename failed, falling back to in-place delete", "rootDir", rootDir)
+		// Already gone is done, not a reason to delete it again. Removing a
+		// container wipes its root-dir, so by the time this runs there is
+		// usually nothing to move — and the in-place fallback then walks
+		// RouterOS's entire file table to remove a path that is not there.
+		// That is minutes of router CPU spent on nothing, and it degrades
+		// every other service on the device while it runs.
+		if errors.Is(err, routeros.ErrSourceNotFound) {
+			p.deps.Logger.Debugw("root-dir already gone — nothing to swap aside", "rootDir", rootDir)
+			return
+		}
+		p.deps.Logger.Warnw("root-dir rename failed, falling back to in-place delete",
+			"rootDir", rootDir, "error", err)
 	}
 	if err := p.deps.Runtime.RemoveDirectory(ctx, rootDir); err != nil {
 		p.deps.Logger.Debugw("root-dir cleanup (may not exist yet)", "rootDir", rootDir, "error", err)
