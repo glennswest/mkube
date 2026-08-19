@@ -1538,19 +1538,6 @@ func (p *MicroKubeProvider) createContainerMounts(
 	return containerName, nil
 }
 
-// alternateStagingRootDir returns a staging root-dir path that does NOT
-// conflict with the current production root-dir. Alternates between
-// basePath/<name> and basePath/<name>__stg across successive updates.
-// Uses normalizePath for comparison because RouterOS may return root-dir
-// without leading "/" while basePath includes one.
-func (p *MicroKubeProvider) alternateStagingRootDir(currentRootDir, prodName string) string {
-	stgPath := fmt.Sprintf("%s/%s__stg", p.deps.Config.Storage.BasePath, prodName)
-	if normalizePath(currentRootDir) == normalizePath(stgPath) {
-		return fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, prodName)
-	}
-	return stgPath
-}
-
 // normalizePath strips leading "/" for consistent path comparison.
 // RouterOS returns disk-relative paths (e.g. "raid1/images/foo") but
 // mkube config uses absolute-style paths (e.g. "/raid1/images/foo").

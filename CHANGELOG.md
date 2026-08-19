@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **chore:** remove `alternateStagingRootDir`, dead since blue-green went. It
+  ping-ponged a container's root-dir between `<name>` and `<name>__stg` on
+  successive updates, which is why five running containers — three microdns
+  instances, stormblockmk and netwatch — currently sit on a `__stg` path. That
+  is by design and nothing reaps those directories, so they are safe where they
+  are; each moves back to the canonical path on its next update, leaving one
+  stale directory per container to reclaim.
 - **BREAKING:** blue-green updates are gone; `UpdatePod` recreates the pod.
   Blue-green existed for exactly one reason — to avoid paying for a tarball
   extraction — by pre-extracting the new image in a staging container and then
