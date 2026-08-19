@@ -52,7 +52,9 @@ const (
 	// directory, so a cached copy of it would still break every CoW pod —
 	// ensureGenericStub skips the upload when the file exists, and would
 	// happily keep the broken one forever.
-	cowStubDevicePath = "raid1/cache/cow-generic-stub-v2.tar"
+	cowStubDevicePath = "raid1/cache/cow-generic-stub-v3.tar"
+	// Where stormpivot sits inside the stub, and so inside the container.
+	cowPivotPath = "/stormpivot"
 	cowPayloadDst     = "/payload"
 	// The image lives in a subdirectory of the golden, not at its root.
 	//
@@ -717,7 +719,7 @@ func (p *MicroKubeProvider) deprovisionCoWRoot(ctx context.Context, ros *routero
 // rewriteEntrypointForCoW maps the effective entrypoint/cmd into the
 // mounted payload. Pod-spec command/args win over the image config, same
 // precedence as the normal path.
-func rewriteEntrypointForCoW(pod *corev1.Pod, c *corev1.Container, imgCfg *dockerSaveConfig) (entrypoint string, cmd string) {
+func rewriteEntrypointForCoW(pod *corev1.Pod, c *corev1.Container, imgCfg *dockerSaveConfig, pivotInStub bool) (entrypoint string, cmd string) {
 	argv0 := ""
 	var rest []string
 	switch {
@@ -733,6 +735,20 @@ func rewriteEntrypointForCoW(pod *corev1.Pod, c *corev1.Container, imgCfg *docke
 	}
 	if argv0 == "" {
 		return "", ""
+	}
+	// With stormpivot in the stub the image's entrypoint is left exactly as
+	// it is and handed to the pivot, which chroots into the payload first.
+	// Inside, `/stormd` is `/stormd` again, the applet symlinks resolve, a
+	// `--config /etc/...` argument finds its file, and a dynamic binary's
+	// loader is where the kernel looks for it.
+	//
+	// The old behaviour — prefix argv[0] with /payload and hope — is kept for
+	// a stub built before the pivot existed. It fixes argv[0] and nothing
+	// else, which is why a CoW pod under it came up and exited immediately
+	// looking like a missing binary.
+	if pivotInStub {
+		args := append([]string{cowPayloadDst, argv0}, rest...)
+		return cowPivotPath, strings.Join(args, " ")
 	}
 	if !strings.HasPrefix(argv0, cowPayloadDst+"/") {
 		argv0 = cowPayloadDst + "/" + strings.TrimPrefix(argv0, "/")

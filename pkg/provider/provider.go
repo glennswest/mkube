@@ -887,7 +887,10 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				storeKey := pod.Namespace + "." + pod.Name
 				_, _ = p.deps.Store.Pods.PutJSON(ctx, storeKey, pod)
 			}
-			cowEntrypoint, cowCmd = rewriteEntrypointForCoW(pod, &container, imgCfg)
+			// Whether this build can put stormpivot in the stub decides
+			// how the entrypoint is expressed — see
+			// rewriteEntrypointForCoW.
+			cowEntrypoint, cowCmd = rewriteEntrypointForCoW(pod, &container, imgCfg, haveStormPivot())
 			if cowEntrypoint == "" {
 				return fmt.Errorf("cow image mode: no entrypoint (set the pod command or use an image that has one)")
 			}
@@ -1028,9 +1031,20 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				}
 			}
 
+			// Under CoW with the pivot, a mount has to land *inside* the
+			// payload. The container chroots into it before the image runs,
+			// so anything mounted beside the payload is unreachable by name
+			// afterwards — a PVC at /data would simply not be there. Mounted
+			// at <payload>/data it is /data once pivoted, which is where the
+			// image expects it. Verified on rose1: a directory placed inside
+			// the payload appeared at /data after the chroot.
+			dst := vm.MountPath
+			if cowMode && haveStormPivot() {
+				dst = cowPayloadDst + "/" + strings.TrimPrefix(vm.MountPath, "/")
+			}
 			desiredMounts = append(desiredMounts, runtime.DesiredMount{
 				Src:   hostPath,
-				Dst:   vm.MountPath,
+				Dst:   dst,
 				IsPVC: isPVC,
 			})
 		}

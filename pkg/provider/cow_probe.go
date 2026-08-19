@@ -482,6 +482,21 @@ func cowPayloadTar(bin []byte) []byte {
 // requires the docker-save layout — a plain tar fails with "no manifest.json
 // in archive" and the container is silently auto-removed (device log,
 // 2026-08-10).
+// stormPivotPath is where mkube's image carries stormpivot, to be copied into
+// the CoW stub. Overridable for the same reason MKUBE_VOLUME_TOOL is: when
+// mkube itself runs from a clone, its own image is not at /.
+var stormPivotPath = envOr("MKUBE_STORMPIVOT", "/usr/local/bin/stormpivot")
+
+// haveStormPivot reports whether this build can put the pivot in the stub.
+//
+// Checked rather than assumed: an mkube image built before stormpivot existed
+// carries no such file, and a CoW pod created by it must still get the old
+// argv[0] rewrite rather than an entrypoint pointing at nothing.
+func haveStormPivot() bool {
+	st, err := os.Stat(stormPivotPath)
+	return err == nil && !st.IsDir()
+}
+
 func cowStubTar() []byte {
 	// Inner layer: one placeholder file.
 	var layer bytes.Buffer
@@ -489,6 +504,31 @@ func cowStubTar() []byte {
 	content := []byte("cow-probe\n")
 	_ = lw.WriteHeader(&tar.Header{Name: "cow-probe-placeholder", Mode: 0o644, Size: int64(len(content))})
 	_, _ = lw.Write(content)
+
+	// stormpivot, if this build carries it.
+	//
+	// The stub is the container's *real* root, and the image is mounted
+	// under it, so anything in the image that names an absolute path is
+	// wrong: /stormd and the applet symlinks pointing at it, a config passed
+	// as --config /etc/..., and the loader a dynamic binary needs before it
+	// gets a say. Rewriting the entrypoint to /payload/... fixes argv[0] and
+	// none of the rest.
+	//
+	// stormpivot chroots into the payload and execs the image's own
+	// entrypoint unmodified, so inside, every absolute path is the image's.
+	// Confirmed on RouterOS 7.22.2: a container has CAP_SYS_CHROOT.
+	//
+	// Absent, the stub still builds and the old rewrite-argv0 path still
+	// applies — which is what every CoW pod did before this, and why its
+	// absence is a warning rather than a failure.
+	if pivot, err := os.ReadFile(stormPivotPath); err == nil {
+		_ = lw.WriteHeader(&tar.Header{
+			Name: strings.TrimPrefix(cowPivotPath, "/"),
+			Mode: 0o755,
+			Size: int64(len(pivot)),
+		})
+		_, _ = lw.Write(pivot)
+	}
 	// The mount target must already exist. RouterOS does not create a
 	// container mount's destination the way docker does, so without this
 	// directory /payload is simply absent and the entrypoint dies with

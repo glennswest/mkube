@@ -22,3 +22,4 @@ deploy/agent-stormd.toml
 # Rust build artifacts (e.g. tools/iscsi-pvc/target/)
 target/
 
+/stormpivot

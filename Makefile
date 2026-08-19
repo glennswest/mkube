@@ -8,9 +8,10 @@ IMAGE     := $(REGISTRY)/$(BINARY):edge
 MKUBE_API ?= http://192.168.200.2:8082
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
 STORMD        := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
+STORMPIVOT    := ../stormboot/target/aarch64-unknown-linux-musl/release/stormpivot
 STORMD_AMD64  := ../stormd/target/x86_64-unknown-linux-musl/release/stormd
 
-.PHONY: build build-local tarball deploy deploy-tarball test lint clean mocks \
+.PHONY: build build-local tarball deploy build-stormpivot deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-agent build-all \
         deploy-update deploy-installer \
         build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube \
@@ -79,12 +80,24 @@ tarball: build
 ## After push, waits up to 90s for mkube-update to swap in the new binary
 ## and verifies the running commit matches what was just built.
 ## Use `make deploy-config` separately when config/boot-order files change.
-deploy: build build-nvme-pvc
+## Build stormpivot for the target architecture.
+##
+## Sibling checkout, like ../stormd. It goes into mkube's image and from there
+## into every CoW stub, where it chroots into the payload — without it a CoW
+## pod only gets its argv[0] rewritten, which is not enough for an image that
+## opens its own absolute paths.
+build-stormpivot:
+	cd ../stormboot && CROSS_CONTAINER_ENGINE=$${CROSS_CONTAINER_ENGINE:-podman} \
+		CROSS_CONTAINER_OPTS=$${CROSS_CONTAINER_OPTS:---security-opt label=disable} \
+		cross build --release --target aarch64-unknown-linux-musl --bin stormpivot
+
+deploy: build build-nvme-pvc build-stormpivot
 	cp dist/$(BINARY)-$(ARCH) mkube
 	cp $(STORMD) stormd
 	cp dist/nvme-pvc-$(ARCH) nvme-pvc
+	cp $(STORMPIVOT) stormpivot
 	podman build --platform linux/$(ARCH) -f Dockerfile.scratch -t $(IMAGE) .
-	rm -f mkube stormd nvme-pvc
+	rm -f mkube stormd nvme-pvc stormpivot
 	podman push --tls-verify=false $(IMAGE)
 	@echo "Pushed $(IMAGE) — waiting for mkube-update to swap binary..."
 	@EXPECT_COMMIT=$(COMMIT); \
