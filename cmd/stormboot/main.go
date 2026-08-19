@@ -31,11 +31,27 @@
 // against a healthy device does nothing and says so — so it is equally a boot
 // sequencer and a health check for the dependency chain.
 //
+// # What it is, once the goldens are pre-built
+//
+// Think of it as podman with the expensive half deleted. podman pulls, builds,
+// stores and runs. stormboot only runs — because by the time it sees an image
+// that image is already a golden: an ext4 filesystem built and verified on the
+// build box, shipped with the appliance, and imported into the engine as a
+// sealed template. Starting a container is then clone the template, attach it,
+// point the container at it, go.
+//
+// That is the whole reason the heavy half can be deleted. A pre-built golden
+// also breaks the bootstrap circularity that forced sbregistry onto a tarball:
+// sbregistry cannot build its own golden, but it does not have to if the
+// golden arrives already made. What is left that genuinely cannot live on a
+// clone is the engine that serves the clones, so the floor is one container,
+// not four.
+//
 // # What it grows into
 //
-// Launching mkube from a CoW clone rather than a tarball, and replacing
-// mkube-update's polling with sbregistry's push notification. Both need the
-// ordering this establishes, which is why the ordering comes first.
+// Importing a golden `.img` into the engine as a sealed template, and
+// launching from the clone rather than a tarball. Both need the ordering this
+// establishes, which is why the ordering came first.
 package main
 
 import (
