@@ -3,6 +3,36 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **verified(cow):** **netwatch runs on CoW through `stormpivot`, on the real
+  router.** This is the case that motivated the pivot: the pod previously came
+  up and exited immediately looking like a missing binary. Deployed e561da3 to
+  rose1 and switched `infra/netwatch` to `vkube.io/image-mode: cow`. The
+  container now carries `file=raid1/cache/cow-generic-stub-v3.tar`,
+  `entrypoint=/stormpivot`, `cmd=/payload /stormd --config
+  /etc/stormd/config.toml` — the image's own entrypoint, unmodified — and the
+  log shows the three things that used to fail: the absolute config path
+  opened, the busybox absolute symlinks installed, and the app itself started
+  (`process started process=netwatch pid=19`). Pod reports `ready: true`,
+  `restarts: 0`, 18.8 MB RSS, liveness probe on `/ui/:80` passing.
+- **measured(cow):** the whole swap took **7 seconds**, stop to serving —
+  remove <1s, clone attached over NVMe-TCP (`vol-a5458c04`, 268M ext4) at
+  16:08:51, running at 16:08:52.
+- **bug(update):** mkube-update's root-dir rename fast path fails on its own
+  container: `MoveDirectory: source "raid1/images/kube.gt.lo" not found`, so
+  it falls back to the in-place recursive delete and spends **3m03s** of a
+  3m41s deploy deleting an unpacked image tree. `FileExists` says the path is
+  there and `MoveDirectory` says it is not, so the two disagree about the same
+  string. Not inherent to tar mode — netwatch's tar container was removed in
+  under a second because the rename worked there.
+- **gap(cow):** veth is **not** reused on the pod path. `CreateVeth` is
+  idempotent, but pod teardown removes the veth (`/interface veth remove`) and
+  create adds it back, so the idempotency never applies. Only mkube-update's
+  own container swap reuses one.
+- **measured:** mkube itself boots in **4s** (container start 16:01:40 → REST
+  listening 16:01:44); mkube-update then takes a further **18s** to report
+  "health check passed" on a process that was already serving.
+
+### 2026-08-19
 - **feat:** CoW containers chroot into the payload. `stormpivot` (from
   `../stormboot`) ships in mkube's image, is copied into the CoW stub at pod
   create, and becomes the container's entrypoint: it chroots into `/payload`
