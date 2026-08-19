@@ -40,7 +40,23 @@ const (
 // volumeToolBinary is the NVMe/TCP volume tool mkube ships in its own image:
 // format, re-identify, flush and pattern-verify a stormblock volume by
 // talking to the export directly.
-const volumeToolBinary = "/usr/local/bin/nvme-pvc"
+//
+// Overridable because it is the one path mkube resolves inside its own image
+// rather than through a RouterOS mount. Everything else it opens — /etc/mkube,
+// /data — arrives on a mount and lands at the same place whatever the
+// container's root is. So when mkube runs from a CoW clone, where the image
+// sits under the mount point rather than at /, this is the single value that
+// has to move with it. MKUBE_VOLUME_TOOL is how the launcher says where.
+var volumeToolBinary = envOr("MKUBE_VOLUME_TOOL", "/usr/local/bin/nvme-pvc")
+
+// envOr returns the environment variable's value, or a default when unset or
+// empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // isStormblockPVC reports whether a PVC asks for a stormblock volume.
 func isStormblockPVC(pvc *corev1.PersistentVolumeClaim) bool {
@@ -400,7 +416,6 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 			log.Warnw("could not roll back stormblock volume", "volumeID", created.ID, "error", delErr)
 		}
 	}
-
 
 	// mkube does not format. A stormblock PVC is a CoW clone of a template
 	// the registry built and formatted, so the filesystem exists before the

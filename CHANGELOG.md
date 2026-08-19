@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **feat:** `MKUBE_VOLUME_TOOL` overrides where mkube looks for `nvme-pvc`.
+  Groundwork for running mkube itself from a CoW clone. Under that model the
+  container's root is a stub and the image sits under a mount point, so any
+  path mkube resolves *inside its own image* moves. Auditing that surface
+  found exactly one: `nvme-pvc`. Everything else it opens — `/etc/mkube`,
+  `/data` — arrives on a RouterOS mount and lands at the same place whatever
+  the root is (and those mounts can themselves be NVMe-backed PVCs, so they
+  follow the storage rather than the image).
 - **chore:** remove `alternateStagingRootDir`, dead since blue-green went. It
   ping-ponged a container's root-dir between `<name>` and `<name>__stg` on
   successive updates, which is why five running containers — three microdns

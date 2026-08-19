@@ -24,8 +24,8 @@ package provider
 import (
 	"archive/tar"
 	"bytes"
-	"crypto/sha256"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,9 +51,12 @@ const (
 	cowProbeNamespace = "gt"
 	cowProbeContainer = "gt_cowprobe_cowprobe"
 	cowProbeVeth      = "veth_gt_cowprobe_0"
-	// The static aarch64-musl binary mkube's image carries — a one-file rootfs.
-	cowProbeBinary = volumeToolBinary
 )
+
+// cowProbeBinary is the static aarch64-musl binary mkube's image carries — a
+// one-file rootfs. A var rather than a const because volumeToolBinary is now
+// overridable: when mkube itself runs from a clone, its own image is not at /.
+var cowProbeBinary = volumeToolBinary
 
 func (p *MicroKubeProvider) handleCoWProbe(w http.ResponseWriter, r *http.Request) {
 	// Detached context: the probe must finish (and clean up) even if the
