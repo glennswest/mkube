@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### 2026-08-19 (deploy speed)
+- **fix(update):** A root-dir rename that finds nothing to move no longer falls
+  back to deleting it. `RemoveContainer` wipes the container's root-dir itself,
+  so by the time `swapRootDirAside` runs there is usually nothing there — and
+  the path is not in RouterOS's file table in any case, so the rename could
+  never have succeeded. The recursive-delete fallback then walked that table to
+  remove a directory that did not exist: **3m03s of a 3m41s deploy, spent
+  removing nothing.** `MoveDirectory` now returns a wrapped `ErrSourceNotFound`
+  and the caller treats "already gone" as done. Two tests pin the contract, so a
+  reworded error cannot quietly restore the three minutes.
+- **fix(update):** Post-replace verification no longer soaks for a fixed 15
+  seconds. Waiting proved only "it has not crashed yet", which is no truer at 15
+  seconds than at zero — a container dying at 16 seconds passed anyway. Ongoing
+  health is a healthcheck and mkube already runs those against its containers
+  indefinitely; mkube itself is covered by `watchMkubeSocket`, which holds a
+  half-open connection and sees a death instantly. Both are asynchronous and
+  already running, so the synchronous soak duplicated them and delayed every
+  good deploy. Verification now confirms the container is up and returns.
+- **fix(cow):** An in-place pod update keeps its veth. `teardownForUpdate` was
+  releasing it with the comment "CreatePod will re-allocate", so every update
+  removed an interface and added an identical one back, with a window where the
+  address did not exist. Every layer below is already idempotent for the same
+  owner — `AllocateStatic` returns nil when the same key holds the IP,
+  `CreateVeth` on a match, `AddBridgePort` when already on the right bridge — so
+  re-allocating over the kept veth is a no-op. Still released when the pod is
+  actually moving: a changed network or static IP means the veth is wrong.
+
 ### 2026-08-19
 - **verified(cow):** **netwatch runs on CoW through `stormpivot`, on the real
   router.** This is the case that motivated the pivot: the pod previously came

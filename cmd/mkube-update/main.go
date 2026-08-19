@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -47,14 +48,14 @@ var version = "dev"
 // Config is the top-level configuration loaded from YAML.
 type Config struct {
 	RegistryURL      string          `yaml:"registryURL"`
-	RouterOSURL      string          `yaml:"routerosURL"`      // legacy REST URL — host is reused for native API when routerosAddress is empty
-	RouterOSAddress  string          `yaml:"routerosAddress"`  // native API endpoint, e.g. "192.168.200.1:8728"
+	RouterOSURL      string          `yaml:"routerosURL"`     // legacy REST URL — host is reused for native API when routerosAddress is empty
+	RouterOSAddress  string          `yaml:"routerosAddress"` // native API endpoint, e.g. "192.168.200.1:8728"
 	RouterOSUser     string          `yaml:"routerosUser"`
 	RouterOSPassword string          `yaml:"routerosPassword"`
 	MkubeAPI         string          `yaml:"mkubeAPI"`
 	PollSeconds      int             `yaml:"pollSeconds"`
-	TarballDir       string          `yaml:"tarballDir"`       // container path for staging tarballs (default: /data/staging)
-	TarballROSPath   string          `yaml:"tarballROSPath"`   // RouterOS-relative path prefix (default: raid1/volumes/mkube-update-updater/data/staging)
+	TarballDir       string          `yaml:"tarballDir"`     // container path for staging tarballs (default: /data/staging)
+	TarballROSPath   string          `yaml:"tarballROSPath"` // RouterOS-relative path prefix (default: raid1/volumes/mkube-update-updater/data/staging)
 	Watches          []WatchEntry    `yaml:"watches"`
 	Bootstrap        BootstrapConfig `yaml:"bootstrap"`
 }
@@ -83,9 +84,9 @@ type BootstrapContainer struct {
 // WatchEntry defines a single image to watch in the local registry.
 type WatchEntry struct {
 	Repo         string        `yaml:"repo"`
-	Tag          string        `yaml:"tag"`                   // single tag (backward compat)
-	Tags         []string      `yaml:"tags,omitempty"`        // ordered preference list; first found wins
-	Container    string        `yaml:"container,omitempty"`   // single container
+	Tag          string        `yaml:"tag"`                  // single tag (backward compat)
+	Tags         []string      `yaml:"tags,omitempty"`       // ordered preference list; first found wins
+	Container    string        `yaml:"container,omitempty"`  // single container
 	Containers   []string      `yaml:"containers,omitempty"` // multiple containers
 	SelfUpdate   bool          `yaml:"selfUpdate,omitempty"`
 	Rolling      bool          `yaml:"rolling,omitempty"`
@@ -170,9 +171,9 @@ func main() {
 	defer cancel()
 
 	updater := &Updater{
-		cfg:      cfg,
-		log:      log,
-		digests:  make(map[string]string),
+		cfg:       cfg,
+		log:       log,
+		digests:   make(map[string]string),
 		kickPoll:  make(chan struct{}, 1),
 		trashCh:   make(chan string, 64),
 		swapFails: make(map[string]int),
@@ -218,14 +219,14 @@ func main() {
 
 // Updater polls the local registry for digest changes and replaces containers.
 type Updater struct {
-	cfg      Config
-	log      *zap.SugaredLogger
-	digests  map[string]string // "repo:tag" → last seen digest
-	http     *http.Client      // for registry / mkube API calls
-	ros      *routeros.Client  // native RouterOS API (port 8728), single TCP connection
-	kickPoll chan struct{}     // SSE-triggered immediate poll
-	trashCh  chan string       // root-dirs swapped aside (".trash-<uuid>"), pending lazy deletion
-	swapFails map[string]int   // "repo@digest" → consecutive failed swap attempts (circuit-breaker)
+	cfg       Config
+	log       *zap.SugaredLogger
+	digests   map[string]string // "repo:tag" → last seen digest
+	http      *http.Client      // for registry / mkube API calls
+	ros       *routeros.Client  // native RouterOS API (port 8728), single TCP connection
+	kickPoll  chan struct{}     // SSE-triggered immediate poll
+	trashCh   chan string       // root-dirs swapped aside (".trash-<uuid>"), pending lazy deletion
+	swapFails map[string]int    // "repo@digest" → consecutive failed swap attempts (circuit-breaker)
 
 	// Containers this updater is DELIBERATELY replacing right now.
 	//
@@ -880,6 +881,17 @@ func (u *Updater) swapRootDirAside(ctx context.Context, rootDir string) {
 	}
 	trash := fmt.Sprintf("%s%s%s", strings.TrimSuffix(rootDir, "/"), trashSuffix, uuid.NewString())
 	if err := u.ros.MoveDirectory(ctx, rootDir, trash); err != nil {
+		// Already gone is the normal case, not a failure: RemoveContainer
+		// wipes the container's root-dir itself, so by the time this runs
+		// there is usually nothing left to move. Falling back to a recursive
+		// delete here deletes a path that does not exist — and on RouterOS
+		// that walks the entire file table, which holds every unpacked file
+		// of every container. That was 3m03s of a 3m41s deploy, spent
+		// removing nothing.
+		if errors.Is(err, routeros.ErrSourceNotFound) {
+			u.log.Debugw("root-dir already gone — nothing to swap aside", "rootDir", rootDir)
+			return
+		}
 		u.log.Warnw("root-dir rename failed, falling back to in-place delete",
 			"rootDir", rootDir, "error", err)
 		_ = u.ros.RemoveDirectory(ctx, rootDir)
@@ -1048,11 +1060,10 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	}
 
 	// Step 8: Post-replace health verification
-	healthDuration := 15 * time.Second
 	prevContainerPath := strings.TrimSuffix(containerPath, ".tar") + "-prev.tar"
 	prevROSPath := strings.TrimSuffix(rosPath, ".tar") + "-prev.tar"
 
-	if err := u.verifyHealth(ctx, name, healthDuration); err != nil {
+	if err := u.verifyHealth(ctx, name); err != nil {
 		log.Errorw("new image failed health check", "error", err)
 
 		// Retry restart up to 3 times
@@ -1063,7 +1074,7 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 				log.Warnw("restart failed", "attempt", attempt, "error", restartErr)
 				continue
 			}
-			if u.verifyHealth(ctx, name, healthDuration) == nil {
+			if u.verifyHealth(ctx, name) == nil {
 				log.Infow("container recovered after restart", "attempt", attempt)
 				recovered = true
 				break
@@ -1074,7 +1085,7 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 			// Check if we have a previous tarball to rollback to
 			if _, statErr := os.Stat(prevContainerPath); statErr == nil {
 				log.Warn("all restart attempts failed, rolling back to previous image")
-				if rollbackErr := u.rollbackContainer(ctx, name, ct, prevROSPath, healthDuration); rollbackErr != nil {
+				if rollbackErr := u.rollbackContainer(ctx, name, ct, prevROSPath); rollbackErr != nil {
 					os.Remove(containerPath)
 					os.Remove(prevContainerPath)
 					return fmt.Errorf("CRITICAL: new image failed and rollback failed: %w", rollbackErr)
@@ -1095,34 +1106,36 @@ func (u *Updater) replaceContainer(ctx context.Context, name, imageRef string) e
 	return nil
 }
 
-// verifyHealth polls the container status for the given duration. If the
-// container stops (crashes) during this window, it returns an error. If it
-// stays running for the full duration, it returns nil.
-func (u *Updater) verifyHealth(ctx context.Context, name string, duration time.Duration) error {
-	log := u.log.With("container", name)
-	log.Infow("verifying container health", "duration", duration)
-
-	deadline := time.Now().Add(duration)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-
-		ct, err := u.ros.GetContainer(ctx, name)
-		if err != nil {
-			return fmt.Errorf("health check: container disappeared: %w", err)
-		}
-		if ct.IsStopped() {
-			return fmt.Errorf("health check: container stopped (crashed) during verification")
-		}
-		if !ct.IsRunning() {
-			return fmt.Errorf("health check: container in unexpected state")
-		}
+// verifyHealth confirms the replaced container came back, and returns.
+//
+// It does not wait. This used to soak for a fixed 15 seconds, which is 15
+// seconds of every deploy spent proving "it has not crashed yet" — a claim no
+// truer at 15 seconds than at zero, since a container that dies at 16 seconds
+// passed the soak anyway. Waiting longer does not make the answer better, it
+// only makes every good deploy slower.
+//
+// Continuous health is a healthcheck, and mkube already runs those: it
+// supervises its containers and evaluates their liveness probes on an
+// interval, indefinitely, which is strictly more coverage than any window
+// this could hold open. For mkube itself — which cannot check itself while it
+// is down — `watchMkubeSocket` holds a half-open connection and sees a death
+// the instant it happens. Both are asynchronous and already running, so a
+// synchronous soak here buys nothing and costs the deploy.
+//
+// What remains is the one thing the caller genuinely needs before declaring
+// the swap done: the container is present and not already dead.
+func (u *Updater) verifyHealth(ctx context.Context, name string) error {
+	ct, err := u.ros.GetContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("health check: container disappeared: %w", err)
 	}
-
-	log.Info("health check passed")
+	if ct.IsStopped() {
+		return fmt.Errorf("health check: container stopped (crashed) immediately")
+	}
+	if !ct.IsRunning() {
+		return fmt.Errorf("health check: container in unexpected state")
+	}
+	u.log.Infow("container running — ongoing health is mkube's healthcheck", "container", name)
 	return nil
 }
 
@@ -1141,7 +1154,7 @@ func (u *Updater) restartContainer(ctx context.Context, name string) error {
 // rollbackContainer stops the current (failed) container, removes it, cleans
 // the root-dir, and recreates from the previous tarball. Verifies health after
 // rollback with up to 3 restart retries if the initial health check fails.
-func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *routeros.Container, prevROSPath string, healthDuration time.Duration) error {
+func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *routeros.Container, prevROSPath string) error {
 	log := u.log.With("container", name)
 
 	// Stop and remove the failing container
@@ -1200,7 +1213,7 @@ func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *
 	}
 
 	// Verify health
-	if u.verifyHealth(ctx, name, healthDuration) == nil {
+	if u.verifyHealth(ctx, name) == nil {
 		log.Info("rollback successful")
 		return nil
 	}
@@ -1211,7 +1224,7 @@ func (u *Updater) rollbackContainer(ctx context.Context, name string, origSpec *
 		if restartErr := u.restartContainer(ctx, name); restartErr != nil {
 			continue
 		}
-		if u.verifyHealth(ctx, name, healthDuration) == nil {
+		if u.verifyHealth(ctx, name) == nil {
 			log.Infow("rollback recovered after restart", "attempt", attempt)
 			return nil
 		}
@@ -1434,7 +1447,7 @@ func deriveNativeAddress(restURL string) string {
 	return host + ":8728"
 }
 
-/// loadRegistryTransport returns an HTTP transport that trusts the registry CA.
+// / loadRegistryTransport returns an HTTP transport that trusts the registry CA.
 // Falls back to skip-verify if the CA cert is not found.
 func loadRegistryTransport(log *zap.SugaredLogger) http.RoundTripper {
 	caFile := "/etc/mkube-update/registry-ca.crt"

@@ -20,10 +20,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	rosapi "github.com/go-routeros/routeros/v3"
 	"github.com/glennswest/mkube/pkg/config"
+	rosapi "github.com/go-routeros/routeros/v3"
 )
-
 
 // Client wraps the RouterOS native API (TCP port 8728) for container and
 // infrastructure management. A single persistent TCP connection is maintained
@@ -1102,6 +1101,16 @@ func (c *Client) RemoveDirectory(ctx context.Context, path string) error {
 // aside instantly so a fresh extraction can proceed without racing a partial
 // delete (the cause of "root-dir overlap" failures on re-create). The displaced
 // directory is reclaimed later by a background sweep.
+// ErrSourceNotFound reports that a move's source path does not exist.
+//
+// Worth distinguishing, because "it is already gone" and "the move failed"
+// call for opposite responses: the first means there is nothing left to do,
+// and the second means something still needs cleaning up. Conflating them is
+// how a rename-aside of an already-deleted directory turned into a recursive
+// delete of a path that was not there — which on RouterOS means enumerating
+// the whole file table, and cost three minutes of every mkube deploy.
+var ErrSourceNotFound = errors.New("source not found")
+
 func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) error {
 	oldPath = strings.TrimPrefix(oldPath, "/")
 	newPath = strings.TrimPrefix(newPath, "/")
@@ -1112,7 +1121,7 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 		if ln, okN := c.localPath(newPath); okN {
 			if err := os.Rename(lo, ln); err != nil {
 				if os.IsNotExist(err) {
-					return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+					return fmt.Errorf("MoveDirectory: %q: %w", oldPath, ErrSourceNotFound)
 				}
 				return err
 			}
@@ -1125,7 +1134,7 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 		return nil
 	}
 	if strings.Contains(err.Error(), "no such item") {
-		return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+		return fmt.Errorf("MoveDirectory: %q: %w", oldPath, ErrSourceNotFound)
 	}
 
 	files, lerr := c.ListFiles(ctx, oldPath)
@@ -1133,7 +1142,7 @@ func (c *Client) MoveDirectory(ctx context.Context, oldPath, newPath string) err
 		return fmt.Errorf("%w (fallback list: %s)", err, lerr)
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("MoveDirectory: source %q not found", oldPath)
+		return fmt.Errorf("MoveDirectory: %q: %w", oldPath, ErrSourceNotFound)
 	}
 	id, _ := files[0][".id"].(string)
 	if id == "" {
@@ -2001,11 +2010,11 @@ func (idx *FileDiskIndex) ByID(id string) *FileDisk {
 type PhysicalDisk struct {
 	ID              string `json:".id"`
 	Slot            string `json:"slot"`
-	Type            string `json:"type"`               // hardware, raid, file
+	Type            string `json:"type"` // hardware, raid, file
 	Model           string `json:"model,omitempty"`
-	Size            string `json:"size,omitempty"`      // e.g. "953870516224"
-	Free            string `json:"free,omitempty"`      // e.g. "915953082368"
-	Filesystem      string `json:"fs,omitempty"`        // e.g. "ext4"
+	Size            string `json:"size,omitempty"` // e.g. "953870516224"
+	Free            string `json:"free,omitempty"` // e.g. "915953082368"
+	Filesystem      string `json:"fs,omitempty"`   // e.g. "ext4"
 	MountPoint      string `json:"mount-point,omitempty"`
 	RaidType        string `json:"raid-type,omitempty"` // e.g. "raid-0", "raid-1"
 	RaidDeviceCount string `json:"raid-device-count,omitempty"`

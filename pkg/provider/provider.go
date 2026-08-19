@@ -1391,7 +1391,8 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 				"oldNetwork", oldNet, "newNetwork", newNet, "oldIP", oldIP, "newIP", newIP)
 			p.recordEvent(pod, "NetworkChange",
 				fmt.Sprintf("Recreating pod %s/%s on network %s (%s)", pod.Namespace, pod.Name, newNet, newIP), "Normal")
-			p.teardownForUpdate(ctx, old)
+			// Moving networks: the old veth is wrong now and must go.
+			p.teardownForUpdate(ctx, old, false)
 			return p.CreatePod(ctx, pod)
 		}
 	}
@@ -1411,7 +1412,7 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 	// RemoveMountsByList, which destroys PVC and ConfigMap mounts. This keeps
 	// mounts intact so CreatePod's ReconcileMounts reconciles them instead of
 	// rebuilding from scratch.
-	p.teardownForUpdate(ctx, pod)
+	p.teardownForUpdate(ctx, pod, true)
 	if err := p.CreatePod(ctx, pod); err != nil {
 		return err
 	}
@@ -1425,7 +1426,21 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 // be recreated by CreatePod. Unlike DeletePod, it does NOT remove mount
 // entries — this preserves PVC and ConfigMap mounts so that CreatePod's
 // ReconcileMounts can add missing mounts rather than recreating from scratch.
-func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.Pod) {
+// teardownForUpdate stops a pod's containers so CreatePod can rebuild them.
+//
+// keepNetwork keeps the veth, its IP and its DNS registration in place. An
+// in-place update rebuilds the same pod, on the same network, at the same
+// static IP — so tearing the veth down only to have CreatePod add an
+// identical one back is churn with a gap in the middle where the address does
+// not exist. Every layer below is already idempotent for the same owner
+// (`AllocateStatic` returns nil when the same key holds the IP, `CreateVeth`
+// returns nil on a match, `AddBridgePort` returns nil when already on the
+// right bridge), so re-allocating over a veth that was never removed is a
+// no-op rather than a conflict.
+//
+// It is false only when the pod is moving: a changed network or static IP
+// means the existing veth is now wrong, and it has to go.
+func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.Pod, keepNetwork bool) {
 	log := p.deps.Logger.With("pod", podKey(pod))
 
 	// Unregister from lifecycle manager to prevent watchdog interference
@@ -1458,9 +1473,13 @@ func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.P
 		// ReconcileMounts during CreatePod can preserve PVC mounts and
 		// reconcile ConfigMap mounts without data loss.
 
-		// Release veth (CreatePod will re-allocate)
+		// Release the veth only when the pod is actually moving. Otherwise
+		// keep it: CreatePod re-allocates onto the same one, and the address
+		// never goes away in between.
 		vn := vethName(pod, i)
-		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
+		if keepNetwork {
+			log.Debugw("keeping veth across update", "veth", vn)
+		} else if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
 			log.Warnw("error releasing network during update teardown", "veth", vn, "error", err)
 		}
 

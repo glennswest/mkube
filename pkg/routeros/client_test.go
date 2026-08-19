@@ -2,12 +2,14 @@ package routeros
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/glennswest/mkube/pkg/config"
 	rosapi "github.com/go-routeros/routeros/v3"
 	"github.com/go-routeros/routeros/v3/proto"
-	"github.com/glennswest/mkube/pkg/config"
 )
 
 // newTestClient creates a Client with a mock exec function.
@@ -517,5 +519,51 @@ func TestGetSystemResource(t *testing.T) {
 	}
 	if res.Architecture != "arm64" {
 		t.Errorf("expected arch 'arm64', got %q", res.Architecture)
+	}
+}
+
+// A move whose source is gone must be distinguishable from a move that failed.
+//
+// swapRootDirAside falls back to a recursive delete when a rename fails, and
+// on RouterOS that walks the whole file table. When the source is simply
+// already gone — the normal case, since RemoveContainer wipes the root-dir
+// itself — that fallback deletes nothing, slowly: it cost 3m03s of a 3m41s
+// deploy. The caller tells the two apart with errors.Is, so the wrapping is a
+// contract and not an implementation detail.
+func TestMoveDirectoryReportsMissingSourceAsErrSourceNotFound(t *testing.T) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		return nil, fmt.Errorf("from RouterOS: no such item")
+	}
+
+	err := client.MoveDirectory(context.Background(), "/raid1/images/kube.gt.lo",
+		"/raid1/images/kube.gt.lo.trash-abc")
+	if err == nil {
+		t.Fatal("expected an error when the source does not exist")
+	}
+	if !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("error must satisfy errors.Is(err, ErrSourceNotFound), got %v", err)
+	}
+	// The path belongs in the message — the caller logs it to say what was
+	// already gone.
+	if !strings.Contains(err.Error(), "raid1/images/kube.gt.lo") {
+		t.Errorf("error should name the path, got %v", err)
+	}
+}
+
+// A genuine failure must NOT look like a missing source, or the caller skips
+// a cleanup it actually needed to do.
+func TestMoveDirectoryKeepsRealFailuresDistinct(t *testing.T) {
+	client := newTestClient(t)
+	client.exec = func(ctx context.Context, words ...string) (*rosapi.Reply, error) {
+		return nil, fmt.Errorf("from RouterOS: permission denied")
+	}
+
+	err := client.MoveDirectory(context.Background(), "/raid1/images/x", "/raid1/images/x.trash-1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("a permission failure must not be reported as a missing source: %v", err)
 	}
 }
