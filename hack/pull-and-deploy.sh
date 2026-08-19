@@ -43,6 +43,15 @@ ros() {
     ${SSH} "$1" | tr -d '\r'
 }
 
+# Container state flags, from `/container/print detail`:
+#   S stopped   N starting   R running   T stopping
+#   E downloading/extracting   D deleting   F download/extract failed
+#
+# A freshly added container goes E -> R. It never passes through S, so waiting
+# for S after `/container/add` waits forever — every such wait here ran to its
+# full timeout, and the deploy then carried on regardless because the "done"
+# markers below were printed unconditionally. That combination reported a
+# successful deploy while the container had not been replaced at all.
 wait_state() {
     local name="$1" target="$2" max="${3:-30}" i=0
     printf "  Waiting for %s -> %s " "$name" "$target"
@@ -230,10 +239,18 @@ EXISTING=$(ros "/container/print count-only where name=${CONTAINER_NAME}")
 if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "0" ]; then
     echo "  Stopping existing container..."
     ros "/container/stop [find name=${CONTAINER_NAME}]" 2>/dev/null || true
-    wait_state "${CONTAINER_NAME}" "S" 2>/dev/null || true
+    if ! wait_state "${CONTAINER_NAME}" "S"; then
+        echo "  ✗ Container did not stop — refusing to continue." >&2
+        echo "    Removing a running container fails, and the add that follows" >&2
+        echo "    then fails on root-dir overlap, leaving nothing deployed." >&2
+        exit 1
+    fi
     echo "  Removing existing container..."
     ros "/container/remove [find name=${CONTAINER_NAME}]" 2>/dev/null || true
-    wait_state "${CONTAINER_NAME}" "missing" 2>/dev/null || true
+    if ! wait_state "${CONTAINER_NAME}" "missing"; then
+        echo "  ✗ Container still present after remove — refusing to continue." >&2
+        exit 1
+    fi
     echo "  ✓ Removed old container"
 else
     echo "  No existing container found"
@@ -246,16 +263,30 @@ echo "▸ Creating container '${CONTAINER_NAME}'..."
 # removed container leaves its rootfs behind. Move it aside first.
 ros "/file/remove [find name~\"${ROOT_DIR#/}\"]" 2>/dev/null || true
 
-ros "/container/add file=${REMOTE_TARBALL} interface=${VETH_NAME} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config"
+ADD_OUT=$(ros "/container/add file=${REMOTE_TARBALL} interface=${VETH_NAME} root-dir=${ROOT_DIR} name=${CONTAINER_NAME} start-on-boot=yes logging=yes dns=${DNS_SERVER} hostname=${CONTAINER_NAME} mountlists=${CONTAINER_NAME}.config" 2>&1 || true)
+if echo "${ADD_OUT}" | grep -qi "failure\|error"; then
+    echo "  ✗ Container add failed: ${ADD_OUT}" >&2
+    exit 1
+fi
+if [ "$(ros "/container/print count-only where name=${CONTAINER_NAME}")" = "0" ]; then
+    echo "  ✗ Container add reported nothing but the container does not exist" >&2
+    exit 1
+fi
 echo "  ✓ Container created"
 
+# E -> R: RouterOS extracts and, with start-on-boot, starts it itself. Waiting
+# for S here is what hung this script for twenty minutes.
 echo ""
-echo "▸ Waiting for container to extract..."
-wait_state "${CONTAINER_NAME}" "S" 60
-
-echo "▸ Starting container..."
-ros "/container/start [find name=${CONTAINER_NAME}]"
-echo "  ✓ Container started"
+echo "▸ Waiting for container to extract and run..."
+if ! wait_state "${CONTAINER_NAME}" "R" 90; then
+    echo "  Not running yet — starting it explicitly..."
+    ros "/container/start [find name=${CONTAINER_NAME}]" 2>/dev/null || true
+    if ! wait_state "${CONTAINER_NAME}" "R" 30; then
+        echo "  ✗ Container never reached RUNNING" >&2
+        exit 1
+    fi
+fi
+echo "  ✓ Container running"
 
 # ── Step 11: Verify ──────────────────────────────────────────────────────────
 echo ""

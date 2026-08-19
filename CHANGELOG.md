@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### 2026-08-19 (the outage)
+- **fix(hack):** `pull-and-deploy.sh` reported success while deploying nothing.
+  After `/container/add` a container goes E (extracting) → R (running) and
+  never passes through S, so every `wait_state ... "S"` ran to its full timeout
+  — and the `✓` markers printed unconditionally, so the failures scrolled past
+  as successes. Observed end to end: the stop timed out, the remove then failed
+  with `cannot remove running`, the add failed with `root-dir overlap`, and the
+  script exited 0 claiming the container was created. It now waits for the
+  state that actually happens, checks the add's output and the resulting
+  count, and refuses to continue instead of announcing a deploy that did not
+  occur.
 - **fix(provider):** mkube carried its own copy of the root-dir rename bug —
   `swapRootDirAside` in the pod path fell back to an in-place recursive delete
   whenever the rename reported a missing source, which is the normal case
