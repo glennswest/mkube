@@ -5,13 +5,14 @@ ARCH      ?= arm64
 DEVICE    ?= 192.168.8.1
 REGISTRY  ?= registry.gt.lo:5000
 IMAGE     := $(REGISTRY)/$(BINARY):edge
+UPDATE_IMAGE := $(REGISTRY)/mkube-update:edge
 MKUBE_API ?= http://192.168.200.2:8082
 GOFLAGS   := -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)"
 STORMD        := ../stormd/target/aarch64-unknown-linux-musl/release/stormd
 STORMPIVOT    := ../stormboot/target/aarch64-unknown-linux-musl/release/stormpivot
 STORMD_AMD64  := ../stormd/target/x86_64-unknown-linux-musl/release/stormd
 
-.PHONY: build build-local tarball deploy build-stormpivot deploy-tarball test lint clean mocks \
+.PHONY: build build-local tarball deploy deploy-update-local build-stormpivot deploy-tarball test lint clean mocks \
         build-registry build-installer build-update build-agent build-all \
         deploy-update deploy-installer \
         build-pve-deploy build-mkube-boot deploy-pvex-registry deploy-pvex-boot deploy-pvex-mkube \
@@ -145,6 +146,19 @@ lint:
 ## Clean build artifacts
 clean:
 	rm -rf dist/
+
+## Build mkube-update as a container and push it to the local registry.
+##
+## The updater watches its own repo, so pushing is the deploy: it sees the
+## digest change and swaps itself. This is the counterpart to `deploy` for the
+## updater, and unlike `deploy-update` it needs neither crane nor ssh to the
+## device — the same path every other component already uses.
+deploy-update-local: build-update
+	cp dist/mkube-update-$(ARCH) mkube-update
+	podman build --platform linux/$(ARCH) -f Dockerfile.update -t $(UPDATE_IMAGE) .
+	rm -f mkube-update
+	podman push --tls-verify=false $(UPDATE_IMAGE)
+	@echo "Pushed $(UPDATE_IMAGE) — the updater watches its own repo and will swap itself."
 
 ## Deploy mkube-update from GHCR (no local compilation)
 deploy-update:
