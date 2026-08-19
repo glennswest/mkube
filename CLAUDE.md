@@ -164,8 +164,45 @@ Known test failures (pre-existing):
 17. **DNS failover IP per server (a/b NIC load balance)** (`pkg/provider/baremetalhost.go` + microdns): For each BMH with secondary NICs, also register a bare `serverN.<zone>` record carrying all NIC IPs (a + b), with microdns health checks (ping) so only live NICs are served. **Default/preferred answer is the lower IP (a-side)**; fail over to the b-side when a is down. microdns already supports record-level `health_check` and load balancing — wire BMH sync to create/maintain the aggregate record. (Requested 2026-08-06.)
 18. **Overlayfs image catalog (zero-copy recreate)** — **superseded by the [stormblock-registry](https://github.com/glennswest/stormblock-registry) project** (CoW at the StormBlock GEM layer; no RouterOS overlay dependency, ext4 no-reflink moot). Kept for context: (`pkg/storage/`, `pkg/runtime/routeros.go`): Eliminate the per-pod tarball untar on `CreatePod`/recreate by sharing a single read-only golden rootfs per image digest as an overlay *lower*, with a per-pod writable *upper* — so a recreate is a mount, not a copy. This is the "avoid it all" endgame for the prepull→pre-extract→catalog plan. **Owner has a solution built (not yet integrated — deferred, 2026-06-30).** Context already shipped: (Tier 1) `runImageStager` prepull keeps pulls off the recreate critical path, and the digest-validated cache (`<tarball>.digest` sidecar) reuses staged tarballs across restarts — together these drop a cold recreate to a ~1s untar. The catalog's *clone-per-pod* variant (reflink a golden dir) is **ruled out on current storage**: `/raid1` is **ext4** (confirmed live via `/api/v1/storagepools`), which has no reflink/FICLONE, so a clone is a full byte copy ≈ the untar it would replace — no win. Overlayfs sidesteps this (no copy at all, shared page cache across pods of the same image). Hard dependency: **RouterOS overlay/layered-image support** for container `root-dir` (a pre-extracted lower + writable upper) — confirm what ROS exposes, or back it with stormfs. Alternative path if overlay is unavailable: reformat `/raid1` to a reflink-capable fs (XFS-reflink/btrfs/ZFS) to reopen the clone-catalog approach. A capability probe (RouterOS accepting a container created against a pre-populated `root-dir` with no `file=`/`remote-image=`) is still untested — gate integration on it. Maps to the `[[borg-pattern-at-vfs-layer]]` VFS-layer materialization model.
 
+### Layered goldens — mkube items (2026-08-19)
+
+Master checklist: **stormblock-registry/CLAUDE.md**, "Layered goldens — the
+plan". mkube's part:
+
+- [x] **stormboot** (`cmd/stormboot`) — the sequencer that makes the boot
+      order explicit: `/raid1` → stormblockmk → sbregistry → mkube. Waits on
+      the service *answering*, not the container existing. Idempotent, so it
+      is a health check for the chain as much as a boot sequencer.
+- [ ] **stormboot launches from a clone.** Import a pre-built golden `.img`
+      as a sealed template, clone it, attach, start. Then it is podman with
+      the expensive half deleted: it only runs, because by the time it sees an
+      image that image is already golden.
+- [ ] **Relocation.** `MKUBE_VOLUME_TOOL` is done — it was the only path mkube
+      resolves inside its own image. What remains is on the image side: 252
+      absolute `-> /stormd` symlinks break under a `/payload` stub root, which
+      is what killed the netwatch CoW trial.
+- [ ] **Retire mkube-update's polling** once sbregistry's push-notify is
+      wired (`cmd/registry` already has the `webhookForwarder`; it is not
+      configured on registry.gt.lo, which is why a control-plane deploy waits
+      ~3 minutes for a digest sweep). Something external must still restart
+      mkube itself — a process cannot replace its own container — so
+      mkube-update shrinks, it does not vanish.
+
 ### In Progress
-- [ ] (2026-08-10) **CoW catalog — blocked on RouterOS image extraction onto network disks.** Model proven: a container runs its binary from a mounted stormblock clone (5 KB generic docker-save stub as `file=` + clone at `/payload` + entrypoint rewritten). Pipeline implemented (`pkg/provider/cow_catalog.go`, `vkube.io/image-mode: cow`): golden create→format→seed→seal, per-pod clone with its own UUID/label/clean state, attach, mount, container start. **Storage is NOT the problem** — `POST /api/v1/probes/datapath` writes stamped blocks through `iscsi-pvc` and verifies 64/64 good in a fresh session, after export withdrawal, and **after seal → `from_template` clone**; thin volumes, partial slab slots, snapshots and clones are byte-exact. **What fails is RouterOS writing a filesystem onto a mounted network volume**: allocation reaches the full image size, then the volume will not mount (`fs=-`) and clones of it mount empty. Ruled out: writeback settle, clean-flag restore, eject (hardware-only), unmount (absent), disable (no effect), SYNCHRONIZE CACHE (succeeds, no effect), duplicate fs identity. Related: the "RouterOS never mounts an NVMe-TCP disk" claim was retracted 2026-08-11 (a port bug on our side) — so this seeding failure is worth **re-testing over NVMe**, which is a different write path than the iSCSI one it was observed on. **Next experiment:** seed by *copying* rather than extracting — RouterOS extracts happily to `/raid1` (a hardware disk, which is how every pod works today), so run a container with `/raid1/<golden-src>` and the clone both mounted and `cp -a` between them; container writes to PVC mounts already appear durable, so this may sidestep the extraction path entirely. rose1 runs `goldenSource: sbregistry`. Probes: `/api/v1/probes/{cow,nvme,layers,layerdir,format,lsmount,inspect,datapath}`.
+- [ ] (2026-08-10, **updated 2026-08-19**) **CoW catalog — the seeding
+  blocker is gone; what remains is image relocation.** The blocker below was
+  RouterOS writing a filesystem onto a mounted network volume. sbregistry's
+  direct-write path removes RouterOS from the write path entirely, and that
+  path is now proven end to end on rose1: a golden built by sbregistry,
+  cloned, attached over NVMe-TCP, `e2fsck -fn` clean, mounted by a real
+  kernel, and a dynamic binary executed out of it. `goldenSource: sbregistry`
+  is what rose1 already runs. **What actually blocks a pod today** is that
+  under the stub-root model the image sits at `/payload`, and four images
+  carry 252 absolute `-> /stormd` symlinks that do not exist there — which is
+  why the 2026-08-19 netwatch trial came up Pending with the container exiting
+  immediately. Fix the symlinks (make them relative), not the storage. Original
+  analysis, kept because the RouterOS facts in it are still true:
+  **blocked on RouterOS image extraction onto network disks.** Model proven: a container runs its binary from a mounted stormblock clone (5 KB generic docker-save stub as `file=` + clone at `/payload` + entrypoint rewritten). Pipeline implemented (`pkg/provider/cow_catalog.go`, `vkube.io/image-mode: cow`): golden create→format→seed→seal, per-pod clone with its own UUID/label/clean state, attach, mount, container start. **Storage is NOT the problem** — `POST /api/v1/probes/datapath` writes stamped blocks through `iscsi-pvc` and verifies 64/64 good in a fresh session, after export withdrawal, and **after seal → `from_template` clone**; thin volumes, partial slab slots, snapshots and clones are byte-exact. **What fails is RouterOS writing a filesystem onto a mounted network volume**: allocation reaches the full image size, then the volume will not mount (`fs=-`) and clones of it mount empty. Ruled out: writeback settle, clean-flag restore, eject (hardware-only), unmount (absent), disable (no effect), SYNCHRONIZE CACHE (succeeds, no effect), duplicate fs identity. Related: the "RouterOS never mounts an NVMe-TCP disk" claim was retracted 2026-08-11 (a port bug on our side) — so this seeding failure is worth **re-testing over NVMe**, which is a different write path than the iSCSI one it was observed on. **Next experiment:** seed by *copying* rather than extracting — RouterOS extracts happily to `/raid1` (a hardware disk, which is how every pod works today), so run a container with `/raid1/<golden-src>` and the clone both mounted and `cp -a` between them; container writes to PVC mounts already appear durable, so this may sidestep the extraction path entirely. rose1 runs `goldenSource: sbregistry`. Probes: `/api/v1/probes/{cow,nvme,layers,layerdir,format,lsmount,inspect,datapath}`.
 - [ ] (2026-08-06) **g16 follow-ups**: `fedora-siov` (Mellanox b8:59:9f:52:23:46) identified as the **pvex Mellanox card** — an SR-IOV test VM on the Proxmox node; owner will convert it to a plain Linux NIC (MAC will change), then give it a static below 16.100; discover server7's b-port MAC and fill the reserved 192.168.16.113; TODO #16 (network-annotation strand bug) and #17 (failover DNS per server, prefer lower IP).
 
 ### Recently Completed
