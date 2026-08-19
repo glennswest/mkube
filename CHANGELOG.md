@@ -3,6 +3,25 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **feat:** `cmd/stormboot` — the sequencer that makes the control plane's
+  dependency order explicit: `/raid1` → stormblockmk → sbregistry → mkube.
+  mkube-update grew out of "the registry cannot pull its own update" and ended
+  up owning image polling, tarball staging, container creation and
+  self-update; mkube-installer owns the same knowledge again for a fresh
+  device. Neither knows about ordering, because when they were written there
+  was nothing to order — mkube ran from a tarball and depended on nothing.
+  Storage changed that: a pod whose root is a clone cannot start before the
+  thing serving the clone, and nothing on the device knew it.
+  stormboot converges rather than scripts — for each stage, make sure the
+  container runs, then wait until the service inside it *answers*, which is
+  the distinction that matters (`/mk/v1/ready` reports 503 with its blockers
+  until every export is wired, so starting sbregistry when stormblockmk's
+  container merely exists just moves the failure later). Idempotent, so it is
+  equally a boot sequencer and a health check for the chain; `--dry-run`
+  reports without touching anything. It is the floor — a plain tarball on the
+  hardware disk, depending on nothing it starts — which is the property that
+  lets everything above it live on storage that did not exist at power-on.
+  Example config in `deploy/stormboot-config.example.yaml`.
 - **feat:** `MKUBE_VOLUME_TOOL` overrides where mkube looks for `nvme-pvc`.
   Groundwork for running mkube itself from a CoW clone. Under that model the
   container's root is a stub and the image sits under a mount point, so any

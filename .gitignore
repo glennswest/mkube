@@ -6,6 +6,7 @@ dist/
 /mkube-boot
 /mkube-agent
 /mkube-update
+/stormboot
 /mkube-arm64
 /mkube-test
 /mkube-test-mac

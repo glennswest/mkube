@@ -1,0 +1,51 @@
+# stormboot — the order rose1's control plane depends on.
+#
+# Copy to /etc/stormboot/config.yaml ON THE DEVICE and fill in the
+# credentials there. This file is an example and is in git; the real one
+# carries a RouterOS password and must never be.
+#
+# The ordering is the content. Each stage must be *serving* before the next
+# is started, not merely running: sbregistry cannot build a golden until
+# stormblockmk answers, and mkube cannot clone one until sbregistry does.
+
+routeros:
+  address: 192.168.200.1:8728
+  user: REPLACE_ME
+  password: REPLACE_ME
+
+stages:
+  # The storage engine. Its root-dir is a tarball on /raid1 and stays there:
+  # it serves the volumes, so it cannot live on one.
+  #
+  # /mk/v1/ready answers 503 with a list of blockers until the slab is open,
+  # the volume metadata is restored, the NVMe portal is listening and every
+  # persisted export is wired — so the status code alone is the signal, and
+  # 200 means a consumer attaching right now gets what it expects.
+  #
+  # The timeout is generous because restoring volume metadata and re-wiring
+  # every export is not fast on a device with a lot of volumes.
+  - name: storage engine
+    container: infra_stormblockmk_stormblockmk
+    readyURL: http://192.168.200.21:9090/mk/v1/ready
+    readyStatus: 200
+    timeout: 10m
+
+  # The golden builder. Also a tarball on /raid1 — it must never depend on
+  # the volumes it hands out, or a restart cannot reach its own filesystem.
+  #
+  # Its /readyz reports the engine's readiness as well as its own, so it
+  # cannot go ready before the stage above; listing both is still worth it,
+  # because it distinguishes "the engine is late" from "sbregistry is late".
+  - name: golden builder
+    container: infra_sbregistry_sbregistry
+    readyURL: http://192.168.200.22:5100/readyz
+    readyStatus: 200
+    timeout: 5m
+
+  # The controller. Everything above this line exists so that this can be a
+  # clone rather than a tarball.
+  - name: controller
+    container: kube.gt.lo
+    readyURL: http://192.168.200.2:8082/healthz
+    readyStatus: 200
+    timeout: 5m
