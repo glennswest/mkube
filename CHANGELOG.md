@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **refactor:** `cmd/stormboot` moves out to its own pure-Rust repo,
+  `glennswest/stormboot`. It was written here because this is where
+  `pkg/routeros` lives — the same reasoning that had put 4,000 lines of
+  general serving code inside the RouterOS storage profile, and the same fix.
+  stormboot is the floor for any node (it is what starts mkube), so it cannot
+  live inside mkube; and stormos is pure Rust, so it cannot stay Go. The
+  RouterOS client it needed is one trait with two methods there, not a
+  dependency on this repo.
+
+### 2026-08-19
 - **feat:** `cmd/stormboot` — the sequencer that makes the control plane's
   dependency order explicit: `/raid1` → stormblockmk → sbregistry → mkube.
   mkube-update grew out of "the registry cannot pull its own update" and ended

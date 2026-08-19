@@ -169,10 +169,13 @@ Known test failures (pre-existing):
 Master checklist: **stormblock-registry/CLAUDE.md**, "Layered goldens — the
 plan". mkube's part:
 
-- [x] **stormboot** (`cmd/stormboot`) — the sequencer that makes the boot
-      order explicit: `/raid1` → stormblockmk → sbregistry → mkube. Waits on
-      the service *answering*, not the container existing. Idempotent, so it
-      is a health check for the chain as much as a boot sequencer.
+- [x] **stormboot** — moved out to its own pure-Rust repo
+      (`glennswest/stormboot`) 2026-08-19. It was here because that is where
+      `pkg/routeros` lived, which is the same reasoning that had put 4,000
+      lines of general serving code inside the RouterOS storage profile. It is
+      the floor for any node — it starts mkube — so it cannot live inside
+      mkube, and stormos is pure Rust. The container host is a two-method
+      trait there; RouterOS is one implementation.
 - [ ] **stormboot launches from a clone.** Import a pre-built golden `.img`
       as a sealed template, clone it, attach, start. Then it is podman with
       the expensive half deleted: it only runs, because by the time it sees an
