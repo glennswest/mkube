@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -69,9 +68,9 @@ const (
 	annotationImageDigest = "vkube.io/image-digest"
 
 	// Device passthrough annotations (StormBase only)
-	annotationDeviceClass = "stormbase.io/device-class"
-	annotationDeviceCount = "stormbase.io/device-count"
-	annotationDeviceProfile = "stormbase.io/device-profile"
+	annotationDeviceClass      = "stormbase.io/device-class"
+	annotationDeviceCount      = "stormbase.io/device-count"
+	annotationDeviceProfile    = "stormbase.io/device-profile"
 	annotationDeviceAllocation = "stormbase.io/device-allocation"
 )
 
@@ -82,9 +81,9 @@ type Deps struct {
 	NetworkMgr   *network.Manager
 	StorageMgr   *storage.Manager
 	LifecycleMgr *lifecycle.Manager
-	Namespace    *namespace.Manager          // optional, nil if namespace management is disabled
-	Store        *store.Store                // optional, nil if NATS is not configured
-	PushEvents   <-chan registry.PushEvent   // optional, receives push events from embedded registry
+	Namespace    *namespace.Manager        // optional, nil if namespace management is disabled
+	Store        *store.Store              // optional, nil if NATS is not configured
+	PushEvents   <-chan registry.PushEvent // optional, receives push events from embedded registry
 	Logger       *zap.SugaredLogger
 	Version      string // build version (git describe)
 	Commit       string // build commit (git rev-parse --short HEAD)
@@ -95,57 +94,57 @@ type Deps struct {
 // container operations, managing the full lifecycle including networking,
 // storage, and boot ordering.
 type MicroKubeProvider struct {
-	deps            Deps
-	nodeName        string
-	startTime       time.Time
-	pvcUsage        atomic.Pointer[pvcUsageIndexes] // cached /file + /disk indexes for PVC usage enrichment
-	pods            *safemap.Map[string, *corev1.Pod]                    // namespace/name -> pod
-	configMaps      *safemap.Map[string, *corev1.ConfigMap]              // namespace/name -> configmap
-	secrets         *safemap.Map[string, *corev1.Secret]               // namespace/name -> secret
-	bareMetalHosts  *safemap.Map[string, *BareMetalHost]                 // namespace/name -> BMH
-	deployments     *safemap.Map[string, *Deployment]                    // namespace/name -> deployment
-	pvcs            *safemap.Map[string, *corev1.PersistentVolumeClaim]  // namespace/name -> PVC
-	networks        *safemap.Map[string, *Network]                       // name -> Network (cluster-scoped)
-	registries      *safemap.Map[string, *Registry]                      // name -> Registry (cluster-scoped)
-	iscsiCdroms     *safemap.Map[string, *ISCSICdrom]                    // name -> ISCSICdrom (cluster-scoped)
-	iscsiDisks      *safemap.Map[string, *ISCSIDisk]                     // name -> ISCSIDisk (cluster-scoped)
-	bootConfigs     *safemap.Map[string, *BootConfig]                    // name -> BootConfig (cluster-scoped)
-	hostReservations *safemap.Map[string, *HostReservation]              // namespace/name -> HostReservation
-	jobRunners      *safemap.Map[string, *JobRunner]                     // name -> JobRunner (cluster-scoped)
-	jobs            *safemap.Map[string, *Job]                           // namespace/name -> Job
-	storagePools    *safemap.Map[string, *StoragePool]                   // name -> StoragePool (cluster-scoped)
-	redeploying     *safemap.Map[string, bool]                           // pod keys currently being redeployed
-	cowPrewarm      *safemap.Map[string, bool] // in-flight golden prewarms by repo
-	createFailures  *safemap.Map[string, int]                            // pod key -> consecutive CreatePod failures
-	createBackoff   *safemap.Map[string, *containerRestartState]         // pod key -> creation backoff tracking
-	dnsHealthFails  *safemap.Map[string, int]                            // network -> consecutive failed DNS health queries
-	networkFailures *safemap.Map[string, int]                            // pod key -> consecutive network health failures
-	restartBackoff  *safemap.Map[string, *containerRestartState]         // container name -> restart backoff tracking
-	cleanupTickCounter  int                                  // scheduler tick counter for auto-cleanup
-	jobLogBuf           *jobLogStore                         // in-memory job log buffers
-	runnerLogBuf     *jobLogStore                            // in-memory runner activity log buffers
-	dhcpMu          sync.RWMutex                             // protects dhcpIndex
-	dhcpIndex       *dhcpNetworkIndex                        // precomputed DHCP reservation/subnet lookup
-	eventsMu        sync.Mutex                               // protects events slice
-	events          []corev1.Event                           // recent events (ring buffer, max 256)
-	notifyPodStatus func(*corev1.Pod)                        // callback for pod status updates
-	pushNotify      chan registry.PushEvent                   // internal channel for API push notifications
-	consistencyRunning atomic.Bool                           // guards CheckConsistencyAsync against goroutine leaks
-	consistencyCache   *ConsistencyReport                    // cached consistency report (lock-free HTTP reads)
-	consistencyCacheMu sync.Mutex                            // guards consistencyCache writes
-	consistencyCacheAt time.Time                             // when the cache was last refreshed
-	reseedRunning      atomic.Bool                           // guards triggerNetworkReseed against goroutine leaks
-	clusterMgr         *cluster.Manager                      // nil if clustering is disabled
-	bmcController      *bmc.Controller                       // nil if no BMHs have BMC addresses
-	dnsSnapshotter     *gitbackup.DNSSnapshotter             // nil if DNS snapshots are disabled
-	kickReconcile      chan struct{}                          // event-driven reconcile trigger (buffered 1)
-	kickScheduler      chan struct{}                          // event-driven scheduler trigger (buffered 1)
-	micrologsBreaker   micrologsCircuitBreaker               // circuit breaker for micrologs service
-	micrologsClient    *http.Client                          // persistent HTTP client for micrologs (2s timeout)
-	migrationTracker   *MigrationTracker                     // tracks in-flight PVC/disk migrations
-	lastNATCheck       time.Time                              // last DHCP relay NAT exemption check
-	dnsPodCooldown     *safemap.Map[string, time.Time]        // network name → earliest retry time for managed DNS pod
-	podWorker          *PodWorker                             // serialized pod lifecycle queue
+	deps               Deps
+	nodeName           string
+	startTime          time.Time
+	pvcUsage           atomic.Pointer[pvcUsageIndexes]                     // cached /file + /disk indexes for PVC usage enrichment
+	pods               *safemap.Map[string, *corev1.Pod]                   // namespace/name -> pod
+	configMaps         *safemap.Map[string, *corev1.ConfigMap]             // namespace/name -> configmap
+	secrets            *safemap.Map[string, *corev1.Secret]                // namespace/name -> secret
+	bareMetalHosts     *safemap.Map[string, *BareMetalHost]                // namespace/name -> BMH
+	deployments        *safemap.Map[string, *Deployment]                   // namespace/name -> deployment
+	pvcs               *safemap.Map[string, *corev1.PersistentVolumeClaim] // namespace/name -> PVC
+	networks           *safemap.Map[string, *Network]                      // name -> Network (cluster-scoped)
+	registries         *safemap.Map[string, *Registry]                     // name -> Registry (cluster-scoped)
+	iscsiCdroms        *safemap.Map[string, *ISCSICdrom]                   // name -> ISCSICdrom (cluster-scoped)
+	iscsiDisks         *safemap.Map[string, *ISCSIDisk]                    // name -> ISCSIDisk (cluster-scoped)
+	bootConfigs        *safemap.Map[string, *BootConfig]                   // name -> BootConfig (cluster-scoped)
+	hostReservations   *safemap.Map[string, *HostReservation]              // namespace/name -> HostReservation
+	jobRunners         *safemap.Map[string, *JobRunner]                    // name -> JobRunner (cluster-scoped)
+	jobs               *safemap.Map[string, *Job]                          // namespace/name -> Job
+	storagePools       *safemap.Map[string, *StoragePool]                  // name -> StoragePool (cluster-scoped)
+	redeploying        *safemap.Map[string, bool]                          // pod keys currently being redeployed
+	cowPrewarm         *safemap.Map[string, bool]                          // in-flight golden prewarms by repo
+	createFailures     *safemap.Map[string, int]                           // pod key -> consecutive CreatePod failures
+	createBackoff      *safemap.Map[string, *containerRestartState]        // pod key -> creation backoff tracking
+	dnsHealthFails     *safemap.Map[string, int]                           // network -> consecutive failed DNS health queries
+	networkFailures    *safemap.Map[string, int]                           // pod key -> consecutive network health failures
+	restartBackoff     *safemap.Map[string, *containerRestartState]        // container name -> restart backoff tracking
+	cleanupTickCounter int                                                 // scheduler tick counter for auto-cleanup
+	jobLogBuf          *jobLogStore                                        // in-memory job log buffers
+	runnerLogBuf       *jobLogStore                                        // in-memory runner activity log buffers
+	dhcpMu             sync.RWMutex                                        // protects dhcpIndex
+	dhcpIndex          *dhcpNetworkIndex                                   // precomputed DHCP reservation/subnet lookup
+	eventsMu           sync.Mutex                                          // protects events slice
+	events             []corev1.Event                                      // recent events (ring buffer, max 256)
+	notifyPodStatus    func(*corev1.Pod)                                   // callback for pod status updates
+	pushNotify         chan registry.PushEvent                             // internal channel for API push notifications
+	consistencyRunning atomic.Bool                                         // guards CheckConsistencyAsync against goroutine leaks
+	consistencyCache   *ConsistencyReport                                  // cached consistency report (lock-free HTTP reads)
+	consistencyCacheMu sync.Mutex                                          // guards consistencyCache writes
+	consistencyCacheAt time.Time                                           // when the cache was last refreshed
+	reseedRunning      atomic.Bool                                         // guards triggerNetworkReseed against goroutine leaks
+	clusterMgr         *cluster.Manager                                    // nil if clustering is disabled
+	bmcController      *bmc.Controller                                     // nil if no BMHs have BMC addresses
+	dnsSnapshotter     *gitbackup.DNSSnapshotter                           // nil if DNS snapshots are disabled
+	kickReconcile      chan struct{}                                       // event-driven reconcile trigger (buffered 1)
+	kickScheduler      chan struct{}                                       // event-driven scheduler trigger (buffered 1)
+	micrologsBreaker   micrologsCircuitBreaker                             // circuit breaker for micrologs service
+	micrologsClient    *http.Client                                        // persistent HTTP client for micrologs (2s timeout)
+	migrationTracker   *MigrationTracker                                   // tracks in-flight PVC/disk migrations
+	lastNATCheck       time.Time                                           // last DHCP relay NAT exemption check
+	dnsPodCooldown     *safemap.Map[string, time.Time]                     // network name → earliest retry time for managed DNS pod
+	podWorker          *PodWorker                                          // serialized pod lifecycle queue
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.
@@ -159,9 +158,9 @@ type containerRestartState struct {
 // micrologsCircuitBreaker skips micrologs requests after consecutive failures.
 // After 3 failures, it opens for 30 seconds. After cooldown, allows one probe.
 type micrologsCircuitBreaker struct {
-	mu          sync.Mutex
-	failures    int
-	openUntil   time.Time
+	mu        sync.Mutex
+	failures  int
+	openUntil time.Time
 }
 
 func (cb *micrologsCircuitBreaker) isOpen() bool {
@@ -531,6 +530,7 @@ func (p *MicroKubeProvider) notifyDNSSnapshot(networkName, endpoint, zone string
 //  3. Creating volume mounts
 //  4. Registering boot ordering if restartPolicy=Always
 //  5. Creating and starting the RouterOS container
+//
 // rootDirTrashSuffix marks a container root-dir that has been renamed aside and
 // is awaiting lazy deletion by reapStaleRootDirs. The full token is
 // ".trash-<uuid>" so names stay unique under concurrent pod creates.
@@ -913,7 +913,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 					stgVeth := truncate(vethName, 58) + "__stg"
 					stgName := truncate(name, 58) + "__stg"
 					log.Warnw("releasing leaked staging veth", "stgVeth", stgVeth)
-					p.cleanupStagingResources(ctx, stagingInfo{stgName: stgName, stgVeth: stgVeth})
+					p.cleanupStagingResources(ctx, stgName, stgVeth)
 				}
 
 				// If the IP is held by a differently-named veth (e.g. renamed
@@ -1110,8 +1110,8 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				k, v, _ := strings.Cut(env, "=")
 				_ = p.deps.Runtime.CreateEnv(ctx, name, k, v)
 			}
-			spec.Envlist = name  // RouterOS: reference the env list
-			spec.Env = envVars   // StormBase: pass via gRPC
+			spec.Envlist = name // RouterOS: reference the env list
+			spec.Env = envVars  // StormBase: pass via gRPC
 		}
 
 		if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
@@ -1343,21 +1343,21 @@ func (p *MicroKubeProvider) forceReleaseVeth(ctx context.Context, vethName strin
 	}
 }
 
-// errStagingFailed marks a blue-green update that failed during the staging
-// (extract-and-verify) phase, before the production container was touched. The
-// caller must NOT fall back to a destructive recreate for this — the old
-// container is still serving and should be left alone (retry on a later
-// reconcile). Only cutover-phase failures, where production is already in
-// flight, warrant the destructive path.
-var errStagingFailed = errors.New("blue-green staging failed")
-
-// UpdatePod handles pod spec updates via blue-green deployment.
-// A staging container extracts the new image (tarball) while the old container
-// continues serving traffic. The new image is NOT started in staging — running
-// it would open the production data volume (e.g. microdns's single-writer redb),
-// which fails; extraction success is the integrity check. After the tarball is
-// verified extracted, a fast cutover (~5-8s) swaps in the pre-extracted root-dir,
-// avoiding the 120s+ extraction downtime of a destructive delete+create.
+// UpdatePod handles pod spec updates by recreating the pod.
+//
+// This used to be a blue-green cutover: a staging container extracted the new
+// tarball while the old one kept serving, then a fast swap took the
+// pre-extracted root-dir, because RouterOS skips extraction when root-dir
+// already has content. All of that existed to avoid paying for an extraction.
+//
+// A CoW pod does not extract anything — its root is a clone of the image's
+// golden volume, which is a metadata operation — so there is nothing for
+// staging to buy. For a pod still served from a tarball the cost is the untar,
+// which the digest-validated staging cache already brought down to about a
+// second. That is the whole of what was traded away, and against it: staging
+// doubled the container count during every update, and could hang mid-cutover
+// and strand the pod's redeploying flag, after which the reconciler skipped
+// that pod for good.
 func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := p.deps.Logger.With("pod", podKey(pod))
 
@@ -1382,28 +1382,28 @@ func (p *MicroKubeProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) erro
 		}
 	}
 
-	log.Infow("updating pod (blue-green)")
+	log.Infow("updating pod (recreate)")
 
-	if err := p.blueGreenUpdate(ctx, pod); err != nil {
-		p.cleanupStaging(ctx, pod)
-		if errors.Is(err, errStagingFailed) {
-			// New image never staged cleanly (e.g. bad/incomplete tarball). The
-			// old container was never touched — leave it serving and retry later
-			// rather than tearing it down into downtime.
-			log.Warnw("blue-green staging failed, keeping current container running", "error", err)
-			return err
-		}
-		log.Errorw("blue-green cutover failed, falling back to destructive update", "error", err)
-		// Use teardownForUpdate instead of DeletePod to preserve mount entries.
-		// DeletePod calls RemoveMountsByList which destroys PVC and ConfigMap
-		// mounts. teardownForUpdate removes containers and veths but keeps
-		// mounts intact so CreatePod's ReconcileMounts can reconcile them.
-		p.teardownForUpdate(ctx, pod)
-		return p.CreatePod(ctx, pod)
+	// Hold the reconciler off for the whole recreate, and clear it here rather
+	// than anywhere further in. Blue-green set this flag inside a routine that
+	// could hang mid-cutover, and a hung routine never returns to clear it —
+	// after which the reconciler skipped the pod permanently. Set and cleared
+	// in one function with a defer, it cannot outlive the update.
+	key := podKey(pod)
+	p.redeploying.Set(key, true)
+	defer p.redeploying.Delete(key)
+
+	// teardownForUpdate rather than DeletePod: DeletePod calls
+	// RemoveMountsByList, which destroys PVC and ConfigMap mounts. This keeps
+	// mounts intact so CreatePod's ReconcileMounts reconciles them instead of
+	// rebuilding from scratch.
+	p.teardownForUpdate(ctx, pod)
+	if err := p.CreatePod(ctx, pod); err != nil {
+		return err
 	}
 	// Stamp the deployed digest after successful update
 	p.stampImageDigest(ctx, pod)
-	p.pods.Set(podKey(pod), pod.DeepCopy())
+	p.pods.Set(key, pod.DeepCopy())
 	return nil
 }
 
@@ -1460,381 +1460,6 @@ func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.P
 	p.pods.Delete(podKey(pod))
 	p.createFailures.Delete(podKey(pod))
 	p.createBackoff.Delete(podKey(pod))
-}
-
-// stagingInfo holds per-container staging state for blue-green updates.
-type stagingInfo struct {
-	prodName    string           // production container name (sanitized)
-	prodVeth    string           // production veth name
-	prodIP      string           // production IP (bare, for re-allocation)
-	prodRootDir string           // current production root-dir
-	stgName     string           // staging container name
-	stgVeth     string           // staging veth name
-	stgRootDir  string           // staging root-dir path
-	tarballPath string           // image tarball path
-	container   corev1.Container // container spec
-	index       int              // index in pod.Spec.Containers
-}
-
-// blueGreenUpdate performs a zero-downtime update by pre-extracting the new
-// image in a throwaway staging container, then doing a fast cutover that
-// skips tarball extraction entirely (RouterOS skips extraction when root-dir
-// already has content).
-func (p *MicroKubeProvider) blueGreenUpdate(ctx context.Context, pod *corev1.Pod) error {
-	log := p.deps.Logger.With("pod", podKey(pod))
-	key := podKey(pod)
-
-	networkName := pod.Annotations[annotationNetwork]
-	namespaceName := pod.Annotations[annotationNamespace]
-
-	// Prevent reconciler from interfering during the update
-	p.redeploying.Set(key, true)
-	defer func() {
-		p.redeploying.Delete(key)
-	}()
-
-	// ── Phase A: Pre-staging ────────────────────────────────────────────
-	var stages []stagingInfo
-
-	for i, container := range pod.Spec.Containers {
-		prodName := sanitizeName(pod, container.Name)
-		prodVeth := vethName(pod, i)
-
-		// Get current production container state
-		oldCt, err := p.deps.Runtime.GetContainer(ctx, prodName)
-		if err != nil {
-			return fmt.Errorf("getting production container %s: %w", prodName, err)
-		}
-
-		// Get production IP
-		prodIP, _, ok := p.deps.NetworkMgr.GetPortInfo(prodVeth)
-		if !ok {
-			return fmt.Errorf("cannot determine production IP for veth %s", prodVeth)
-		}
-
-		// Resolve image → tarball
-		var tarballPath string
-		if filePath := pod.Annotations[annotationFile]; filePath != "" {
-			tarballPath = filePath
-		} else {
-			tarballPath, err = p.deps.StorageMgr.EnsureImage(ctx, container.Image)
-			if err != nil {
-				return fmt.Errorf("ensuring image %s: %w", container.Image, err)
-			}
-		}
-
-		// Determine staging root-dir (alternate to avoid conflict with production)
-		stgRootDir := p.alternateStagingRootDir(oldCt.RootDir, prodName)
-		stgName := truncate(prodName, 58) + "__stg"
-		stgVeth := truncate(prodVeth, 58) + "__stg"
-
-		stages = append(stages, stagingInfo{
-			prodName:    prodName,
-			prodVeth:    prodVeth,
-			prodIP:      prodIP,
-			prodRootDir: oldCt.RootDir,
-			stgName:     stgName,
-			stgVeth:     stgVeth,
-			stgRootDir:  stgRootDir,
-			tarballPath: tarballPath,
-			container:   container,
-			index:       i,
-		})
-	}
-
-	// Create, extract, verify, and tear down each staging container.
-	// Old containers continue serving traffic throughout this phase.
-	for _, stg := range stages {
-		if err := p.stagingExtractAndVerify(ctx, pod, stg, networkName, log); err != nil {
-			return fmt.Errorf("%w: %v", errStagingFailed, err)
-		}
-	}
-
-	// ── Phase B: Fast cutover ───────────────────────────────────────────
-	log.Infow("blue-green: all staging verified, beginning cutover", "pod", key)
-
-	// Unregister lifecycle for all containers to prevent watchdog interference
-	for _, stg := range stages {
-		p.deps.LifecycleMgr.Unregister(stg.prodName)
-	}
-
-	// Collect current container IPs for DNS deregistration
-	containerIPs := make(map[string]string)
-	for _, stg := range stages {
-		containerIPs[stg.container.Name] = stg.prodIP
-	}
-	p.deregisterPodAliases(ctx, pod, networkName, namespaceName, containerIPs, log)
-
-	// Cutover each container: stop old → remove old → create new with pre-extracted root-dir
-	newContainerIPs := make(map[string]string)
-	for _, stg := range stages {
-		bareIP, err := p.cutoverContainer(ctx, pod, stg, networkName, namespaceName, log)
-		if err != nil {
-			return err
-		}
-		newContainerIPs[stg.container.Name] = bareIP
-	}
-
-	// ── Phase C: Register + track ───────────────────────────────────────
-	p.registerPodAliases(ctx, pod, networkName, namespaceName, newContainerIPs, log)
-	p.pushLogMappings(ctx, pod, log)
-	p.pods.Set(key, pod.DeepCopy())
-
-	p.recordEvent(pod, "Updated",
-		fmt.Sprintf("Blue-green update completed for %s/%s", pod.Namespace, pod.Name), "Normal")
-
-	log.Infow("blue-green: update complete", "pod", key)
-	return nil
-}
-
-// stagingExtractAndVerify creates a staging container, waits for tarball
-// extraction, verifies the container starts, then tears down staging resources
-// (keeping the root-dir with the extracted image for the cutover).
-func (p *MicroKubeProvider) stagingExtractAndVerify(
-	ctx context.Context, pod *corev1.Pod, stg stagingInfo,
-	networkName string, log *zap.SugaredLogger,
-) error {
-	log.Infow("blue-green: staging container",
-		"staging", stg.stgName, "prod", stg.prodName, "rootDir", stg.stgRootDir)
-
-	// Clean up any leftover staging resources from a previous failed attempt
-	p.cleanupStagingResources(ctx, stg)
-
-	// Clean staging root-dir to force fresh extraction.
-	// MUST use RemoveDirectory (not RemoveFile) because root-dirs contain
-	// extracted rootfs trees. RemoveFile silently fails on non-empty dirs,
-	// causing RouterOS to skip tarball extraction and reuse stale content.
-	if err := p.deps.Runtime.RemoveDirectory(ctx, stg.stgRootDir); err != nil {
-		log.Warnw("staging root-dir cleanup failed (may not exist yet)",
-			"rootDir", stg.stgRootDir, "error", err)
-	}
-
-	// Allocate staging veth with dynamic IP (empty hostname = no DNS registration)
-	_, _, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(ctx, stg.stgVeth, "", networkName, "")
-	if err != nil {
-		return fmt.Errorf("allocating staging veth %s: %w", stg.stgVeth, err)
-	}
-
-	// Ensure staging resources are fully cleaned up on ANY error path.
-	// Previous code only released the veth on early errors (mount/create fail)
-	// but leaked it on late errors (extraction timeout, start fail, verify fail).
-	var succeeded bool
-	defer func() {
-		if !succeeded {
-			log.Warnw("blue-green: cleaning up staging resources after failure", "staging", stg.stgName)
-			p.cleanupStagingResources(ctx, stg)
-		}
-	}()
-
-	// Create staging mounts (same volumes as production)
-	mountListName, err := p.createContainerMounts(ctx, pod, stg.stgName, stg.container, log)
-	if err != nil {
-		return fmt.Errorf("creating staging mounts for %s: %w", stg.stgName, err)
-	}
-
-	// Create staging container
-	spec := runtime.ContainerSpec{
-		Name:        stg.stgName,
-		Image:       stg.tarballPath,
-		Interface:   stg.stgVeth,
-		RootDir:     stg.stgRootDir,
-		MountLists:  mountListName,
-		Cmd:         strings.Join(stg.container.Command, " "),
-		Command:     stg.container.Command,
-		Hostname:    pod.Name,
-		DNS:         dnsServer,
-		Logging:     "true",
-		StartOnBoot: "false",
-	}
-	if p.networkHasDHCP(networkName) {
-		spec.User = "0:0"
-	}
-
-	if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
-		return fmt.Errorf("creating staging container %s: %w", stg.stgName, err)
-	}
-
-	// Wait for tarball extraction (the slow part — old container still serves).
-	// Reaching "stopped" means /container/add finished extracting cleanly; a bad
-	// or incomplete tarball fails or times out here, so this is our integrity gate.
-	if _, err := p.waitForStopped(ctx, stg.stgName, 120*time.Second); err != nil {
-		return fmt.Errorf("staging extraction failed/timeout for %s: %w", stg.stgName, err)
-	}
-
-	// Do NOT start the staging container. Running the new image here would open
-	// the production data volume (e.g. microdns's single-writer redb) that the
-	// live production container already holds — so a stateful image can never
-	// pass a "does it boot" check in staging. That start+verify step is exactly
-	// what made blue-green fall back to a destructive recreate (and churn) for
-	// stateful pods. Verify the extraction produced a non-empty root-dir instead;
-	// runtime health is checked on the real container after cutover.
-	usage, derr := p.deps.Runtime.DirectoryDiskUsage(ctx, stg.stgRootDir)
-	if derr != nil {
-		return fmt.Errorf("verifying staging extraction for %s: %w", stg.stgName, derr)
-	}
-	if usage == 0 {
-		return fmt.Errorf("staging extraction produced empty root-dir for %s (bad/incomplete tarball)", stg.stgName)
-	}
-	log.Infow("blue-green: staging tarball extracted + verified", "staging", stg.stgName, "bytes", usage)
-
-	// Remove staging container (keep root-dir!)
-	if updated, err := p.deps.Runtime.GetContainer(ctx, stg.stgName); err == nil {
-		_ = p.deps.Runtime.RemoveContainer(ctx, updated.ID)
-	}
-
-	// Clean up staging mounts, veth, and local configmap data.
-	// The root-dir is intentionally preserved for the cutover.
-	_ = p.deps.Runtime.RemoveMountsByList(ctx, stg.stgName)
-	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.stgVeth)
-	_ = os.RemoveAll(fmt.Sprintf("/data/configmaps/%s", stg.stgName))
-
-	succeeded = true
-	return nil
-}
-
-// cutoverContainer performs the fast cutover for a single container:
-// stop old → remove old → allocate prod veth with same IP →
-// create prod container with pre-extracted staging root-dir → start.
-func (p *MicroKubeProvider) cutoverContainer(
-	ctx context.Context, pod *corev1.Pod, stg stagingInfo,
-	networkName, namespaceName string, log *zap.SugaredLogger,
-) (string, error) {
-	// Stop and remove old production container
-	if ct, err := p.deps.Runtime.GetContainer(ctx, stg.prodName); err == nil {
-		if !p.stopAndRemoveContainer(ctx, stg.prodName, ct.ID) {
-			// Container could not be removed — force-release the veth by
-			// finding and removing whatever container holds it.
-			log.Warnw("blue-green: old container not removed, force-releasing veth",
-				"container", stg.prodName, "veth", stg.prodVeth)
-			p.forceReleaseVeth(ctx, stg.prodVeth)
-		}
-	}
-
-	// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive across
-	// container recreation. createContainerMounts uses ReconcileMounts which
-	// preserves PVC-backed mounts and cleans up stale non-PVC mounts.
-
-	// Release old veth + IP. If this fails (veth still bound), try force-release.
-	if err := p.deps.NetworkMgr.ReleaseInterface(ctx, stg.prodVeth); err != nil {
-		log.Warnw("blue-green: veth release failed, force-releasing", "veth", stg.prodVeth, "error", err)
-		p.forceReleaseVeth(ctx, stg.prodVeth)
-	}
-
-	// Remove old root-dir (safe — different from staging root-dir).
-	// Normalize paths before comparison to handle leading "/" mismatch —
-	// RouterOS may return root-dir without leading "/" while basePath has one.
-	if normalizePath(stg.prodRootDir) != normalizePath(stg.stgRootDir) {
-		if err := p.deps.Runtime.RemoveDirectory(ctx, stg.prodRootDir); err != nil {
-			log.Warnw("old root-dir cleanup failed", "rootDir", stg.prodRootDir, "error", err)
-		}
-	}
-
-	// Allocate production veth with SAME production IP (static)
-	containerHostname := stg.container.Name + "." + pod.Name
-	ip, _, dnsServer, err := p.deps.NetworkMgr.AllocateInterface(
-		ctx, stg.prodVeth, containerHostname, networkName, stg.prodIP)
-	if err != nil {
-		return "", fmt.Errorf("re-allocating production veth %s with IP %s: %w",
-			stg.prodVeth, stg.prodIP, err)
-	}
-	bareIP := strings.Split(ip, "/")[0]
-
-	// Register in namespace zone if applicable
-	if namespaceName != "" && p.deps.Namespace != nil {
-		if endpoint, zoneID, nsErr := p.deps.Namespace.ResolveNamespace(namespaceName); nsErr == nil {
-			if dnsClient := p.deps.NetworkMgr.DNSClient(); dnsClient != nil {
-				_ = dnsClient.CleanStaleRecords(ctx, endpoint, zoneID, containerHostname, bareIP)
-				_ = dnsClient.RegisterHost(ctx, endpoint, zoneID, containerHostname, bareIP, 60)
-			}
-			p.deps.Namespace.AddContainerToNamespace(namespaceName, stg.prodName)
-		}
-	}
-
-	// Create production mounts
-	mountListName, err := p.createContainerMounts(ctx, pod, stg.prodName, stg.container, log)
-	if err != nil {
-		return "", fmt.Errorf("creating production mounts for %s: %w", stg.prodName, err)
-	}
-
-	// Determine boot behavior
-	startOnBoot := "false"
-	if pod.Spec.RestartPolicy == corev1.RestartPolicyAlways {
-		startOnBoot = "true"
-	}
-
-	// Create production container with staging root-dir (pre-extracted → instant!)
-	spec := runtime.ContainerSpec{
-		Name:        stg.prodName,
-		Image:       stg.tarballPath,
-		Interface:   stg.prodVeth,
-		RootDir:     stg.stgRootDir, // pre-extracted, no tarball wait
-		MountLists:  mountListName,
-		Cmd:         strings.Join(stg.container.Command, " "),
-		Command:     stg.container.Command,
-		Hostname:    pod.Name,
-		DNS:         dnsServer,
-		Logging:     "true",
-		StartOnBoot: startOnBoot,
-	}
-	if p.networkHasDHCP(networkName) {
-		spec.User = "0:0"
-	}
-
-	if err := p.deps.Runtime.CreateContainer(ctx, spec); err != nil {
-		return "", fmt.Errorf("creating production container %s: %w", stg.prodName, err)
-	}
-
-	// Wait for stopped — should be near-instant since root-dir has content
-	ct, err := p.waitForStopped(ctx, stg.prodName, 30*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("waiting for production container %s: %w", stg.prodName, err)
-	}
-
-	// Start with retry (same backoff as CreatePod)
-	startBackoffs := []time.Duration{
-		2 * time.Second, 2 * time.Second,
-		3 * time.Second, 3 * time.Second,
-		5 * time.Second, 5 * time.Second,
-	}
-	var startErr error
-	for attempt := 0; attempt <= len(startBackoffs); attempt++ {
-		if startErr = p.deps.Runtime.StartContainer(ctx, ct.ID); startErr == nil {
-			break
-		}
-		if attempt < len(startBackoffs) {
-			log.Warnw("production container start failed, retrying",
-				"name", stg.prodName, "attempt", attempt+1, "error", startErr)
-			time.Sleep(startBackoffs[attempt])
-			if updated, err := p.deps.Runtime.GetContainer(ctx, stg.prodName); err == nil {
-				ct = updated
-			}
-		}
-	}
-	if startErr != nil {
-		return "", fmt.Errorf("starting production container %s after %d attempts: %w",
-			stg.prodName, len(startBackoffs)+1, startErr)
-	}
-
-	// Register with lifecycle manager
-	if startOnBoot == "true" {
-		p.deps.LifecycleMgr.Register(stg.prodName, lifecycle.ContainerUnit{
-			Name:          stg.prodName,
-			ContainerID:   ct.ID,
-			ContainerIP:   bareIP,
-			RestartPolicy: string(pod.Spec.RestartPolicy),
-			StartOnBoot:   true,
-			Managed:       true,
-			Probes:        extractProbes(stg.container),
-			HealthCheck:   extractHealthCheck(stg.container),
-			DependsOn:     extractDependencies(pod),
-			Priority:      extractPriority(pod, stg.index),
-		})
-	}
-
-	log.Infow("blue-green: production container started",
-		"name", stg.prodName, "id", ct.ID, "ip", bareIP, "rootDir", stg.stgRootDir)
-
-	return bareIP, nil
 }
 
 // createContainerMounts provisions volumes and creates mount entries for a container.
@@ -1968,29 +1593,21 @@ func (p *MicroKubeProvider) stopAndWait(ctx context.Context, name string) {
 	}
 }
 
-// cleanupStaging removes all staging resources for a pod. Called on
-// blue-green failure before falling back to destructive update.
-func (p *MicroKubeProvider) cleanupStaging(ctx context.Context, pod *corev1.Pod) {
-	for i, container := range pod.Spec.Containers {
-		prodName := sanitizeName(pod, container.Name)
-		prodVeth := vethName(pod, i)
-		stg := stagingInfo{
-			stgName: truncate(prodName, 58) + "__stg",
-			stgVeth: truncate(prodVeth, 58) + "__stg",
-		}
-		p.cleanupStagingResources(ctx, stg)
-	}
-}
-
 // cleanupStagingResources removes a single staging container, its mounts,
 // veth, and local configmap data.
-func (p *MicroKubeProvider) cleanupStagingResources(ctx context.Context, stg stagingInfo) {
-	if ct, err := p.deps.Runtime.GetContainer(ctx, stg.stgName); err == nil {
-		p.stopAndRemoveContainer(ctx, stg.stgName, ct.ID)
+// cleanupStagingResources removes a leftover `__stg` container and its veth.
+//
+// Blue-green is gone, but the debris it could leave is not: a cutover that
+// died partway left a staging container holding the pod's IP, and CreatePod
+// still has to be able to take that IP back. This is the janitor for that,
+// not a live code path — when no `__stg` names remain on the router it can go.
+func (p *MicroKubeProvider) cleanupStagingResources(ctx context.Context, stgName, stgVeth string) {
+	if ct, err := p.deps.Runtime.GetContainer(ctx, stgName); err == nil {
+		p.stopAndRemoveContainer(ctx, stgName, ct.ID)
 	}
-	_ = p.deps.Runtime.RemoveMountsByList(ctx, stg.stgName)
-	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stg.stgVeth)
-	_ = os.RemoveAll(fmt.Sprintf("/data/configmaps/%s", stg.stgName))
+	_ = p.deps.Runtime.RemoveMountsByList(ctx, stgName)
+	_ = p.deps.NetworkMgr.ReleaseInterface(ctx, stgVeth)
+	_ = os.RemoveAll(fmt.Sprintf("/data/configmaps/%s", stgName))
 }
 
 // DeletePod removes all containers associated with a pod and cleans up
@@ -2179,7 +1796,7 @@ func (p *MicroKubeProvider) GetPodStatus(ctx context.Context, namespace, name st
 				},
 			}
 			allRunning = false
-			} else {
+		} else {
 			cs.ContainerID = ct.ID
 			// Populate ImageID from storage manager's cached digest
 			if p.deps.StorageMgr != nil {
@@ -2624,7 +2241,7 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 				// Clean leftover staging resources from failed blue-green updates
 				stgVeth := truncate(prodVeth, 58) + "__stg"
 				stgName := truncate(name, 58) + "__stg"
-				p.cleanupStagingResources(ctx, stagingInfo{stgName: stgName, stgVeth: stgVeth})
+				p.cleanupStagingResources(ctx, stgName, stgVeth)
 
 				// Clean root-dir to prevent RouterOS "root-dir overlap" on recreation
 				rootDir := fmt.Sprintf("%s/%s", p.deps.Config.Storage.BasePath, name)
@@ -3080,7 +2697,6 @@ func (p *MicroKubeProvider) syncConfigMapsToDisk(ctx context.Context) {
 		}
 	}
 }
-
 
 // loadFromStore reads desired pods and configmaps from the NATS KV store.
 func (p *MicroKubeProvider) loadFromStore(ctx context.Context) ([]*corev1.Pod, []*corev1.ConfigMap) {
@@ -4218,7 +3834,7 @@ const maxEvents = 256
 
 // Pod creation backoff constants (used by reconcile loop + pod worker).
 const (
-	createBackoffThreshold = 3               // retries before backoff kicks in
+	createBackoffThreshold = 3 // retries before backoff kicks in
 	createInitialBackoff   = 30 * time.Second
 	createMaxBackoff       = 5 * time.Minute
 )
@@ -4276,7 +3892,7 @@ func (p *MicroKubeProvider) recordEvent(pod *corev1.Pod, reason, message, eventT
 		Message:        message,
 		Type:           eventType,
 		FirstTimestamp: now,
-		LastTimestamp:   now,
+		LastTimestamp:  now,
 		Count:          1,
 		Source:         corev1.EventSource{Component: "mkube", Host: p.nodeName},
 	}

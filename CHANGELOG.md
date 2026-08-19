@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### 2026-08-19
+- **BREAKING:** blue-green updates are gone; `UpdatePod` recreates the pod.
+  Blue-green existed for exactly one reason — to avoid paying for a tarball
+  extraction — by pre-extracting the new image in a staging container and then
+  swapping in its root-dir, because RouterOS skips extraction when root-dir
+  already has content. **A CoW pod extracts nothing**: its root is a clone of
+  the image's golden volume, a metadata operation, so there is nothing for
+  staging to buy. For a pod still served from a tarball the cost is the untar,
+  which the digest-validated staging cache already brought to about a second.
+  Against that: staging doubled the container count during every update, and
+  could hang mid-cutover and strand the pod's `redeploying` flag, after which
+  the reconciler skipped that pod permanently — observed twice on rose1 on
+  2026-08-19, wedging the API both times. `UpdatePod` now sets `redeploying`
+  itself and clears it with a `defer` in the same function, so it cannot
+  outlive the update. Removes `blueGreenUpdate`, `stagingExtractAndVerify`,
+  `cutoverContainer`, `cleanupStaging`, `errStagingFailed` and the
+  `stagingInfo` struct — 497 lines out, 113 in.
+  `cleanupStagingResources` survives as a janitor for `__stg` debris left by
+  the old path (a dead cutover could leave a staging container holding the
+  pod's IP); it can go once no `__stg` names remain on the router.
+
 ### 2026-08-11
 - **chore(cleanup):** the stormblock path is now iSCSI-free in fact, not just in config — all 68 exports (57 iSCSI + 11 NVMe), 9 leftover probe volumes, and all 15 stale RouterOS network-disk rows removed; `gt/sb-consumer` and its three test PVCs deleted. stormblockmk 0.4.1 running with 0 exports and no blockers. iSCSI is retained deliberately for what mkube serves OUTWARD — `ISCSICdrom` (external virtual media) and `pvc_iscsi.go`/`ISCSIDisk` (non-rose consumers); NVMe-only applies to stormblockmk, which backs mkube's own containers and local PVCs.
 - **fix(deploy): the mkube-update deploy script could never complete a swap.** `wait_state()` grepped plain `/container/print`, where the state flag and the name land on different lines, so "index + flag" was matched against the name line and never hit. Every wait ran to timeout: the stop was reported failed while the container was still running, and the remove/add that followed then failed for real (`cannot remove running`, then `root-dir overlap`). Now matches terse output, and moves the old root-dir aside before `/container/add`. Adds `Dockerfile.update`, since CI publishes mkube-update only on tags and a fix otherwise has no path to the device.
