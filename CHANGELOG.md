@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### 2026-08-19 (the outage)
+- **fix(consistency):** **An empty desired state no longer authorises deleting
+  a running fleet.** This caused the 2026-08-19 outage. Both orphan sweeps
+  guarded on `Store.Connected()`, which is TCP connection state — after a
+  restart NATS is connected while the pods are still streaming in (observed
+  live: 0 → 6 → 23 pods over ~90s), so every veth and container matched "no
+  desired pod". The sweep removed a running pod's container and left the
+  storage engine's veth without a bridge port, which surfaced as `no route to
+  host` and stopped anything golden-backed from starting. Being connected to
+  the source of truth is not the same as having received it, and only the
+  second makes a deletion safe. `safeToReap` now refuses when nothing is
+  desired but resources exist — the desired state is far likelier to be
+  missing than the node is to be entirely obsolete, and that reading is
+  unrecoverable while declining is not.
+- **fix(consistency):** A failed store read is no longer indistinguishable
+  from an empty one. Both sweeps did `storePods, _ := p.loadFromStore(ctx)`,
+  discarding the error, so a store hiccup silently emptied the desired state
+  and marked the whole node orphaned. `loadDesiredPods` reports the failure
+  and the sweeps decline to reap on it.
+
 ### 2026-08-19 (deploy speed)
 - **fix(update):** A root-dir rename that finds nothing to move no longer falls
   back to deleting it. `RemoveContainer` wipes the container's root-dir itself,

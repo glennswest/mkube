@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/glennswest/mkube/pkg/network"
@@ -30,16 +32,16 @@ type CheckSummary struct {
 
 // ConsistencyChecks groups the check categories.
 type ConsistencyChecks struct {
-	Containers  []CheckItem `json:"containers"`
-	DNS         []CheckItem `json:"dns"`
-	Manifest    []CheckItem `json:"manifest"`
-	IPAM        []CheckItem `json:"ipam"`
-	Network     []CheckItem `json:"network,omitempty"`
-	Deployments []CheckItem `json:"deployments,omitempty"`
-	PVCs        []CheckItem `json:"pvcs,omitempty"`
-	Networks    []CheckItem `json:"networks,omitempty"`
-	BMHs        []CheckItem `json:"bmhs,omitempty"`
-	Registries  []CheckItem `json:"registries,omitempty"`
+	Containers       []CheckItem `json:"containers"`
+	DNS              []CheckItem `json:"dns"`
+	Manifest         []CheckItem `json:"manifest"`
+	IPAM             []CheckItem `json:"ipam"`
+	Network          []CheckItem `json:"network,omitempty"`
+	Deployments      []CheckItem `json:"deployments,omitempty"`
+	PVCs             []CheckItem `json:"pvcs,omitempty"`
+	Networks         []CheckItem `json:"networks,omitempty"`
+	BMHs             []CheckItem `json:"bmhs,omitempty"`
+	Registries       []CheckItem `json:"registries,omitempty"`
 	ISCSICdroms      []CheckItem `json:"iscsiCdroms,omitempty"`
 	ISCSIDisks       []CheckItem `json:"iscsiDisks,omitempty"`
 	BootConfigs      []CheckItem `json:"bootConfigs,omitempty"`
@@ -55,7 +57,7 @@ type ConsistencyChecks struct {
 // CheckItem is a single check result.
 type CheckItem struct {
 	Name    string `json:"name"`
-	Status  string `json:"status"`  // "pass", "fail", "warn"
+	Status  string `json:"status"` // "pass", "fail", "warn"
 	Message string `json:"message"`
 	Details string `json:"details,omitempty"`
 }
@@ -211,7 +213,6 @@ func (p *MicroKubeProvider) handleConsistencyRepair(w http.ResponseWriter, r *ht
 		"count":    len(released),
 	})
 }
-
 
 // checkContainers verifies each manifest container exists and is running,
 // and that its veth exists.
@@ -987,6 +988,52 @@ func (p *MicroKubeProvider) CheckConsistencyAsync(reason string) {
 // cleanOrphanedVeths finds veths on the device that have no corresponding
 // desired pod and removes them. Only runs when NATS is connected so we
 // have the full desired state.
+// safeToReap reports whether an orphan sweep may delete anything.
+//
+// The rule: **an empty desired state is never a licence to delete a running
+// fleet.** If nothing is wanted but things exist, the desired state is far
+// more likely to be missing than the node is to be entirely obsolete, and
+// deleting on that reading is unrecoverable while declining to is not.
+//
+// This is what a restart looks like from inside the reconciler. The store is
+// connected — that check passes — but the pods have not arrived yet, so every
+// veth and container on the node matches "no desired pod". On 2026-08-19 that
+// removed a running pod's container and left the storage engine's veth without
+// a bridge port, which read as `no route to host` and stopped anything
+// golden-backed from starting.
+//
+// Being connected to the source of truth is not the same as having received
+// it, and only the second one makes a deletion safe.
+func safeToReap(log *zap.SugaredLogger, kind string, expected, actual int) bool {
+	if expected == 0 && actual > 0 {
+		log.Errorw("refusing to reap: desired state is empty while resources exist — "+
+			"treating this as desired state not yet loaded, not as a fleet to delete",
+			"kind", kind, "actual", actual)
+		return false
+	}
+	return true
+}
+
+// loadDesiredPods reads the desired pods, distinguishing "none are wanted"
+// from "I could not find out".
+func (p *MicroKubeProvider) loadDesiredPods(ctx context.Context) ([]*corev1.Pod, error) {
+	if p.deps.Store == nil || !p.deps.Store.Connected() {
+		return nil, fmt.Errorf("store not connected")
+	}
+	keys, err := p.deps.Store.Pods.Keys(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing pods from store: %w", err)
+	}
+	pods, _ := p.loadFromStore(ctx)
+	// loadFromStore reports a read failure by returning nothing. If the store
+	// says there are keys and we got no pods back, we did not read the
+	// desired state — we must not act as though it is empty.
+	if len(keys) > 0 && len(pods) == 0 {
+		return nil, fmt.Errorf("store lists %d pod(s) but none could be read", len(keys))
+	}
+	return pods, nil
+}
+
 func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error) {
 	// Don't remove veths until we have the full desired state from NATS.
 	if p.deps.Store == nil || !p.deps.Store.Connected() {
@@ -1007,7 +1054,13 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 		}
 	}
 
-	storePods, _ := p.loadFromStore(ctx)
+	// A failed read is not an empty desired state. Discarding this error let
+	// a store hiccup turn every veth on the node into an orphan.
+	storePods, err := p.loadDesiredPods(ctx)
+	if err != nil {
+		p.deps.Logger.Warnw("not reaping veths: desired state unreadable", "error", err)
+		return 0, nil
+	}
 	for _, pod := range storePods {
 		for i := range pod.Spec.Containers {
 			expectedVeths[vethName(pod, i)] = true
@@ -1023,6 +1076,16 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 				}
 			}
 		}
+	}
+
+	actualVeths := 0
+	for _, port := range actualPorts {
+		if strings.HasPrefix(port.Name, "veth_") {
+			actualVeths++
+		}
+	}
+	if !safeToReap(p.deps.Logger, "veths", len(expectedVeths), actualVeths) {
+		return 0, nil
 	}
 
 	cleaned := 0
@@ -1077,8 +1140,13 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 		}
 	}
 
-	// Source 2: NATS store
-	storePods, _ := p.loadFromStore(ctx)
+	// Source 2: NATS store. A failed read is not an empty desired state —
+	// discarding this error let a store hiccup mark the whole node orphaned.
+	storePods, err := p.loadDesiredPods(ctx)
+	if err != nil {
+		p.deps.Logger.Warnw("not reaping containers: desired state unreadable", "error", err)
+		return 0, nil
+	}
 	for _, pod := range storePods {
 		for _, c := range pod.Spec.Containers {
 			expectedContainers[sanitizeName(pod, c.Name)] = true
@@ -1100,6 +1168,16 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 	// Source 4: deployment-expected containers
 	for name := range p.deploymentExpectedContainers() {
 		expectedContainers[name] = true
+	}
+
+	managed := 0
+	for _, ct := range containers {
+		if strings.Contains(ct.Name, "_") {
+			managed++
+		}
+	}
+	if !safeToReap(p.deps.Logger, "containers", len(expectedContainers), managed) {
+		return 0, nil
 	}
 
 	cleaned := 0
@@ -2078,11 +2156,11 @@ func (p *MicroKubeProvider) checkSmokeTests() []CheckItem {
 func (p *MicroKubeProvider) checkPodLivenessLockFree(ctx context.Context) []CheckItem {
 	// Snapshot pod data under brief RLock
 	type probeTarget struct {
-		podName   string
-		contName  string
-		vethName  string
-		rosName   string
-		tcpPorts  []int32
+		podName  string
+		contName string
+		vethName string
+		rosName  string
+		tcpPorts []int32
 	}
 	var targets []probeTarget
 
