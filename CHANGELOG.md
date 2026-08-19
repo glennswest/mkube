@@ -3,6 +3,26 @@
 ## [Unreleased]
 
 ### 2026-08-19
+- **feat:** CoW containers chroot into the payload. `stormpivot` (from
+  `../stormboot`) ships in mkube's image, is copied into the CoW stub at pod
+  create, and becomes the container's entrypoint: it chroots into `/payload`
+  and execs the image's **own** entrypoint, unmodified.
+  The old behaviour rewrote `argv[0]` to `/payload/...`, which fixes exactly
+  one path and none of the others — not a config the program opens for itself,
+  not an absolute symlink, and not the loader the kernel resolves for a
+  dynamic binary before the program runs. That is why the netwatch conversion
+  came up Pending with the container exiting immediately.
+  **Confirmed on rose1** (RouterOS 7.22.2, arm64): a container has
+  `CAP_SYS_CHROOT`, and inside the pivot an absolute symlink resolved, a
+  config opened by absolute path, a mount placed inside the payload appeared
+  at `/data`, and `pwd` was `/`.
+  Consequently **CoW mounts now land inside the payload** (`<payload>/data`
+  rather than `/data`) — after the chroot the old root is unreachable by name,
+  and inside, the mount is at `/data` anyway, which is where the image expects
+  it.
+  Backwards compatible: an mkube image built before the pivot existed carries
+  no such file, `haveStormPivot()` reports false, and pods get the old
+  `argv[0]` rewrite. Stub bumped to `v3` so the new one is built.
 - **refactor:** `cmd/stormboot` moves out to its own pure-Rust repo,
   `glennswest/stormboot`. It was written here because this is where
   `pkg/routeros` lives — the same reasoning that had put 4,000 lines of
