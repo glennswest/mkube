@@ -50,9 +50,21 @@ build-agent:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -o dist/mkube-agent ./cmd/mkube-agent/
 
 ## Build the nvme-pvc Rust tool for the target architecture
+## Build nvme-pvc for the target architecture.
+##
+## cross-rs, not plain cargo: nvme-pvc pulls in rustls, which pulls in a C
+## dependency, so the build needs an aarch64-musl C toolchain. That toolchain
+## lives inside the cross container, so the build box needs none of its own —
+## the same reason stormblockmk and sbregistry build this way. A plain
+## `cargo build --target aarch64-unknown-linux-musl` fails here with
+## `failed to find tool "aarch64-linux-musl-gcc"`.
+##
+## Stripping is done by [profile.release] in the crate, so no cross binutils
+## is needed either.
 build-nvme-pvc:
-	cd tools/nvme-pvc && cargo build --release --target aarch64-unknown-linux-musl
-	aarch64-linux-musl-strip tools/nvme-pvc/target/aarch64-unknown-linux-musl/release/nvme-pvc
+	cd tools/nvme-pvc && CROSS_CONTAINER_ENGINE=$${CROSS_CONTAINER_ENGINE:-podman} \
+		CROSS_CONTAINER_OPTS=$${CROSS_CONTAINER_OPTS:---security-opt label=disable} \
+		cross build --release --target aarch64-unknown-linux-musl
 	cp tools/nvme-pvc/target/aarch64-unknown-linux-musl/release/nvme-pvc dist/nvme-pvc-$(ARCH)
 
 ## Build all binaries for the target architecture

@@ -14,3 +14,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 byteorder = "1"
 async-trait = "0.1"
+
+[profile.release]
+# Strip here rather than shelling out to a cross `strip` after the build.
+# The Makefile used to call `aarch64-linux-musl-strip`, which meant the build
+# box needed an aarch64-musl binutils on PATH on top of the C toolchain — one
+# more thing to install before mkube could be deployed. Cargo does it during
+# the build, on any host.
+strip = true
