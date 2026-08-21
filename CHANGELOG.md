@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-08-21
+- **chore:** Delete `readDockerSaveConfig` (#19). The CoW path stopped calling it
+  when the entrypoint rewrite moved to `RemoteImageConfig` — the image config
+  fetched over the registry protocol, a few KB — but the tarball reader stayed
+  behind as the only remaining way to want a staged image. In
+  `goldenSource: sbregistry` mode nothing is staged on the device at all, and
+  pulling a whole image to recover four fields would give back most of what the
+  CoW path exists to save. Gone, so it cannot be reached for again.
+
 ### 2026-08-19 (the outage)
 - **fix(hack):** `pull-and-deploy.sh` reported success while deploying nothing.
   After `/container/add` a container goes E (extracting) → R (running) and

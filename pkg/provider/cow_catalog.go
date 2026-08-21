@@ -24,12 +24,10 @@ package provider
 // container removal wipes its root-dir.
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -54,8 +52,8 @@ const (
 	// happily keep the broken one forever.
 	cowStubDevicePath = "raid1/cache/cow-generic-stub-v3.tar"
 	// Where stormpivot sits inside the stub, and so inside the container.
-	cowPivotPath = "/stormpivot"
-	cowPayloadDst     = "/payload"
+	cowPivotPath  = "/stormpivot"
+	cowPayloadDst = "/payload"
 	// The image lives in a subdirectory of the golden, not at its root.
 	//
 	// This is RouterOS's constraint, not a preference. A container mount
@@ -86,72 +84,14 @@ type dockerSaveConfig struct {
 	WorkingDir string
 }
 
-// readDockerSaveConfig parses the embedded image config out of a cached
-// docker-save tarball (local read — the cache lives under the /hostraid1
-// mount as well as being the source of truth for seeding).
-func readDockerSaveConfig(tarballPath string) (*dockerSaveConfig, error) {
-	f, err := os.Open(tarballPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var manifestRaw, configRaw []byte
-	files := map[string][]byte{}
-	tr := tar.NewReader(f)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if hdr.Name == "manifest.json" || strings.HasSuffix(hdr.Name, ".json") {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, err
-			}
-			files[hdr.Name] = data
-			if hdr.Name == "manifest.json" {
-				manifestRaw = data
-			}
-		}
-	}
-	if manifestRaw == nil {
-		return nil, fmt.Errorf("no manifest.json in %s", tarballPath)
-	}
-	var manifest []struct {
-		Config string `json:"Config"`
-	}
-	if err := json.Unmarshal(manifestRaw, &manifest); err != nil || len(manifest) == 0 {
-		return nil, fmt.Errorf("parsing manifest.json in %s: %v", tarballPath, err)
-	}
-	configRaw = files[manifest[0].Config]
-	if configRaw == nil {
-		return nil, fmt.Errorf("config %q not found in %s", manifest[0].Config, tarballPath)
-	}
-	var cfg struct {
-		Config struct {
-			Entrypoint []string `json:"Entrypoint"`
-			Cmd        []string `json:"Cmd"`
-			Env        []string `json:"Env"`
-			WorkingDir string   `json:"WorkingDir"`
-		} `json:"config"`
-	}
-	if err := json.Unmarshal(configRaw, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing image config in %s: %w", tarballPath, err)
-	}
-	return &dockerSaveConfig{
-		Entrypoint: cfg.Config.Entrypoint,
-		Cmd:        cfg.Config.Cmd,
-		Env:        cfg.Config.Env,
-		WorkingDir: cfg.Config.WorkingDir,
-	}, nil
-}
-
 // parseImageConfigJSON reads entrypoint/cmd/env out of an OCI image config
-// blob (the few-KB document, not the tarball).
+// blob — the few-KB document, fetched over the registry protocol.
+//
+// This replaced reading the same four fields out of a cached docker-save
+// tarball (#19). The tarball reader is gone: in `goldenSource: sbregistry`
+// mode nothing is staged on the device at all, and pulling a whole image to
+// recover four fields would have given back most of what the CoW path exists
+// to save.
 func parseImageConfigJSON(blob []byte) (*dockerSaveConfig, error) {
 	var cfg struct {
 		Config struct {
@@ -174,10 +114,10 @@ func parseImageConfigJSON(blob []byte) (*dockerSaveConfig, error) {
 
 // sbTemplate is a stormblockmk fstemplate row.
 type sbTemplate struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	State        string `json:"state"`
-	RawVolumeID  string `json:"raw_volume_id"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	RawVolumeID string `json:"raw_volume_id"`
 }
 
 // sbCreateTemplateResp is the create-template response: the template row
