@@ -159,7 +159,7 @@ func (p *MicroKubeProvider) MigratePVCTransport(ctx context.Context, namespace, 
 		rep.Error = "attaching the migrated export: " + err.Error()
 		return rep
 	}
-	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, 120*time.Second)
+	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, cowMountWait)
 	if err != nil {
 		rep.Error = fmt.Sprintf("volume %s attached over %s but did not mount: %v", volumeID, rep.To, err)
 		return rep

@@ -20,7 +20,7 @@ type jobLogBuffer struct {
 type jobLogStore struct {
 	mu          sync.RWMutex
 	buffers     map[string]*jobLogBuffer // job key → buffer
-	subscribers map[string][]chan string  // job key → fan-out channels
+	subscribers map[string][]chan string // job key → fan-out channels
 }
 
 func newJobLogStore() *jobLogStore {

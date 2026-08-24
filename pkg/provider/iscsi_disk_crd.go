@@ -44,18 +44,18 @@ type ISCSIDiskSpec struct {
 
 // ISCSIDiskStatus reports the observed state of an ISCSIDisk.
 type ISCSIDiskStatus struct {
-	Phase        string  `json:"phase"`                 // Pending, Cloning, Ready, Error, Deleting
-	DiskPath     string  `json:"diskPath"`              // full path to disk file
-	DiskSize     int64   `json:"diskSize,omitempty"`    // logical size in bytes
-	ActualBytes  int64   `json:"actualBytes,omitempty"` // real on-disk allocation (sparse blocks)
+	Phase        string  `json:"phase"`                  // Pending, Cloning, Ready, Error, Deleting
+	DiskPath     string  `json:"diskPath"`               // full path to disk file
+	DiskSize     int64   `json:"diskSize,omitempty"`     // logical size in bytes
+	ActualBytes  int64   `json:"actualBytes,omitempty"`  // real on-disk allocation (sparse blocks)
 	LastModified string  `json:"lastModified,omitempty"` // file mtime (RFC3339)
-	ThinRatio    float64 `json:"thinRatio,omitempty"`   // actualBytes / diskSize
-	SourceRef    string  `json:"sourceRef,omitempty"`   // resolved source reference
-	TargetIQN    string  `json:"targetIQN"`             // e.g. iqn.2000-02.com.mikrotik:disk-{name}
-	PortalIP     string  `json:"portalIP"`              // router IP for iSCSI
-	PortalPort   int     `json:"portalPort"`            // default 3260
-	RouterOSID   string  `json:"routerosID,omitempty"`  // RouterOS .id for the file disk
-	Message      string  `json:"message,omitempty"`     // error message when phase=Error
+	ThinRatio    float64 `json:"thinRatio,omitempty"`    // actualBytes / diskSize
+	SourceRef    string  `json:"sourceRef,omitempty"`    // resolved source reference
+	TargetIQN    string  `json:"targetIQN"`              // e.g. iqn.2000-02.com.mikrotik:disk-{name}
+	PortalIP     string  `json:"portalIP"`               // router IP for iSCSI
+	PortalPort   int     `json:"portalPort"`             // default 3260
+	RouterOSID   string  `json:"routerosID,omitempty"`   // RouterOS .id for the file disk
+	Message      string  `json:"message,omitempty"`      // error message when phase=Error
 }
 
 // ISCSIDiskList is a list of ISCSIDisk objects.
@@ -73,8 +73,8 @@ func (d *ISCSIDisk) DeepCopy() *ISCSIDisk {
 }
 
 const (
-	diskBasePath     = "/raid1/disks"
-	diskIQNPrefix    = "iqn.2000-02.com.mikrotik:disk-"
+	diskBasePath  = "/raid1/disks"
+	diskIQNPrefix = "iqn.2000-02.com.mikrotik:disk-"
 )
 
 // diskPathLocks provides per-path locking for clone/resize operations.
@@ -395,9 +395,9 @@ func (p *MicroKubeProvider) handleCloneISCSIDisk(w http.ResponseWriter, r *http.
 		},
 		Spec: ISCSIDiskSpec{
 			Source:      name,
-			SizeGB:     src.Spec.SizeGB,
-			Format:     src.Spec.Format,
-			Host:       req.Host,
+			SizeGB:      src.Spec.SizeGB,
+			Format:      src.Spec.Format,
+			Host:        req.Host,
 			Description: fmt.Sprintf("Cloned from %s", name),
 			StoragePool: clonePool,
 		},

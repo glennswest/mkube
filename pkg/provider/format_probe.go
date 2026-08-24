@@ -243,7 +243,10 @@ func (p *MicroKubeProvider) handleInspect(w http.ResponseWriter, r *http.Request
 	// on-device outright.
 	if id := r.URL.Query().Get("eject"); id != "" {
 		tried := map[string]string{}
-		for _, attempt := range []struct{ path string; params map[string]string }{
+		for _, attempt := range []struct {
+			path   string
+			params map[string]string
+		}{
 			{"/disk/eject", map[string]string{".id": id}},
 			{"/disk/unmount", map[string]string{".id": id}},
 			{"/disk/set", map[string]string{".id": id, "mounted": "no"}},

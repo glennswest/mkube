@@ -145,7 +145,7 @@ type MicroKubeProvider struct {
 	migrationTracker   *MigrationTracker                                   // tracks in-flight PVC/disk migrations
 	lastNATCheck       time.Time                                           // last DHCP relay NAT exemption check
 	dnsPodCooldown     *safemap.Map[string, time.Time]                     // network name → earliest retry time for managed DNS pod
-	podWorker          *PodWorker                                          // serialized pod lifecycle queue
+	podWorker          *PodWorker                                          // concurrent pod lifecycle dispatch
 }
 
 // containerRestartState tracks restart attempts for exponential backoff.
@@ -2396,7 +2396,11 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 					_ = p.deps.NetworkMgr.ReleaseInterface(ctx, vn)
 				}
 			}
-			// Enqueue to pod worker — serialized creation outside the reconcile loop
+			// Hand to the pod worker and move on. Enqueue does not queue: it
+			// runs the create in its own goroutine (per-key in-flight guard
+			// drops duplicates), so reconcile never blocks on a create and
+			// slow steps inside one — a clone attach waiting for RouterOS to
+			// mount, say — hold up only that pod. Concurrent pods overlap.
 			podCopy := pod.DeepCopy()
 			capturedKey := key
 			p.podWorker.Enqueue(key, "missing containers", func(ctx context.Context) error {

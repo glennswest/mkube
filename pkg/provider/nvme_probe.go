@@ -34,7 +34,7 @@ import (
 type NVMeProbeReport struct {
 	RouterOSVersion string   `json:"routerosVersion,omitempty"`
 	StormblockmkVer string   `json:"stormblockmkVersion,omitempty"`
-	HonorsProtocol  string   `json:"honorsProtocol"`  // yes | no | unknown
+	HonorsProtocol  string   `json:"honorsProtocol"`   // yes | no | unknown
 	InitiatorNVMe   string   `json:"initiatorNvmeTcp"` // supported | unsupported | unknown
 	EndToEnd        string   `json:"endToEnd"`         // attached | not-attempted | failed
 	Steps           []string `json:"steps"`
@@ -238,7 +238,6 @@ func (p *MicroKubeProvider) nvmeProbePurge(ctx context.Context, sb *sbClient, na
 }
 
 var _ = routeros.FileDisk{} // keep the routeros import anchored
-
 
 // probeContainerDeviceArg asks the device whether /container/add accepts a
 // `devices=` argument at all. An "unknown/no such argument" complaint means

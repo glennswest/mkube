@@ -17,7 +17,7 @@ import (
 // dhcpLease is the JSON structure from microdns DHCP lease API.
 type dhcpLease struct {
 	IP      string `json:"ip"`
-	IPAddr  string `json:"ip_addr"`  // microdns field name
+	IPAddr  string `json:"ip_addr"` // microdns field name
 	MAC     string `json:"mac"`
 	MACAddr string `json:"mac_addr"` // microdns field name
 }
@@ -38,7 +38,7 @@ func (l dhcpLease) getMAC() string {
 
 // microdnsLeaseEvent is the JSON structure published by microdns to NATS.
 type microdnsLeaseEvent struct {
-	Type       string `json:"type"`        // "LeaseCreated" or "LeaseReleased"
+	Type       string `json:"type"` // "LeaseCreated" or "LeaseReleased"
 	InstanceID string `json:"instance_id"`
 	IPAddr     string `json:"ip_addr"`
 	MACAddr    string `json:"mac_addr"`

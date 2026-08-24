@@ -488,4 +488,3 @@ func mergeStringData(secret *corev1.Secret) {
 	}
 	secret.StringData = nil
 }
-

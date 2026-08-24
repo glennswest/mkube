@@ -73,15 +73,15 @@ func iso9660UpdateVolumeSpaceSize(f *os.File, newSectors uint32) error {
 
 // iso9660DirRecord represents a parsed directory record.
 type iso9660DirRecord struct {
-	RecordLen  uint8  // total length of this record
-	ExtentLBA  uint32 // LBA of file data
-	DataLen    uint32 // length of file data
-	Flags      uint8  // bit 1 = directory
-	FileIDLen  uint8  // length of file identifier
-	FileID     string // raw ISO9660 file identifier (e.g. "GRUB.CFG;1")
-	RRName     string // Rock Ridge NM name (e.g. "grub.cfg"), empty if none
-	RecordOff  int64  // byte offset of this record in the ISO file
-	IsDir      bool
+	RecordLen uint8  // total length of this record
+	ExtentLBA uint32 // LBA of file data
+	DataLen   uint32 // length of file data
+	Flags     uint8  // bit 1 = directory
+	FileIDLen uint8  // length of file identifier
+	FileID    string // raw ISO9660 file identifier (e.g. "GRUB.CFG;1")
+	RRName    string // Rock Ridge NM name (e.g. "grub.cfg"), empty if none
+	RecordOff int64  // byte offset of this record in the ISO file
+	IsDir     bool
 }
 
 // Name returns the best available name (Rock Ridge NM preferred, then ISO ID).
@@ -420,7 +420,7 @@ func iso9660AddFile(f *os.File, pvd *iso9660PVD, parentPath, fileName string, co
 	rec[28] = 1 // LE low byte
 	rec[29] = 0
 	rec[30] = 0
-	rec[31] = 1 // BE high byte
+	rec[31] = 1               // BE high byte
 	rec[32] = byte(fileIDLen) // file identifier length
 	copy(rec[33:33+fileIDLen], fileID)
 
@@ -622,4 +622,3 @@ type iso9660DirEntry struct {
 	Size  uint32 `json:"size"`
 	IsDir bool   `json:"isDir"`
 }
-

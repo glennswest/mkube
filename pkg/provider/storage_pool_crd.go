@@ -32,9 +32,9 @@ type StoragePool struct {
 
 // StoragePoolSpec defines the desired state of a StoragePool.
 type StoragePoolSpec struct {
-	MountPoint string           `json:"mountPoint"`         // RouterOS mount-point name: "raid1", "sata1"
-	Default    bool             `json:"default,omitempty"`  // exactly one pool is default (backward compat)
-	Paths      StoragePoolPaths `json:"paths,omitempty"`    // optional overrides for subdirectory layout
+	MountPoint string           `json:"mountPoint"`        // RouterOS mount-point name: "raid1", "sata1"
+	Default    bool             `json:"default,omitempty"` // exactly one pool is default (backward compat)
+	Paths      StoragePoolPaths `json:"paths,omitempty"`   // optional overrides for subdirectory layout
 }
 
 // StoragePoolPaths allows overriding the default subdirectory layout.
@@ -49,22 +49,22 @@ type StoragePoolPaths struct {
 
 // StoragePoolStatus reports the observed state of a StoragePool.
 type StoragePoolStatus struct {
-	Phase         string `json:"phase"`                       // Active, Degraded, Offline, Discovered
+	Phase         string `json:"phase"` // Active, Degraded, Offline, Discovered
 	TotalBytes    int64  `json:"totalBytes,omitempty"`
 	UsedBytes     int64  `json:"usedBytes,omitempty"`
 	AvailBytes    int64  `json:"availBytes,omitempty"`
-	PrevUsedBytes int64  `json:"prevUsedBytes,omitempty"`     // previous poll's usedBytes
-	WriteRateBPS  int64  `json:"writeRateBPS,omitempty"`      // delta bytes / elapsed seconds
-	LastRefreshed string `json:"lastRefreshed,omitempty"`     // RFC3339 timestamp of last refresh
-	Filesystem    string `json:"filesystem,omitempty"`        // ext4
+	PrevUsedBytes int64  `json:"prevUsedBytes,omitempty"` // previous poll's usedBytes
+	WriteRateBPS  int64  `json:"writeRateBPS,omitempty"`  // delta bytes / elapsed seconds
+	LastRefreshed string `json:"lastRefreshed,omitempty"` // RFC3339 timestamp of last refresh
+	Filesystem    string `json:"filesystem,omitempty"`    // ext4
 	DeviceModel   string `json:"deviceModel,omitempty"`
-	DeviceType    string `json:"deviceType,omitempty"`        // hardware, raid
-	RaidType      string `json:"raidType,omitempty"`          // raid-0, raid-1
+	DeviceType    string `json:"deviceType,omitempty"` // hardware, raid
+	RaidType      string `json:"raidType,omitempty"`   // raid-0, raid-1
 	RaidDevices   int    `json:"raidDevices,omitempty"`
-	Interface     string `json:"interface,omitempty"`         // NVMe, SATA
-	Slot          string `json:"slot,omitempty"`              // RouterOS slot
-	DiskCount     int    `json:"diskCount,omitempty"`         // iSCSI disks on this pool
-	PVCCount      int    `json:"pvcCount,omitempty"`          // PVCs on this pool
+	Interface     string `json:"interface,omitempty"` // NVMe, SATA
+	Slot          string `json:"slot,omitempty"`      // RouterOS slot
+	DiskCount     int    `json:"diskCount,omitempty"` // iSCSI disks on this pool
+	PVCCount      int    `json:"pvcCount,omitempty"`  // PVCs on this pool
 	LastSeen      string `json:"lastSeen,omitempty"`
 }
 
@@ -567,7 +567,7 @@ type MigrateRequest struct {
 
 // MigrateResult is the response from a migration.
 type MigrateResult struct {
-	Status      string `json:"status"`      // "success" or "error"
+	Status      string `json:"status"` // "success" or "error"
 	Message     string `json:"message"`
 	BytesCopied int64  `json:"bytesCopied,omitempty"`
 	DurationMs  int64  `json:"durationMs,omitempty"`

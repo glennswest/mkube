@@ -65,10 +65,10 @@ func TestBMHBootRootPath(t *testing.T) {
 	})
 
 	tests := []struct {
-		name             string
-		image            string
-		wantRootPath     string // "" means should be empty (inherit pool default)
-		wantIPXEBootURL  bool   // true = should be set, false = should be empty
+		name            string
+		image           string
+		wantRootPath    string // "" means should be empty (inherit pool default)
+		wantIPXEBootURL bool   // true = should be set, false = should be empty
 	}{
 		{
 			name:            "baremetalservices gets per-BMH root_path",

@@ -144,7 +144,7 @@ type JobRunnerSpec struct {
 
 // JobRunnerStatus reports the observed state of a JobRunner.
 type JobRunnerStatus struct {
-	Phase          string `json:"phase"`          // Active, Suspended
+	Phase          string `json:"phase"` // Active, Suspended
 	ReservedHosts  int    `json:"reservedHosts"`
 	ActiveJobs     int    `json:"activeJobs"`
 	TotalCompleted int    `json:"totalCompleted"`

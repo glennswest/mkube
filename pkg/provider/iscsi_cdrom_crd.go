@@ -31,30 +31,30 @@ type ISCSICdrom struct {
 // ISCSICdromSpec defines the desired state of an ISCSICdrom.
 type ISCSICdromSpec struct {
 	ISOFile     string   `json:"isoFile"`               // ISO file name under /raid1/iso/
-	Description string   `json:"description,omitempty"`  // human-readable description
-	Version     string   `json:"version,omitempty"`      // version string, e.g. "4.17.8" or "rhcos-4.18"
-	ReadOnly    bool     `json:"readOnly"`               // always true for CDROMs
-	BootConfigs []string `json:"bootConfigs,omitempty"`  // compatible BootConfig names for this ISO
-	DerivedFrom string   `json:"derivedFrom,omitempty"`  // base ISCSICdrom name (if derived via ISO patching)
+	Description string   `json:"description,omitempty"` // human-readable description
+	Version     string   `json:"version,omitempty"`     // version string, e.g. "4.17.8" or "rhcos-4.18"
+	ReadOnly    bool     `json:"readOnly"`              // always true for CDROMs
+	BootConfigs []string `json:"bootConfigs,omitempty"` // compatible BootConfig names for this ISO
+	DerivedFrom string   `json:"derivedFrom,omitempty"` // base ISCSICdrom name (if derived via ISO patching)
 }
 
 // ISCSICdromStatus reports the observed state of an ISCSICdrom.
 type ISCSICdromStatus struct {
-	Phase       string            `json:"phase"`                  // Pending, Uploading, Ready, Error
-	ISOPath     string            `json:"isoPath"`                // full container path
-	ISOSize     int64             `json:"isoSize,omitempty"`      // bytes
-	TargetIQN   string            `json:"targetIQN"`              // e.g. iqn.2024-01.lo.gt:cdrom-{name}
-	PortalIP    string            `json:"portalIP"`               // rose1 IP for iSCSI
-	PortalPort  int               `json:"portalPort"`             // default 3260
-	RouterOSID  string            `json:"routerosID,omitempty"`   // RouterOS .id for the file disk
+	Phase       string            `json:"phase"`                // Pending, Uploading, Ready, Error
+	ISOPath     string            `json:"isoPath"`              // full container path
+	ISOSize     int64             `json:"isoSize,omitempty"`    // bytes
+	TargetIQN   string            `json:"targetIQN"`            // e.g. iqn.2024-01.lo.gt:cdrom-{name}
+	PortalIP    string            `json:"portalIP"`             // rose1 IP for iSCSI
+	PortalPort  int               `json:"portalPort"`           // default 3260
+	RouterOSID  string            `json:"routerosID,omitempty"` // RouterOS .id for the file disk
 	Subscribers []ISCSISubscriber `json:"subscribers,omitempty"`
 }
 
 // ISCSISubscriber tracks a consumer of the iSCSI CDROM.
 type ISCSISubscriber struct {
-	Name         string `json:"name"`                    // subscriber identifier
+	Name         string `json:"name"`                   // subscriber identifier
 	InitiatorIQN string `json:"initiatorIQN,omitempty"` // optional iSCSI initiator IQN
-	Since        string `json:"since"`                   // ISO 8601 timestamp
+	Since        string `json:"since"`                  // ISO 8601 timestamp
 }
 
 // ISCSICdromList is a list of ISCSICdrom objects.
@@ -74,9 +74,9 @@ func (c *ISCSICdrom) DeepCopy() *ISCSICdrom {
 }
 
 const (
-	isoBasePath       = "/raid1/iso"
-	iscsiDefaultPort  = 3260
-	iscsiIQNPrefix    = "iqn.2024-01.lo.gt:cdrom-"
+	isoBasePath      = "/raid1/iso"
+	iscsiDefaultPort = 3260
+	iscsiIQNPrefix   = "iqn.2024-01.lo.gt:cdrom-"
 )
 
 // ─── Store Operations ────────────────────────────────────────────────────────

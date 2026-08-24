@@ -39,7 +39,7 @@ type HostReservationStatus struct {
 	Phase      string            `json:"phase"`                // Active, Expired, Released
 	BMHNetwork string            `json:"bmhNetwork,omitempty"` // resolved from BMH
 	BMHIP      string            `json:"bmhIP,omitempty"`      // resolved from BMH
-	ActiveJob  string            `json:"activeJob,omitempty"`   // currently running job key
+	ActiveJob  string            `json:"activeJob,omitempty"`  // currently running job key
 	ReservedAt string            `json:"reservedAt,omitempty"`
 	AgentEnv   *AgentEnvironment `json:"agentEnv,omitempty"` // reported by mkube-agent
 }

@@ -50,9 +50,9 @@ type ArtifactSpec struct {
 
 // JobStatus reports the observed state of a Job.
 type JobStatus struct {
-	Phase         string `json:"phase"`                   // Pending, Scheduling, Provisioning, Running, Completed, Failed, TimedOut, Cancelled
-	BMHRef        string `json:"bmhRef,omitempty"`        // assigned BMH
-	RunnerRef     string `json:"runnerRef,omitempty"`     // matched JobRunner
+	Phase         string `json:"phase"`               // Pending, Scheduling, Provisioning, Running, Completed, Failed, TimedOut, Cancelled
+	BMHRef        string `json:"bmhRef,omitempty"`    // assigned BMH
+	RunnerRef     string `json:"runnerRef,omitempty"` // matched JobRunner
 	HostIP        string `json:"hostIP,omitempty"`
 	StartedAt     string `json:"startedAt,omitempty"`
 	CompletedAt   string `json:"completedAt,omitempty"`
@@ -515,10 +515,10 @@ func (p *MicroKubeProvider) handleCleanupJobs(w http.ResponseWriter, r *http.Req
 
 	if dryRun {
 		podWriteJSON(w, http.StatusOK, map[string]interface{}{
-			"dryRun":  true,
-			"count":   len(toDelete),
-			"jobs":    toDelete,
-			"cutoff":  cutoff.Format(time.RFC3339),
+			"dryRun": true,
+			"count":  len(toDelete),
+			"jobs":   toDelete,
+			"cutoff": cutoff.Format(time.RFC3339),
 		})
 		return
 	}
@@ -721,8 +721,8 @@ func (p *MicroKubeProvider) handleAgentHeartbeat(w http.ResponseWriter, r *http.
 	// Parse optional job identity, status, and agent env from body
 	var hbReq struct {
 		Job    string            `json:"job"`
-		Status string            `json:"status"`         // if set, appended to runner log as event
-		Env    *AgentEnvironment `json:"env,omitempty"`   // agent runtime environment
+		Status string            `json:"status"`        // if set, appended to runner log as event
+		Env    *AgentEnvironment `json:"env,omitempty"` // agent runtime environment
 	}
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&hbReq) // ignore errors — fields are optional

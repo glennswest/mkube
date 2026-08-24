@@ -7,16 +7,16 @@ import (
 
 // Pod lifecycle phase constants.
 const (
-	PhaseCleanup        = "cleanup"
-	PhaseImageResolve   = "image-resolve"
-	PhaseNetworkAlloc   = "network-alloc"
-	PhaseVolumeMount    = "volume-mount"
+	PhaseCleanup         = "cleanup"
+	PhaseImageResolve    = "image-resolve"
+	PhaseNetworkAlloc    = "network-alloc"
+	PhaseVolumeMount     = "volume-mount"
 	PhaseContainerCreate = "container-create"
-	PhaseTarballExtract = "tarball-extract"
-	PhaseContainerStart = "container-start"
-	PhaseLifecycleReg   = "lifecycle-reg"
-	PhaseDNSRegister    = "dns-register"
-	PhasePodReady       = "pod-ready"
+	PhaseTarballExtract  = "tarball-extract"
+	PhaseContainerStart  = "container-start"
+	PhaseLifecycleReg    = "lifecycle-reg"
+	PhaseDNSRegister     = "dns-register"
+	PhasePodReady        = "pod-ready"
 )
 
 // PhaseTimings records min/max/avg durations per lifecycle phase.
@@ -30,9 +30,9 @@ type PhaseTimings struct {
 
 // RecoveryStats tracks container recovery events.
 type RecoveryStats struct {
-	RestartAttempts  int64 `json:"restart_attempts"`
-	RestartSuccesses int64 `json:"restart_successes"`
-	RecreateAttempts int64 `json:"recreate_attempts"`
+	RestartAttempts  int64  `json:"restart_attempts"`
+	RestartSuccesses int64  `json:"restart_successes"`
+	RecreateAttempts int64  `json:"recreate_attempts"`
 	LastRecovery     string `json:"last_recovery,omitempty"`
 	LastError        string `json:"last_error,omitempty"`
 }

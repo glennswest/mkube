@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [v6.4.2] — 2026-08-24
+
+### Fixed
+- **fix(provider):** Clone mount waits were 120s/90s; they are now a documented
+  `cowMountWait` of 15s. 120s was never an expectation — it was the window a
+  since-fixed bug spent failing in (re-stamping the filesystem UUID from
+  mkube's side invalidated the `metadata_csum` checksums, so every CoW pod sat
+  at `fs=ext4` with an empty mount-point for the full 120s, on iSCSI). The
+  re-stamp is gone and the transport is NVMe-TCP: a clone is a metadata-only
+  CoW operation, RouterOS mounts it in well under a second, and the whole
+  clone-provision measures ~1.5s. Keeping 120s only stalled a pod create for
+  two minutes before reporting a failure it already knew about at one second.
+- **fix(provider):** Rollback in `provisionCoWRoot` used the request context,
+  so a provision that failed *because* that context died cleaned up nothing —
+  leaking a stormblock volume and leaving its disk attached. On the
+  lifecycle-recreate path this was deterministic: that path allows 60s while
+  the mount wait was 120s, so the context could not survive. Cleanup now uses
+  `context.Background()`, matching the pattern the probe paths already used.
+- **docs(provider):** `PodWorker` has dispatched concurrently since the move to
+  the native RouterOS API, but the call site and struct field still described a
+  "serialized pod lifecycle queue". Corrected: reconcile never blocks on a
+  create, and a slow step inside one holds up only that pod.
+
 ## [v6.4.1] — 2026-08-24
 
 ### Fixed

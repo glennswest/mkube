@@ -46,19 +46,19 @@ type Network struct {
 
 // NetworkSpec defines the desired state of a Network.
 type NetworkSpec struct {
-	Type          NetworkType       `json:"type"`                    // data, ipmi, management, boot, storage, external
-	PairNetwork   string            `json:"pairNetwork,omitempty"`   // companion network (e.g. g12↔g13 data/ipmi pairing)
-	Bridge        string            `json:"bridge,omitempty"`        // RouterOS bridge name
-	CIDR          string            `json:"cidr"`                    // e.g. "192.168.10.0/24"
-	Gateway       string            `json:"gateway"`                 // router IP on this network
+	Type          NetworkType       `json:"type"`                  // data, ipmi, management, boot, storage, external
+	PairNetwork   string            `json:"pairNetwork,omitempty"` // companion network (e.g. g12↔g13 data/ipmi pairing)
+	Bridge        string            `json:"bridge,omitempty"`      // RouterOS bridge name
+	CIDR          string            `json:"cidr"`                  // e.g. "192.168.10.0/24"
+	Gateway       string            `json:"gateway"`               // router IP on this network
 	VLAN          int               `json:"vlan,omitempty"`
 	Router        RouterRef         `json:"router,omitempty"`
 	DNS           NetworkDNSSpec    `json:"dns,omitempty"`
 	DHCP          NetworkDHCPSpec   `json:"dhcp,omitempty"`
 	IPAM          NetworkIPAMSpec   `json:"ipam,omitempty"`
-	ExternalDNS   bool              `json:"externalDNS,omitempty"`   // DNS not managed by mkube
-	Managed       bool              `json:"managed,omitempty"`       // part 2: auto-deploy microdns
-	Provisioned   bool              `json:"provisioned,omitempty"`   // infrastructure created by provider
+	ExternalDNS   bool              `json:"externalDNS,omitempty"` // DNS not managed by mkube
+	Managed       bool              `json:"managed,omitempty"`     // part 2: auto-deploy microdns
+	Provisioned   bool              `json:"provisioned,omitempty"` // infrastructure created by provider
 	StaticRecords []StaticDNSRecord `json:"staticRecords,omitempty"`
 }
 
@@ -77,15 +77,15 @@ type NetworkDNSSpec struct {
 
 // NetworkDHCPSpec defines DHCP settings for a network.
 type NetworkDHCPSpec struct {
-	Enabled       bool                    `json:"enabled"`
-	RangeStart    string                  `json:"rangeStart,omitempty"`
-	RangeEnd      string                  `json:"rangeEnd,omitempty"`
-	LeaseTime     int                     `json:"leaseTime,omitempty"`
-	NextServer    string                  `json:"nextServer,omitempty"`
-	BootFile      string                  `json:"bootFile,omitempty"`
-	BootFileEFI   string                  `json:"bootFileEfi,omitempty"`
-	ServerNetwork string                  `json:"serverNetwork,omitempty"` // DHCP relay target
-	NTPServers    []string                `json:"ntpServers,omitempty"`    // NTP servers (option 42), defaults to gateway
+	Enabled       bool                     `json:"enabled"`
+	RangeStart    string                   `json:"rangeStart,omitempty"`
+	RangeEnd      string                   `json:"rangeEnd,omitempty"`
+	LeaseTime     int                      `json:"leaseTime,omitempty"`
+	NextServer    string                   `json:"nextServer,omitempty"`
+	BootFile      string                   `json:"bootFile,omitempty"`
+	BootFileEFI   string                   `json:"bootFileEfi,omitempty"`
+	ServerNetwork string                   `json:"serverNetwork,omitempty"` // DHCP relay target
+	NTPServers    []string                 `json:"ntpServers,omitempty"`    // NTP servers (option 42), defaults to gateway
 	Reservations  []NetworkDHCPReservation `json:"reservations,omitempty"`
 }
 
@@ -98,10 +98,10 @@ type NetworkDHCPReservation struct {
 	DNSServers  []string `json:"dnsServers,omitempty"`  // per-host DNS servers (defaults from network)
 	Domain      string   `json:"domain,omitempty"`      // per-host domain (defaults from network)
 	NextServer  string   `json:"nextServer,omitempty"`  // per-host PXE next-server
-	BootFile    string   `json:"bootFile,omitempty"`     // per-host PXE boot file (BIOS)
+	BootFile    string   `json:"bootFile,omitempty"`    // per-host PXE boot file (BIOS)
 	BootFileEFI string   `json:"bootFileEfi,omitempty"` // per-host PXE boot file (UEFI)
 	IPXEBootURL string   `json:"ipxeBootUrl,omitempty"` // iPXE script URL (overrides sanboot)
-	RootPath    string   `json:"rootPath,omitempty"`     // iSCSI root path (option 17)
+	RootPath    string   `json:"rootPath,omitempty"`    // iSCSI root path (option 17)
 }
 
 // NetworkIPAMSpec defines IPAM allocation range for a network.
@@ -118,7 +118,7 @@ type StaticDNSRecord struct {
 
 // NetworkStatus reports the observed state of a Network.
 type NetworkStatus struct {
-	Phase    string `json:"phase"`              // Active, Degraded, Error
+	Phase    string `json:"phase"` // Active, Degraded, Error
 	DNSAlive bool   `json:"dnsAlive,omitempty"`
 	PodCount int    `json:"podCount,omitempty"`
 }
@@ -1146,10 +1146,10 @@ func (p *MicroKubeProvider) deployManagedDNS(ctx context.Context, net *Network) 
 			Name:      "dns",
 			Namespace: net.Name,
 			Annotations: map[string]string{
-				annotationNetwork:     net.Name,
+				annotationNetwork:        net.Name,
 				"vkube.io/boot-priority": "10",
-				annotationStaticIP:    net.Spec.DNS.Server,
-				annotationImagePolicy: "auto",
+				annotationStaticIP:       net.Spec.DNS.Server,
+				annotationImagePolicy:    "auto",
 			},
 		},
 		Spec: corev1.PodSpec{

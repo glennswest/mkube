@@ -274,14 +274,14 @@ func (p *MicroKubeProvider) ensureDHCPRelayNAT(ctx context.Context, net *Network
 
 	// Create the accept rule before the masquerade rule
 	rule := map[string]string{
-		"chain":        "srcnat",
-		"action":       "accept",
-		"protocol":     "udp",
-		"src-port":     "67",
-		"dst-port":     "67",
+		"chain":         "srcnat",
+		"action":        "accept",
+		"protocol":      "udp",
+		"src-port":      "67",
+		"dst-port":      "67",
 		"out-interface": bridge,
-		"comment":      relayComment,
-		"place-before": masqueradeID,
+		"comment":       relayComment,
+		"place-before":  masqueradeID,
 	}
 	if err := rosClient.AddNatRule(ctx, rule); err != nil {
 		log.Warnw("failed to create DHCP relay NAT exemption", "error", err)

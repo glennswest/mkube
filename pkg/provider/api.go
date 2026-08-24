@@ -787,11 +787,11 @@ func (p *MicroKubeProvider) buildPeerNode(_ context.Context, name string) *corev
 			Name:              name,
 			CreationTimestamp: metav1.Time{Time: time.UnixMilli(ns.Timestamp)},
 			Labels: map[string]string{
-				"type":                         "virtual-kubelet",
-				"kubernetes.io/os":             "linux",
-				"kubernetes.io/arch":           ns.Architecture,
-				"node.kubernetes.io/role":      "mkube",
-				"mkube.io/device-type":         ns.Backend,
+				"type":                          "virtual-kubelet",
+				"kubernetes.io/os":              "linux",
+				"kubernetes.io/arch":            ns.Architecture,
+				"node.kubernetes.io/role":       "mkube",
+				"mkube.io/device-type":          ns.Backend,
 				"node-role.kubernetes.io/mkube": "",
 			},
 		},
@@ -1199,9 +1199,9 @@ func (p *MicroKubeProvider) handleImageRedeploy(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	resp, _ := json.Marshal(map[string]interface{}{
-		"status":  "ok",
-		"image":   req.Image,
-		"queued":  podKeys,
+		"status": "ok",
+		"image":  req.Image,
+		"queued": podKeys,
 	})
 	_, _ = w.Write(resp)
 	_, _ = w.Write([]byte("\n"))

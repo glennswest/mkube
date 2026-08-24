@@ -39,8 +39,8 @@ type BootConfigSpec struct {
 
 // BootConfigStatus reports the observed state of a BootConfig.
 type BootConfigStatus struct {
-	Phase      string   `json:"phase"`                 // Active, Inactive
-	AssignedTo []string `json:"assignedTo,omitempty"`   // BMH names referencing this config
+	Phase      string   `json:"phase"`                // Active, Inactive
+	AssignedTo []string `json:"assignedTo,omitempty"` // BMH names referencing this config
 }
 
 // BootConfigList is a list of BootConfig objects.
@@ -604,10 +604,10 @@ func (p *MicroKubeProvider) handleBootComplete(w http.ResponseWriter, r *http.Re
 	updatedBMH, _ := p.bareMetalHosts.Get(matchedKey)
 	if updatedBMH != nil {
 		p.syncBMHToNetwork(r.Context(), updatedBMH,
-			updatedBMH.Spec.Network,                        // oldDataNetwork (unchanged)
-			updatedBMH.Spec.BMC.Network,                    // oldIPMINetwork (unchanged)
-			updatedBMH.Name,                                // oldHostname (unchanged)
-			updatedBMH.Spec.IP,                             // oldIP (unchanged)
+			updatedBMH.Spec.Network,     // oldDataNetwork (unchanged)
+			updatedBMH.Spec.BMC.Network, // oldIPMINetwork (unchanged)
+			updatedBMH.Name,             // oldHostname (unchanged)
+			updatedBMH.Spec.IP,          // oldIP (unchanged)
 		)
 	}
 

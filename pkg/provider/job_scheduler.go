@@ -13,7 +13,7 @@ const (
 	provisioningTimeout = 10 * time.Minute
 	heartbeatTimeout    = 90 * time.Second
 	jobRetentionDefault = 7 * 24 * time.Hour // auto-delete completed jobs after 7 days
-	cleanupInterval     = 60                  // run cleanup every 60 scheduler ticks (~10 min)
+	cleanupInterval     = 60                 // run cleanup every 60 scheduler ticks (~10 min)
 )
 
 // schedulerDeferred collects NATS writes to perform outside the lock.

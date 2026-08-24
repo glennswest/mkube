@@ -32,27 +32,27 @@ type Registry struct {
 
 // RegistrySpec defines the desired state of a Registry.
 type RegistrySpec struct {
-	Network            string              `json:"network"`                      // e.g. "gt"
-	StaticIP           string              `json:"staticIP"`                     // e.g. "192.168.200.6"
-	Hostname           string              `json:"hostname"`                     // e.g. "registry-stormbase.gt.lo"
-	StorePath          string              `json:"storePath,omitempty"`          // default /raid1/registry/{name}
-	ListenAddr         string              `json:"listenAddr,omitempty"`         // default ":5000"
+	Network            string              `json:"network"`              // e.g. "gt"
+	StaticIP           string              `json:"staticIP"`             // e.g. "192.168.200.6"
+	Hostname           string              `json:"hostname"`             // e.g. "registry-stormbase.gt.lo"
+	StorePath          string              `json:"storePath,omitempty"`  // default /raid1/registry/{name}
+	ListenAddr         string              `json:"listenAddr,omitempty"` // default ":5000"
 	PullThrough        bool                `json:"pullThrough,omitempty"`
 	UpstreamRegistries []string            `json:"upstreamRegistries,omitempty"`
 	WatchImages        []config.WatchImage `json:"watchImages,omitempty"`
-	WatchPollSeconds   int                 `json:"watchPollSeconds,omitempty"`   // default 120
-	NotifyURL          string              `json:"notifyURL,omitempty"`          // webhook to mkube
-	Managed            bool                `json:"managed,omitempty"`            // auto-deploy pod
-	TLSCertFile        string              `json:"tlsCertFile,omitempty"`        // in-container path
-	TLSKeyFile         string              `json:"tlsKeyFile,omitempty"`         // in-container path
+	WatchPollSeconds   int                 `json:"watchPollSeconds,omitempty"` // default 120
+	NotifyURL          string              `json:"notifyURL,omitempty"`        // webhook to mkube
+	Managed            bool                `json:"managed,omitempty"`          // auto-deploy pod
+	TLSCertFile        string              `json:"tlsCertFile,omitempty"`      // in-container path
+	TLSKeyFile         string              `json:"tlsKeyFile,omitempty"`       // in-container path
 }
 
 // RegistryStatus reports the observed state of a Registry.
 type RegistryStatus struct {
-	Phase      string `json:"phase"`                    // Active, Degraded, Error
+	Phase      string `json:"phase"` // Active, Degraded, Error
 	Alive      bool   `json:"alive,omitempty"`
 	PodCount   int    `json:"podCount,omitempty"`
-	ImageCount int    `json:"imageCount,omitempty"`     // number of repositories in catalog
+	ImageCount int    `json:"imageCount,omitempty"` // number of repositories in catalog
 }
 
 // RegistryList is a list of Registry objects.

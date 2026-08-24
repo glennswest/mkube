@@ -46,6 +46,26 @@ const (
 	annCoWVolumeID = "vkube.io/cow-volume-id"
 	annCoWTemplate = "vkube.io/cow-template"
 
+	// cowMountWait bounds the wait for RouterOS to probe and mount a freshly
+	// attached clone.
+	//
+	// A clone is a metadata-only CoW operation and the transport is NVMe-TCP,
+	// so this is fast, and was measured as such: RouterOS mounts an attached
+	// disk in well under a second, and the whole clone-provision is ~1.5s
+	// (see waitForDiskMount, which polls at 150ms for exactly that reason).
+	//
+	// It was 120s. That was never an expectation — it was the window a
+	// since-fixed bug spent failing in: re-stamping the filesystem UUID from
+	// this side invalidated the metadata_csum checksums, so every CoW pod sat
+	// at fs=ext4 with an empty mount-point for the full 120s, on iSCSI. The
+	// re-stamp is gone (see "NO re-identify here" in provisionCoWRoot) and the
+	// transport is NVMe, so keeping 120s only means a pod create stalls two
+	// minutes before reporting a failure it already knew about at one second.
+	//
+	// 15s is ~10x the measured provision: headroom for a loaded device without
+	// pretending a two-minute mount is a thing that happens.
+	cowMountWait = 15 * time.Second
+
 	// Name carries the stub's shape. The first version had no payload/
 	// directory, so a cached copy of it would still break every CoW pod —
 	// ensureGenericStub skips the upload when the file exists, and would
@@ -311,18 +331,18 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 	if err != nil {
 		return "", fmt.Errorf("attaching template volume: %w", err)
 	}
-	cleanupDisk := func() { _ = ros.RemoveDisk(ctx, diskID) }
+	cleanupDisk := func() { _ = ros.RemoveDisk(context.Background(), diskID) }
 
 	if err := p.formatStormblockVolume(ctx, sb, created.Template.RawVolumeID, attach, name); err != nil {
 		cleanupDisk()
 		return "", fmt.Errorf("formatting template volume: %w", err)
 	}
-	_ = ros.RemoveDisk(ctx, diskID)
+	_ = ros.RemoveDisk(context.Background(), diskID)
 	diskID, err = p.attachStormblockDisk(ctx, attach)
 	if err != nil {
 		return "", fmt.Errorf("re-attaching template volume: %w", err)
 	}
-	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, 120*time.Second)
+	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, cowMountWait)
 	if err != nil {
 		cleanupDisk()
 		return "", fmt.Errorf("waiting for template volume mount: %w", err)
@@ -550,14 +570,14 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 		volID := ann[annCoWVolumeID]
 		if attach, ok := p.findCoWVolumeAttach(ctx, sb, volID); ok {
 			if diskID, aerr := p.attachStormblockDisk(ctx, attach); aerr == nil {
-				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, 90*time.Second); merr == nil {
+				if mp, merr := p.waitForDiskMount(ctx, ros, diskID, cowMountWait); merr == nil {
 					return mp + cowImageSubdir, volID, nil
 				}
-				_ = ros.RemoveDisk(ctx, diskID)
+				_ = ros.RemoveDisk(context.Background(), diskID)
 			}
 		}
 		// Unusable — hand it back and provision fresh below.
-		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+volID+"?force=true", nil, nil)
+		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/volumes/"+volID+"?force=true", nil, nil)
 	}
 
 	volName := fmt.Sprintf("cow-%s-%s-%s", pod.Namespace, pod.Name, containerName)
@@ -576,7 +596,7 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 	attach, ok := created.attachParams()
 	if !ok {
 		if created.ID != "" {
-			_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
+			_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
 		}
 		return "", "", fmt.Errorf("cow volume %s: no attach parameters", created.ID)
 	}
@@ -596,14 +616,14 @@ func (p *MicroKubeProvider) provisionCoWRoot(ctx context.Context, ros *routeros.
 
 	diskID, err := p.attachStormblockDisk(ctx, attach)
 	if err != nil {
-		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
+		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
 		return "", "", fmt.Errorf("attaching cow volume: %w", err)
 	}
 	// Clone carries the sealed ext4 — RouterOS probes it at attach and mounts.
-	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, 120*time.Second)
+	mountPoint, err := p.waitForDiskMount(ctx, ros, diskID, cowMountWait)
 	if err != nil {
-		_ = ros.RemoveDisk(ctx, diskID)
-		_ = sb.do(ctx, http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
+		_ = ros.RemoveDisk(context.Background(), diskID)
+		_ = sb.do(context.Background(), http.MethodDelete, "/mk/v1/volumes/"+created.ID+"?force=true", nil, nil)
 		return "", "", fmt.Errorf("waiting for cow volume mount: %w", err)
 	}
 

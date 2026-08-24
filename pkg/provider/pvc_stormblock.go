@@ -426,7 +426,7 @@ func (p *MicroKubeProvider) provisionStormblockPVC(ctx context.Context, pvc *cor
 	// consumed target's filesystem at ATTACH time only. Both are gone: with
 	// the clone arriving pre-formatted there is nothing to write and nothing
 	// to re-probe.
-	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, 120*time.Second)
+	mountPoint, err := p.waitForDiskMount(ctx, rosClient, diskID, cowMountWait)
 	if err != nil {
 		rollback()
 		return "", fmt.Errorf("stormblock volume %s (clone of template %s) did not mount: %w",

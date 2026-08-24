@@ -99,4 +99,3 @@ func (p *MicroKubeProvider) enqueueBMCPowerEvent(bmh *BareMetalHost, wasOnline, 
 		"bmcAddress", bmh.Spec.BMC.Address,
 	)
 }
-
