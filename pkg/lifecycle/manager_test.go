@@ -163,3 +163,70 @@ func TestShouldRunProbe(t *testing.T) {
 		t.Error("first probe should run")
 	}
 }
+
+// TestRecreateLoopIsBounded pins the g9 failure mode: a container whose
+// liveness probe never passes exhausted its restart budget, fired OnFailed,
+// and the resulting pod recreate registered a fresh unit with RestartCount 0 —
+// resetting the budget forever. The container was destroyed and its image
+// re-extracted every ~26s indefinitely. Recreates must be capped.
+func TestRecreateLoopIsBounded(t *testing.T) {
+	mgr := NewManager(config.LifecycleConfig{
+		MaxRestarts:       2,
+		RestartCooldown:   0, // no wall-clock wait in tests
+		RestartBackoffMax: 1,
+		MaxRecreates:      3,
+	}, nil, testLogger())
+
+	// Simulate the loop: each pass exhausts restarts and asks to recreate.
+	granted := 0
+	for i := 0; i < 50; i++ {
+		if mgr.shouldRecreate("g9_dns_microdns") {
+			granted++
+			// A recreate registers a brand-new unit with a zeroed counter.
+			mgr.recreates["g9_dns_microdns"].LastAt = time.Time{}
+		}
+	}
+
+	if granted != 3 {
+		t.Fatalf("recreates not capped: granted %d, want 3", granted)
+	}
+	if mgr.shouldRecreate("g9_dns_microdns") {
+		t.Fatal("shouldRecreate still true after cap reached")
+	}
+}
+
+// TestRecreateBudgetResetsOnRecovery ensures a container that genuinely
+// recovers gets a full recovery budget for any later, unrelated failure.
+func TestRecreateBudgetResetsOnRecovery(t *testing.T) {
+	mgr := NewManager(config.LifecycleConfig{
+		MaxRecreates: 2, RestartCooldown: 0, RestartBackoffMax: 1,
+	}, nil, testLogger())
+
+	if !mgr.shouldRecreate("c") {
+		t.Fatal("first recreate should be granted")
+	}
+	mgr.clearRecreates("c")
+	if !mgr.shouldRecreate("c") {
+		t.Fatal("budget should reset after recovery")
+	}
+}
+
+// TestRestartBackoffIsExponentialAndCapped guards the flat-cooldown bug:
+// attempts previously waited a constant RestartCooldown regardless of how
+// many times the container had already failed.
+func TestRestartBackoffIsExponentialAndCapped(t *testing.T) {
+	mgr := NewManager(config.LifecycleConfig{
+		RestartCooldown: 10, RestartBackoffMax: 300,
+	}, nil, testLogger())
+
+	want := []time.Duration{
+		10 * time.Second, 20 * time.Second, 40 * time.Second,
+		80 * time.Second, 160 * time.Second, 300 * time.Second,
+		300 * time.Second, // capped
+	}
+	for i, w := range want {
+		if got := mgr.restartBackoff(i); got != w {
+			t.Errorf("restartBackoff(%d) = %v, want %v", i, got, w)
+		}
+	}
+}

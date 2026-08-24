@@ -75,9 +75,9 @@ type NATSConfig struct {
 
 // ClusterConfig configures multi-node clustering.
 type ClusterConfig struct {
-	Enabled          bool         `yaml:"enabled"`
-	Peers            []PeerConfig `yaml:"peers"`
-	FailoverTimeout  int          `yaml:"failoverTimeout"`  // seconds before rescheduling failed node pods (default 300)
+	Enabled         bool         `yaml:"enabled"`
+	Peers           []PeerConfig `yaml:"peers"`
+	FailoverTimeout int          `yaml:"failoverTimeout"` // seconds before rescheduling failed node pods (default 300)
 }
 
 // PeerConfig defines a cluster peer node.
@@ -95,18 +95,18 @@ type ConsoleConfig struct {
 
 // GitBackupConfig configures automatic git-backed config state backup via rust4git.
 type GitBackupConfig struct {
-	Enabled         bool   `yaml:"enabled"`          // master toggle
-	RepoURL         string `yaml:"repoURL"`          // rust4git base URL, e.g. "http://git.gt.lo:3000"
-	RepoName        string `yaml:"repoName"`         // owner/repo, e.g. "mkube/configstate"
-	Branch          string `yaml:"branch"`            // git branch (default "main")
-	IntervalSeconds int    `yaml:"intervalSeconds"`   // periodic backup interval (default 300)
-	DebounceSeconds int    `yaml:"debounceSeconds"`   // debounce window after store change (default 30)
-	Username        string `yaml:"username"`          // rust4git username for basic auth
-	Password        string `yaml:"password"`          // rust4git password for basic auth
-	PasswordFile    string `yaml:"passwordFile"`      // alternative: read password from file
-	InsecureTLS     bool   `yaml:"insecureTLS"`       // skip TLS verification
-	CommitAuthor    string `yaml:"commitAuthor"`      // git commit author (default "mkube")
-	CommitEmail     string `yaml:"commitEmail"`       // git commit email (default "mkube@gt.lo")
+	Enabled         bool   `yaml:"enabled"`         // master toggle
+	RepoURL         string `yaml:"repoURL"`         // rust4git base URL, e.g. "http://git.gt.lo:3000"
+	RepoName        string `yaml:"repoName"`        // owner/repo, e.g. "mkube/configstate"
+	Branch          string `yaml:"branch"`          // git branch (default "main")
+	IntervalSeconds int    `yaml:"intervalSeconds"` // periodic backup interval (default 300)
+	DebounceSeconds int    `yaml:"debounceSeconds"` // debounce window after store change (default 30)
+	Username        string `yaml:"username"`        // rust4git username for basic auth
+	Password        string `yaml:"password"`        // rust4git password for basic auth
+	PasswordFile    string `yaml:"passwordFile"`    // alternative: read password from file
+	InsecureTLS     bool   `yaml:"insecureTLS"`     // skip TLS verification
+	CommitAuthor    string `yaml:"commitAuthor"`    // git commit author (default "mkube")
+	CommitEmail     string `yaml:"commitEmail"`     // git commit email (default "mkube@gt.lo")
 
 	// MicroDNS snapshot settings — push DNS/DHCP state on every change
 	DNSSnapshot         bool   `yaml:"dnsSnapshot"`         // enable microdns config snapshots
@@ -119,7 +119,7 @@ type GitBackupConfig struct {
 type BMHConfig struct {
 	PXEManagerURL string `yaml:"pxeManagerURL"` // default: http://pxe.g10.lo
 	DHCPLeaseURL  string `yaml:"dhcpLeaseURL"`  // default: http://dns.g11.lo:8080
-	WatchInterval int    `yaml:"watchInterval"`  // seconds, default: 30
+	WatchInterval int    `yaml:"watchInterval"` // seconds, default: 30
 }
 
 // NamespaceConfig configures the namespace manager.
@@ -137,17 +137,17 @@ type NetworkDef struct {
 	Gateway     string    `yaml:"gateway"`
 	VLAN        int       `yaml:"vlan,omitempty"`
 	DNS         DNSConfig `yaml:"dns"`
-	IPAMStart   string    `yaml:"ipamStart,omitempty"` // first IP for container IPAM allocation
-	IPAMEnd     string    `yaml:"ipamEnd,omitempty"`   // last IP for container IPAM allocation
+	IPAMStart   string    `yaml:"ipamStart,omitempty"`   // first IP for container IPAM allocation
+	IPAMEnd     string    `yaml:"ipamEnd,omitempty"`     // last IP for container IPAM allocation
 	ExternalDNS bool      `yaml:"externalDNS,omitempty"` // DNS server is external (not managed by mkube)
 }
 
 // DNSConfig specifies the MicroDNS instance for a network.
 type DNSConfig struct {
-	Endpoint      string         `yaml:"endpoint"` // e.g. "http://192.168.200.199:8080"
-	Zone          string         `yaml:"zone"`     // e.g. "gt.lo"
-	Server        string         `yaml:"server"`   // DNS server IP for containers, e.g. "192.168.200.199"
-	DHCP          DHCPConfig     `yaml:"dhcp"`     // DHCP server config for this network
+	Endpoint      string         `yaml:"endpoint"`                // e.g. "http://192.168.200.199:8080"
+	Zone          string         `yaml:"zone"`                    // e.g. "gt.lo"
+	Server        string         `yaml:"server"`                  // DNS server IP for containers, e.g. "192.168.200.199"
+	DHCP          DHCPConfig     `yaml:"dhcp"`                    // DHCP server config for this network
 	StaticRecords []StaticRecord `yaml:"staticRecords,omitempty"` // infrastructure hosts registered at startup
 }
 
@@ -361,6 +361,16 @@ type LifecycleConfig struct {
 	// Restart policy
 	MaxRestarts     int `yaml:"maxRestarts"`     // per container before giving up
 	RestartCooldown int `yaml:"restartCooldown"` // seconds between restart attempts
+
+	// RestartBackoffMax caps the exponential restart backoff, in seconds.
+	// Successive restart attempts wait RestartCooldown * 2^n up to this cap.
+	RestartBackoffMax int `yaml:"restartBackoffMax"`
+
+	// MaxRecreates bounds how many times a container that exhausted its
+	// restart budget may be recovered by a full pod recreate. A recreate
+	// registers a fresh unit with RestartCount 0, so without this cap the
+	// restart budget resets forever and the container rebuilds indefinitely.
+	MaxRecreates int `yaml:"maxRecreates"`
 }
 
 type RegistryConfig struct {
@@ -440,10 +450,12 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			GCKeepLastN:       5,
 		},
 		Lifecycle: LifecycleConfig{
-			BootManifestPath: "/etc/mkube/boot-order.yaml",
-			WatchdogInterval: 5,
-			MaxRestarts:      5,
-			RestartCooldown:  10,
+			BootManifestPath:  "/etc/mkube/boot-order.yaml",
+			WatchdogInterval:  5,
+			MaxRestarts:       5,
+			RestartCooldown:   10,
+			RestartBackoffMax: 300,
+			MaxRecreates:      3,
 		},
 		Registry: RegistryConfig{
 			Enabled:    true,

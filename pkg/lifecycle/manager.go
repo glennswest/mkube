@@ -56,6 +56,20 @@ type Manager struct {
 	// unhealthy→running (recovery). The provider uses this to push immediate
 	// pod status updates and kick the reconciler.
 	OnStateChanged func(containerName string, oldStatus, newStatus string)
+
+	// recreates bounds the delete+create recovery loop, keyed by container
+	// name. It deliberately outlives ContainerUnit: OnFailed triggers a pod
+	// recreate that registers a fresh unit with RestartCount 0, so a per-unit
+	// counter can never bound the loop. Guarded by mu; cleared on recovery.
+	recreates map[string]*recreateRecord
+}
+
+// recreateRecord tracks pod-recreate attempts for a single container so that
+// a container failing to become healthy backs off instead of rebuilding
+// (image re-extract included) every few seconds forever.
+type recreateRecord struct {
+	Count  int
+	LastAt time.Time
 }
 
 // ProbeConfig defines a single health probe.
@@ -138,6 +152,7 @@ func NewManager(cfg config.LifecycleConfig, rt runtime.ContainerRuntime, log *za
 		units:         make(map[string]*ContainerUnit),
 		stateChangeCh: make(chan stateChangeEvent, 64),
 		failedCh:      make(chan string, 16),
+		recreates:     make(map[string]*recreateRecord),
 		probeTransport: &http.Transport{
 			MaxIdleConns:        5,
 			MaxIdleConnsPerHost: 1,
@@ -370,6 +385,8 @@ func (m *Manager) checkAll(ctx context.Context) {
 						oldStatus := unit.Status
 						unit.Healthy = true
 						unit.Status = "running"
+						unit.RestartCount = 0
+						m.clearRecreates(name)
 						m.log.Infow("container recovered (liveness)", "name", name)
 						m.fireStateChanged(name, oldStatus, "running")
 					}
@@ -585,6 +602,68 @@ func (m *Manager) statusCheck(ctx context.Context, unit *ContainerUnit) bool {
 
 // ─── Restart Handling ───────────────────────────────────────────────────────
 
+// restartBackoff returns the delay before restart attempt n (0-based):
+// RestartCooldown * 2^n, capped at RestartBackoffMax.
+func (m *Manager) restartBackoff(attempt int) time.Duration {
+	base := time.Duration(m.cfg.RestartCooldown) * time.Second
+	if base <= 0 {
+		base = 10 * time.Second
+	}
+	maxDelay := time.Duration(m.cfg.RestartBackoffMax) * time.Second
+	if maxDelay <= 0 {
+		maxDelay = 5 * time.Minute
+	}
+	d := base
+	for i := 0; i < attempt && d < maxDelay; i++ {
+		d *= 2
+	}
+	if d > maxDelay {
+		d = maxDelay
+	}
+	return d
+}
+
+// shouldRecreate reports whether a container that exhausted its restart budget
+// may be recovered by another full pod recreate. Recreates are themselves
+// backed off and hard-capped at MaxRecreates, after which the container stays
+// failed (CrashLoopBackOff) instead of rebuilding forever.
+//
+// Callers must hold m.mu (checkAll holds it for the whole probe loop).
+func (m *Manager) shouldRecreate(name string) bool {
+	maxRecreates := m.cfg.MaxRecreates
+	if maxRecreates == 0 {
+		maxRecreates = 3
+	}
+	if m.recreates == nil {
+		m.recreates = make(map[string]*recreateRecord)
+	}
+	rec, ok := m.recreates[name]
+	if !ok {
+		rec = &recreateRecord{}
+		m.recreates[name] = rec
+	}
+	if rec.Count >= maxRecreates {
+		return false
+	}
+	// Back off between recreates using the same curve as restarts, so a
+	// container that never becomes healthy stops hammering the image store.
+	if !rec.LastAt.IsZero() && time.Since(rec.LastAt) < m.restartBackoff(rec.Count) {
+		return false
+	}
+	rec.Count++
+	rec.LastAt = time.Now()
+	return true
+}
+
+// clearRecreates forgets a container's recreate history once it is healthy
+// again, so a later unrelated failure gets a full recovery budget.
+// Callers must hold m.mu.
+func (m *Manager) clearRecreates(name string) {
+	if m.recreates != nil {
+		delete(m.recreates, name)
+	}
+}
+
 func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 	maxRestarts := m.cfg.MaxRestarts
 	if maxRestarts == 0 {
@@ -594,6 +673,20 @@ func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 	oldStatus := unit.Status
 
 	if unit.RestartCount >= maxRestarts {
+		// Escalate to a pod recreate, but bound it. The recreate registers a
+		// fresh unit with RestartCount 0, so without shouldRecreate the
+		// restart budget resets on every pass and the container is destroyed
+		// and re-extracted every few seconds indefinitely.
+		if !m.shouldRecreate(unit.Name) {
+			if unit.Status != "failed" {
+				m.log.Errorw("container exhausted restart and recreate budget, leaving failed",
+					"name", unit.Name, "restarts", unit.RestartCount,
+					"maxRestarts", maxRestarts, "maxRecreates", m.cfg.MaxRecreates)
+				unit.Status = "failed"
+				m.fireStateChanged(unit.Name, oldStatus, "failed")
+			}
+			return
+		}
 		m.log.Errorw("container exceeded max restarts, marking as failed",
 			"name", unit.Name, "restarts", unit.RestartCount, "max", maxRestarts)
 		unit.Status = "failed"
@@ -608,10 +701,7 @@ func (m *Manager) restartUnit(ctx context.Context, unit *ContainerUnit) {
 		return
 	}
 
-	cooldown := time.Duration(m.cfg.RestartCooldown) * time.Second
-	if cooldown == 0 {
-		cooldown = 10 * time.Second
-	}
+	cooldown := m.restartBackoff(unit.RestartCount)
 	if time.Since(unit.LastRestartAt) < cooldown {
 		return
 	}

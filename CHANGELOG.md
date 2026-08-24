@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### 2026-08-24
+- **fix(lifecycle):** Bound the pod-recreate loop. A container whose liveness
+  probe never passes exhausted `maxRestarts`, was marked failed, and fired
+  `OnFailed` — which the provider handles with a full `DeletePod`+`CreatePod`.
+  That recreate registers a *fresh* `ContainerUnit` with `RestartCount 0`, so
+  the restart budget reset on every pass and the cap could never be reached.
+  Observed on `g9_dns_microdns`: destroyed, re-pulled and image-re-extracted
+  every ~26 seconds for hours, which also turned the RouterOS 1000-line log
+  ring over every ~14 minutes and destroyed unrelated diagnostic history.
+  Recreates are now tracked per container name in state that outlives the unit,
+  backed off, and hard-capped by `maxRecreates` (default 3); past the cap the
+  container stays `failed` instead of rebuilding forever.
+- **fix(lifecycle):** Restart cooldown is now exponential. `restartUnit` waited
+  a flat `restartCooldown` regardless of attempt number, despite the package
+  doc promising "configurable backoff". Delay is now
+  `restartCooldown * 2^attempt`, capped by the new `restartBackoffMax`
+  (default 300s).
+- **feat(config):** New `lifecycle.restartBackoffMax` (default 300) and
+  `lifecycle.maxRecreates` (default 3).
+- **fix(lifecycle):** Reset `RestartCount` and recreate history when a
+  container recovers via its liveness probe, so a later unrelated failure gets
+  a full recovery budget.
+
 ### 2026-08-21
 - **chore:** Delete `readDockerSaveConfig` (#19). The CoW path stopped calling it
   when the entrypoint rewrite moved to `RemoteImageConfig` — the image config

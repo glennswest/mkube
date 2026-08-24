@@ -39,6 +39,11 @@ systemd:
   watchdogIntervalSeconds: 15
   maxRestarts: 5
   restartCooldown: 10
+  # Exponential backoff cap between restart attempts (seconds).
+  restartBackoffMax: 300
+  # Pod recreates allowed after the restart budget is exhausted, before the
+  # container is left failed instead of rebuilt forever.
+  maxRecreates: 3
 
 registry:
   enabled: true
