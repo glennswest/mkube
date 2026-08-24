@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-### 2026-08-24
+## [v6.4.0] — 2026-08-24
+
+### Fixed
 - **fix(lifecycle):** Bound the pod-recreate loop. A container whose liveness
   probe never passes exhausted `maxRestarts`, was marked failed, and fired
   `OnFailed` — which the provider handles with a full `DeletePod`+`CreatePod`.
