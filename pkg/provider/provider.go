@@ -1092,6 +1092,19 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			startOnBoot = "true"
 		}
 
+		// RouterOS's start-on-boot is a separate question from whether mkube
+		// manages the container. A CoW container's rootfs is a bind mount from
+		// a network-attached clone (/flash/rw/disk/<slot>/rootfs -> /payload).
+		// At boot RouterOS starts containers before that disk is attached and
+		// mounted, so it tries to create the bind-mount source under an
+		// unmounted mountpoint and fails with "Read-only file system". mkube
+		// starts these itself once the clone is attached, mounted and
+		// writable, so RouterOS must not race it at boot.
+		rosStartOnBoot := startOnBoot
+		if cowMode {
+			rosStartOnBoot = "false"
+		}
+
 		// 5. Swap any old root-dir aside (atomic rename) to force tarball
 		// re-extraction. RouterOS skips extraction when root-dir already has
 		// content, so without this stale images persist. Renaming rather than
@@ -1113,7 +1126,7 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 			Hostname:    pod.Name,
 			DNS:         dnsServer,
 			Logging:     "true",
-			StartOnBoot: startOnBoot,
+			StartOnBoot: rosStartOnBoot,
 		}
 
 		if cowMode {
@@ -2169,7 +2182,10 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			}
 			continue
 		}
-		if ct.StartOnBoot != "true" {
+		// CoW containers carry start-on-boot=false so RouterOS does not start
+		// them before their network clone is mounted; mkube still owns their
+		// recovery, so fall back to lifecycle registration.
+		if ct.StartOnBoot != "true" && !p.deps.LifecycleMgr.IsRegistered(name) {
 			continue
 		}
 

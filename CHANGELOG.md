@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [v6.4.1] — 2026-08-24
+
+### Fixed
+- **fix(provider):** CoW containers no longer race RouterOS at boot. A CoW
+  container's rootfs is a bind mount from a network-attached clone
+  (`/flash/rw/disk/<slot>/rootfs` -> `/payload`), but the container was created
+  with RouterOS `start-on-boot=yes`. At boot RouterOS starts containers before
+  that disk is attached and mounted, so it tried to create the bind-mount
+  source under an unmounted mountpoint and failed with
+  `prepare root dir: ... error creating src ...: Read-only file system`.
+  Observed on `infra_netwatch_netwatch`, which failed twice at 09:28:06 and
+  09:28:20 before succeeding at 09:28:29. The clone itself was never the
+  problem — it is pre-created, sealed and healthy; the *disk attach* had not
+  happened yet. CoW containers are now created with RouterOS
+  `start-on-boot=false` and started by mkube once the clone is attached and
+  mounted.
+- **fix(provider):** Auto-recovery no longer skips CoW containers. RouterOS's
+  `start-on-boot` was overloaded to mean both "RouterOS starts this at boot"
+  and "mkube owns this container's recovery". Recovery now falls back to
+  lifecycle registration, so CoW containers keep their restart handling and
+  health probes despite carrying `start-on-boot=false`.
+- **feat(lifecycle):** `Manager.IsRegistered(name)` reports whether mkube
+  tracks a container, so callers can stop inferring ownership from RouterOS's
+  boot flag.
+
 ## [v6.4.0] — 2026-08-24
 
 ### Fixed

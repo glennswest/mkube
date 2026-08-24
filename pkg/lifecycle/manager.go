@@ -194,6 +194,21 @@ func (m *Manager) Unregister(name string) {
 }
 
 // GetUnitReady returns the readiness state of a unit.
+// IsRegistered reports whether a container is tracked by the lifecycle
+// manager. Callers use this instead of RouterOS's start-on-boot flag to decide
+// whether mkube owns a container's recovery: CoW containers deliberately carry
+// start-on-boot=false (their rootfs is a network clone that does not exist
+// until mkube attaches it), but mkube still manages them.
+func (m *Manager) IsRegistered(name string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.units[name]
+	return ok
+}
+
 func (m *Manager) GetUnitReady(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
