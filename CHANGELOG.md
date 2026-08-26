@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### 2026-08-26
+- **fix(provider):** A stopped CoW container is recovered again after an mkube
+  restart. Auto-recovery decided ownership from RouterOS's `start-on-boot`
+  flag with a fallback to lifecycle registration (2ecf694) — but CoW
+  containers deliberately carry `start-on-boot=false`, and the lifecycle
+  registry is in-memory, so a restarted mkube adopted them unregistered and
+  reconcile skipped them forever. Observed live: `infra/netwatch` sat
+  Stopped for 8+ hours across two mkube restarts, with the image staged and
+  the clone healthy, and no start ever attempted. Recovery now asks the
+  desired state — a pod with `restartPolicy: Always` is recovered regardless
+  of the flag or the registry, both of which remain only for pods without
+  one.
 - **docs:** Work plan caught up with reality: the CoW "relocation" blocker
   (absolute `-> /stormd` symlinks under `/payload`) was solved 2026-08-19 by
   stormpivot's chroot and verified on rose1 — the In Progress entry and the

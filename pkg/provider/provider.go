@@ -2182,13 +2182,6 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			}
 			continue
 		}
-		// CoW containers carry start-on-boot=false so RouterOS does not start
-		// them before their network clone is mounted; mkube still owns their
-		// recovery, so fall back to lifecycle registration.
-		if ct.StartOnBoot != "true" && !p.deps.LifecycleMgr.IsRegistered(name) {
-			continue
-		}
-
 		// Find the tracked pod owning this container
 		var ownerPod *corev1.Pod
 		for _, pod := range desiredPods {
@@ -2204,6 +2197,19 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 		if ownerPod == nil {
 			continue // orphan, handled elsewhere
+		}
+
+		// Whether a stopped container should be recovered is a desired-state
+		// question. RouterOS's start-on-boot flag cannot answer it: CoW
+		// containers deliberately carry start-on-boot=false (their rootfs is a
+		// network clone mkube attaches), and the lifecycle registry is
+		// in-memory — empty after an mkube restart, which left adopted CoW
+		// containers stopped until the next full recreate. The pod's restart
+		// policy survives restarts; the flag and the registry remain only for
+		// pods without one.
+		if ownerPod.Spec.RestartPolicy != corev1.RestartPolicyAlways &&
+			ct.StartOnBoot != "true" && !p.deps.LifecycleMgr.IsRegistered(name) {
+			continue
 		}
 
 		// Check restart backoff
