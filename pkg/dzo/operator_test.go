@@ -24,6 +24,12 @@ func mockMicroDNS(t *testing.T) *httptest.Server {
 
 	mux := http.NewServeMux()
 
+	// The dns client gates every operation on this probe (endpointAlive);
+	// without it the mock is "dead" and zone calls are skipped.
+	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
 	mux.HandleFunc("GET /api/v1/zones", func(w http.ResponseWriter, r *http.Request) {
 		zoneList := make([]dns.Zone, 0, len(zones))
 		for _, z := range zones {

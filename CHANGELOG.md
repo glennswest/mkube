@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### 2026-08-26
+- **test(dzo):** `TestStatePeristence` (and any dzo test doing zone writes)
+  failed since the v6.2.1 `endpointAlive` gate: the mock MicroDNS served no
+  `GET /api/v1/health`, so the client's alive probe got a 404 and skipped
+  every zone call. The mock now answers the health probe with 200.
+- **test(storage):** `TestProvisionVolume` expected the pre-volumes-dir path
+  (`<base>/<container>/<vol>`); `ProvisionVolume` has placed volumes in a
+  dedicated directory parallel to images (`<base>/volumes/<container>/<vol>`)
+  since the volumes-dir change. Expectation updated — closes work-plan TODO
+  "Fix storage test failures".
 - **docs(deploy):** `stormboot-config.example.yaml` documents the `registry:`
   key — required when stormboot runs as a daemon (it is then the node's
   container runtime and exits with "no registry is configured" without it);

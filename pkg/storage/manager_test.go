@@ -107,7 +107,9 @@ func TestProvisionVolume(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := "/container-data/mycontainer/data-vol"
+	// ProvisionVolume places volumes in a dedicated directory parallel to
+	// the images directory (BasePath sans /images + "/volumes").
+	expected := "/container-data/volumes/mycontainer/data-vol"
 	if path != expected {
 		t.Errorf("expected %q, got %q", expected, path)
 	}
