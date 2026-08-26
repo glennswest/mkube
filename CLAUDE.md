@@ -209,8 +209,14 @@ plan". mkube's part:
   swap. Boot-order hardening followed: CoW containers no longer race RouterOS
   at boot (v6.4.1, start-on-boot=false + mkube starts them after clone
   attach), and mount waits are sized to the measured ~1.5s provision with
-  rollback on a live context (v6.4.2). Remaining: keep netwatch healthy
-  across reboots/deploys, then convert the other CoW-ready images. Original
+  rollback on a live context (v6.4.2). The restart-recovery gap that both of
+  those left open — the lifecycle registry is in-memory, so a restarted mkube
+  adopted stopped CoW containers unregistered and never started them — is
+  fixed in v6.4.3 (recovery decided by `restartPolicy: Always` from desired
+  state) and **verified live 2026-08-26**: netwatch, stopped for 8+ hours,
+  recovered to Running/ready by reconcile alone after the v6.4.3 deploy, UI
+  serving, 0 restarts. Remaining: soak across a device reboot, then convert
+  the other CoW-ready images. Original
   analysis, kept because the RouterOS facts in it are still true:
   **blocked on RouterOS image extraction onto network disks.** Model proven: a container runs its binary from a mounted stormblock clone (5 KB generic docker-save stub as `file=` + clone at `/payload` + entrypoint rewritten). Pipeline implemented (`pkg/provider/cow_catalog.go`, `vkube.io/image-mode: cow`): golden create→format→seed→seal, per-pod clone with its own UUID/label/clean state, attach, mount, container start. **Storage is NOT the problem** — `POST /api/v1/probes/datapath` writes stamped blocks through `iscsi-pvc` and verifies 64/64 good in a fresh session, after export withdrawal, and **after seal → `from_template` clone**; thin volumes, partial slab slots, snapshots and clones are byte-exact. **What fails is RouterOS writing a filesystem onto a mounted network volume**: allocation reaches the full image size, then the volume will not mount (`fs=-`) and clones of it mount empty. Ruled out: writeback settle, clean-flag restore, eject (hardware-only), unmount (absent), disable (no effect), SYNCHRONIZE CACHE (succeeds, no effect), duplicate fs identity. Related: the "RouterOS never mounts an NVMe-TCP disk" claim was retracted 2026-08-11 (a port bug on our side) — so this seeding failure is worth **re-testing over NVMe**, which is a different write path than the iSCSI one it was observed on. **Next experiment:** seed by *copying* rather than extracting — RouterOS extracts happily to `/raid1` (a hardware disk, which is how every pod works today), so run a container with `/raid1/<golden-src>` and the clone both mounted and `cp -a` between them; container writes to PVC mounts already appear durable, so this may sidestep the extraction path entirely. rose1 runs `goldenSource: sbregistry`. Probes: `/api/v1/probes/{cow,nvme,layers,layerdir,format,lsmount,inspect,datapath}`.
 - [ ] (2026-08-06) **g16 follow-ups**: `fedora-siov` (Mellanox b8:59:9f:52:23:46) identified as the **pvex Mellanox card** — an SR-IOV test VM on the Proxmox node; owner will convert it to a plain Linux NIC (MAC will change), then give it a static below 16.100; discover server7's b-port MAC and fill the reserved 192.168.16.113; TODO #16 (network-annotation strand bug) and #17 (failover DNS per server, prefer lower IP).
