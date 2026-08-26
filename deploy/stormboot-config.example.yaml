@@ -8,6 +8,12 @@
 # is started, not merely running: sbregistry cannot build a golden until
 # stormblockmk answers, and mkube cannot clone one until sbregistry does.
 
+# The golden registry stormboot serves containers from. Required when it runs
+# as a daemon: in that mode stormboot IS the node's container runtime, and
+# without this it exits with "no registry is configured". `--once` converges
+# the stages and exits, so it does not need one.
+registry: http://192.168.200.22:5100
+
 routeros:
   address: 192.168.200.1:8728
   user: REPLACE_ME

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-08-26
+- **docs(deploy):** `stormboot-config.example.yaml` documents the `registry:`
+  key — required when stormboot runs as a daemon (it is then the node's
+  container runtime and exits with "no registry is configured" without it);
+  `--once` converges the stages and exits, so it does not need one.
+
 ## [v6.4.2] — 2026-08-24
 
 ### Fixed
