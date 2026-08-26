@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### 2026-08-26
+- **docs:** Work plan caught up with reality: the CoW "relocation" blocker
+  (absolute `-> /stormd` symlinks under `/payload`) was solved 2026-08-19 by
+  stormpivot's chroot and verified on rose1 — the In Progress entry and the
+  layered-goldens checklist still described it as open. Remaining CoW work is
+  soak/rollout, not relocation. Known-test-failures list cleared.
 - **test(dzo):** `TestStatePeristence` (and any dzo test doing zone writes)
   failed since the v6.2.1 `endpointAlive` gate: the mock MicroDNS served no
   `GET /api/v1/health`, so the client's alive probe got a 404 and skipped

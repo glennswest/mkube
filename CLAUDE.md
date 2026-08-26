@@ -136,8 +136,8 @@ go test ./pkg/proxmox/...            # Proxmox tests
 go test -v ./pkg/provider/...        # Verbose
 ```
 
-Known test failures (pre-existing):
-- `pkg/storage/manager_test.go`: `TestProvisionVolume` (`TestEnsureImageCacheHit` fixed 2026-06-30 by the digest-validated cache)
+Known test failures: none (full suite green on dev, 2026-08-26).
+- `TestProvisionVolume` fixed 2026-08-26 (expectation predated the volumes-dir move); `TestEnsureImageCacheHit` fixed 2026-06-30 by the digest-validated cache; `pkg/dzo TestStatePeristence` fixed 2026-08-26 (mock lacked the `/api/v1/health` route the v6.2.1 alive gate probes).
 
 ## Work Plan
 
@@ -147,7 +147,7 @@ Known test failures (pre-existing):
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
 3. **Registry push notifications to mkube-update**: Webhook/watch instead of polling. **Superseded by the [stormblock-registry](https://github.com/glennswest/stormblock-registry) project (`docs/spec.md`)** (sbregistry absorbs mkube-update; fires webhooks by construction) — only do standalone if that spec stalls.
-4. **Fix storage test failures**: `TestProvisionVolume` (volume path mismatch). `TestEnsureImageCacheHit` fixed 2026-06-30 by the digest-validated cache.
+4. ~~**Fix storage test failures**~~ **FIXED 2026-08-26**: `TestProvisionVolume` expectation updated to the volumes-dir path; `TestEnsureImageCacheHit` fixed 2026-06-30 by the digest-validated cache.
 5. **TLS cert rotation**: API to update registry CA+server certs and trigger consumer reload.
 6. **microdns resilience**: DNS containers must survive mkube failures independently.
 7. **Registry HTTP/2 proper fix**: Find root cause of Go h2 GOAWAY or use reverse proxy.
@@ -180,10 +180,14 @@ plan". mkube's part:
       as a sealed template, clone it, attach, start. Then it is podman with
       the expensive half deleted: it only runs, because by the time it sees an
       image that image is already golden.
-- [ ] **Relocation.** `MKUBE_VOLUME_TOOL` is done — it was the only path mkube
-      resolves inside its own image. What remains is on the image side: 252
-      absolute `-> /stormd` symlinks break under a `/payload` stub root, which
-      is what killed the netwatch CoW trial.
+- [x] **Relocation — solved by `stormpivot` (chroot), 2026-08-19.**
+      `MKUBE_VOLUME_TOOL` was the mkube side; the image side (252 absolute
+      `-> /stormd` symlinks breaking under a `/payload` stub root, which
+      killed the first netwatch CoW trial) is not fixed per-image but made
+      moot: stormpivot ships in mkube's image, becomes the CoW stub's
+      entrypoint, chroots into `/payload` and execs the image's own
+      entrypoint — inside the chroot every absolute path resolves. Verified
+      on rose1: netwatch ran on CoW, ready, 7s stop-to-serving swap.
 - [ ] **Retire mkube-update's polling** once sbregistry's push-notify is
       wired (`cmd/registry` already has the `webhookForwarder`; it is not
       configured on registry.gt.lo, which is why a control-plane deploy waits
@@ -192,18 +196,21 @@ plan". mkube's part:
       mkube-update shrinks, it does not vanish.
 
 ### In Progress
-- [ ] (2026-08-10, **updated 2026-08-19**) **CoW catalog — the seeding
-  blocker is gone; what remains is image relocation.** The blocker below was
-  RouterOS writing a filesystem onto a mounted network volume. sbregistry's
-  direct-write path removes RouterOS from the write path entirely, and that
-  path is now proven end to end on rose1: a golden built by sbregistry,
-  cloned, attached over NVMe-TCP, `e2fsck -fn` clean, mounted by a real
-  kernel, and a dynamic binary executed out of it. `goldenSource: sbregistry`
-  is what rose1 already runs. **What actually blocks a pod today** is that
-  under the stub-root model the image sits at `/payload`, and four images
-  carry 252 absolute `-> /stormd` symlinks that do not exist there — which is
-  why the 2026-08-19 netwatch trial came up Pending with the container exiting
-  immediately. Fix the symlinks (make them relative), not the storage. Original
+- [ ] (2026-08-10, **updated 2026-08-26**) **CoW catalog — seeding and
+  relocation both solved; what remains is soak/rollout.** The seeding blocker
+  (RouterOS writing a filesystem onto a mounted network volume) fell to
+  sbregistry's direct-write path, proven end to end on rose1: a golden built
+  by sbregistry, cloned, attached over NVMe-TCP, `e2fsck -fn` clean, mounted
+  by a real kernel, a dynamic binary executed out of it. The relocation
+  blocker (252 absolute `-> /stormd` symlinks under the `/payload` stub root)
+  fell to **stormpivot** (2026-08-19): the stub's entrypoint chroots into
+  `/payload` and execs the image's own entrypoint, so absolute paths resolve
+  — netwatch verified running on CoW on rose1, ready, 7s stop-to-serving
+  swap. Boot-order hardening followed: CoW containers no longer race RouterOS
+  at boot (v6.4.1, start-on-boot=false + mkube starts them after clone
+  attach), and mount waits are sized to the measured ~1.5s provision with
+  rollback on a live context (v6.4.2). Remaining: keep netwatch healthy
+  across reboots/deploys, then convert the other CoW-ready images. Original
   analysis, kept because the RouterOS facts in it are still true:
   **blocked on RouterOS image extraction onto network disks.** Model proven: a container runs its binary from a mounted stormblock clone (5 KB generic docker-save stub as `file=` + clone at `/payload` + entrypoint rewritten). Pipeline implemented (`pkg/provider/cow_catalog.go`, `vkube.io/image-mode: cow`): golden create→format→seed→seal, per-pod clone with its own UUID/label/clean state, attach, mount, container start. **Storage is NOT the problem** — `POST /api/v1/probes/datapath` writes stamped blocks through `iscsi-pvc` and verifies 64/64 good in a fresh session, after export withdrawal, and **after seal → `from_template` clone**; thin volumes, partial slab slots, snapshots and clones are byte-exact. **What fails is RouterOS writing a filesystem onto a mounted network volume**: allocation reaches the full image size, then the volume will not mount (`fs=-`) and clones of it mount empty. Ruled out: writeback settle, clean-flag restore, eject (hardware-only), unmount (absent), disable (no effect), SYNCHRONIZE CACHE (succeeds, no effect), duplicate fs identity. Related: the "RouterOS never mounts an NVMe-TCP disk" claim was retracted 2026-08-11 (a port bug on our side) — so this seeding failure is worth **re-testing over NVMe**, which is a different write path than the iSCSI one it was observed on. **Next experiment:** seed by *copying* rather than extracting — RouterOS extracts happily to `/raid1` (a hardware disk, which is how every pod works today), so run a container with `/raid1/<golden-src>` and the clone both mounted and `cp -a` between them; container writes to PVC mounts already appear durable, so this may sidestep the extraction path entirely. rose1 runs `goldenSource: sbregistry`. Probes: `/api/v1/probes/{cow,nvme,layers,layerdir,format,lsmount,inspect,datapath}`.
 - [ ] (2026-08-06) **g16 follow-ups**: `fedora-siov` (Mellanox b8:59:9f:52:23:46) identified as the **pvex Mellanox card** — an SR-IOV test VM on the Proxmox node; owner will convert it to a plain Linux NIC (MAC will change), then give it a static below 16.100; discover server7's b-port MAC and fill the reserved 192.168.16.113; TODO #16 (network-annotation strand bug) and #17 (failover DNS per server, prefer lower IP).
