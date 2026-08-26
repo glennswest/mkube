@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v6.4.3] — 2026-08-26
+
 ### 2026-08-26
 - **fix(provider):** A stopped CoW container is recovered again after an mkube
   restart. Auto-recovery decided ownership from RouterOS's `start-on-boot`
