@@ -143,6 +143,25 @@ Known test failures: none (full suite green on dev, 2026-08-26).
 
 ### Current Version: `v6.5.1`
 
+### P0 INCIDENT 2026-08-27 — issues #26/#18/#14 (network destroyed, mkube disabled)
+mkube's reconciler emptied `/interface/bridge/port` on rose1 (all networks down),
+deleted 8 of 9 DNS primaries (delete-then-fail-to-pull against a registry serving
+unrunnable images), and left 16/23 containers stopped. mkube is disabled on rose1
+until ALL of the following land:
+1. [ ] **Ownership model (#18/#26)**: mkube may only remove veths/bridge-ports it
+   created — comment marker `mkube` set on create, checked before ANY remove;
+   physical ports structurally untouchable. Reaper logs why.
+2. [ ] **Bridge-port leak + GC (#14)**: RemoveVeth/recreateVethForBridge remove the
+   static bridge-port entry with the veth; GC pass drops dangling `*XX` entries.
+3. [ ] **Churn bound (#26)**: per-interface failure backoff + cap on the
+   add→start→fail→remove loop; after cap, pod goes Failed, loop stops.
+4. [ ] **Pull-verify-then-cut-over (#26)**: never destroy a container before the
+   replacement image is staged AND its entrypoint exists in the rootfs.
+5. [ ] **Registry-health gate (#26)**: reconcile performs no destructive action in
+   any cycle where the registry/desired-state is unreachable or the image is bad.
+6. [ ] **Log flood (#16 decode bug + dedupe/rotation)**: fix RecordData per-type
+   decode; zap sampling to collapse repeated identical lines; stormd log rotation.
+
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
