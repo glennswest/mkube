@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### 2026-08-27 — P0 incident response (#26, #18, #14)
+- **fix(routeros/network/provider):** Ownership model. Every veth and static
+  bridge-port mkube creates carries an ownership comment, and every removal
+  path requires it: bridge-port GC (the code that emptied rose1's bridge-port
+  table) now needs the marker, caps removals at 50/pass, and refuses entirely
+  when dangling entries are the majority of the table; RemoveVeth,
+  removeBridgePortFor, recreateVethForBridge and AddBridgePort's wrong-bridge
+  move refuse non-`veth_` interfaces; container cleanup via veth refuses
+  foreign-named containers; the orphan-veth reaper skips unmarked veths (#18)
+  and logs why it reaps.
+- **fix(storage/provider):** Pull-verify-then-cut-over. Image staging fails if
+  the entrypoint binary is absent from the rootfs (the execvpe class), so an
+  unrunnable image can never be staged; RECOVERY refuses to destroy a stopped
+  container unless a runnable replacement image is already staged.
+- **fix(provider):** Hard cap (20) on consecutive pod-create failures; past it
+  the pod stays CreateFailed with a CreateAbandoned event instead of churning
+  veth/bridge-port add/remove forever.
+- **fix(dns):** RecordData decodes string and object payloads; MX/SRV/CAA
+  records no longer break entire record listings and stale-DNS cleanup.
+- **fix(main):** zap log sampling (3, then every 100th per second per
+  message) — repeated faults no longer flood the log.
+- **chore(deploy):** stormd log rotation bounded to 25 MB x 4 files.
+
+NOT YET BUILT/TESTED: dev.g8.lo is unreachable (outage casualty). Build,
+test, release tag and deploy are blocked on it. mkube remains disabled on
+rose1 until this ships and issues #26/#18/#14 are closed out.
+
 ## [v6.5.1] — 2026-08-26
 
 ### 2026-08-26
