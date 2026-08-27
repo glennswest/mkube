@@ -130,12 +130,21 @@ func TestCreateAndDeletePort(t *testing.T) {
 	d := newTestDriver(t)
 	ctx := context.Background()
 
-	if err := d.CreatePort(ctx, "veth-test", "10.0.0.2/24", "10.0.0.1"); err != nil {
+	if err := d.CreatePort(ctx, "veth_test_pod_0", "10.0.0.2/24", "10.0.0.1"); err != nil {
 		t.Fatalf("CreatePort: %v", err)
 	}
 
-	if err := d.DeletePort(ctx, "veth-test"); err != nil {
+	if err := d.DeletePort(ctx, "veth_test_pod_0"); err != nil {
 		t.Fatalf("DeletePort: %v", err)
+	}
+}
+
+// Ownership rule (#26): a name outside mkube's veth_ namespace is refused,
+// whatever else is true about it.
+func TestDeletePortRefusesForeignName(t *testing.T) {
+	d := newTestDriver(t)
+	if err := d.DeletePort(context.Background(), "veth-foreign"); err == nil {
+		t.Fatal("expected refusal deleting a non-mkube-named interface")
 	}
 }
 

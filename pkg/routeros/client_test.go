@@ -277,7 +277,7 @@ func TestCreateVethIdempotent(t *testing.T) {
 		switch words[0] {
 		case "/interface/veth/print":
 			return makeReply(
-				map[string]string{".id": "*1", "name": "veth0", "address": "172.20.0.5/16", "gateway": "172.20.0.1"},
+				map[string]string{".id": "*1", "name": "veth0", "address": "172.20.0.5/16", "gateway": "172.20.0.1", "comment": "mkube"},
 			), nil
 		case "/interface/veth/add":
 			t.Error("should not call add when veth already exists")

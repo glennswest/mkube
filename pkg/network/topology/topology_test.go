@@ -21,6 +21,7 @@ func (d *stubDriver) DeletePort(context.Context, string) error                  
 func (d *stubDriver) AttachPort(context.Context, string, string) error               { return nil }
 func (d *stubDriver) DetachPort(context.Context, string, string) error               { return nil }
 func (d *stubDriver) ListPorts(context.Context) ([]network.PortInfo, error)          { return nil, nil }
+func (d *stubDriver) SetPortComment(context.Context, string, string) error          { return nil }
 func (d *stubDriver) SetPortVLAN(context.Context, string, int, bool) error           { return nil }
 func (d *stubDriver) RemovePortVLAN(context.Context, string, int) error              { return nil }
 func (d *stubDriver) CreateTunnel(context.Context, string, network.TunnelSpec) error { return nil }

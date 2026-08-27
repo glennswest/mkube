@@ -253,6 +253,13 @@ func (m *Manager) AllocateInterface(ctx context.Context, vethName, hostname, net
 			return "", "", "", fmt.Errorf("reusing %s for %s: %w", allocatedIP, vethName, err)
 		}
 	} else {
+		// A previous allocation on a different network is released, not
+		// destroyed: the veth device itself is updated in place (address,
+		// gateway, bridge) further down. Without this the old pool would
+		// hold the key forever.
+		if prev, ok := m.allocs[vethName]; ok && prev.networkName != ns.def.Name {
+			m.ipam.Release(prev.networkName, vethName)
+		}
 		allocatedIP, err = m.ipam.Allocate(ns.def.Name, vethName)
 		if err != nil {
 			return "", "", "", err
