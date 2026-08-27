@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v6.5.0] — 2026-08-26
+
 ### 2026-08-26
 - **feat(provider):** Resource trace — mkube logs node free/total memory,
   CPU load and free disk every 30s (`resource trace` in the persisted stormd
