@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-08-26
+- **fix(runtime):** RouterOS runtime now populates `DiskTotal`/`DiskAvailable`
+  from `/system/resource` `total-hdd-space`/`free-hdd-space` (system/flash
+  disk), so the v6.5.0 resource trace's `disk_avail_mb` column reports a real
+  number instead of 0. Note this is the flash disk, not `/raid1` (RouterOS
+  accounts that separately under `/disk`).
+
 ## [v6.5.0] — 2026-08-26
 
 ### 2026-08-26

@@ -1631,7 +1631,11 @@ type SystemResource struct {
 	CPULoad      string `json:"cpu-load"`
 	FreeMemory   string `json:"free-memory"`
 	TotalMemory  string `json:"total-memory"`
-	Architecture string `json:"architecture-name"`
+	// System (flash) disk, as reported by /system/resource — not /raid1,
+	// which RouterOS accounts separately under /disk.
+	FreeHDDSpace  string `json:"free-hdd-space"`
+	TotalHDDSpace string `json:"total-hdd-space"`
+	Architecture  string `json:"architecture-name"`
 	BoardName    string `json:"board-name"`
 	Version      string `json:"version"`
 	Platform     string `json:"platform"`

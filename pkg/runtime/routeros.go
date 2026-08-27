@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"io"
+	"strconv"
 
 	"github.com/glennswest/mkube/pkg/routeros"
 )
@@ -89,16 +90,20 @@ func (r *RouterOSRuntime) GetSystemResource(ctx context.Context) (*SystemResourc
 	if err != nil {
 		return nil, err
 	}
+	diskTotal, _ := strconv.ParseUint(sr.TotalHDDSpace, 10, 64)
+	diskAvail, _ := strconv.ParseUint(sr.FreeHDDSpace, 10, 64)
 	return &SystemResource{
-		Uptime:       sr.Uptime,
-		CPUCount:     sr.CPUCount,
-		CPULoad:      sr.CPULoad,
-		FreeMemory:   sr.FreeMemory,
-		TotalMemory:  sr.TotalMemory,
-		Architecture: sr.Architecture,
-		BoardName:    sr.BoardName,
-		Version:      sr.Version,
-		Platform:     sr.Platform,
+		Uptime:        sr.Uptime,
+		CPUCount:      sr.CPUCount,
+		CPULoad:       sr.CPULoad,
+		FreeMemory:    sr.FreeMemory,
+		TotalMemory:   sr.TotalMemory,
+		Architecture:  sr.Architecture,
+		BoardName:     sr.BoardName,
+		Version:       sr.Version,
+		Platform:      sr.Platform,
+		DiskTotal:     diskTotal,
+		DiskAvailable: diskAvail,
 	}, nil
 }
 
