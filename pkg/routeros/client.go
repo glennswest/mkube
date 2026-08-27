@@ -461,7 +461,11 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) error 
 		body["user"] = spec.User
 	}
 	if spec.Envlist != "" {
-		body["envlist"] = spec.Envlist
+		// RouterOS 7.22 calls this parameter `envlists` (plural) on
+		// /container/add and /container/set — `envlist` is rejected with
+		// "unknown parameter", which made any pod with env vars uncreatable
+		// (found 2026-08-27 adding SBREGISTRY_BUILD_TIMEOUT_SECS).
+		body["envlists"] = spec.Envlist
 	}
 	if spec.Logging != "" {
 		body["logging"] = rosBool(spec.Logging)

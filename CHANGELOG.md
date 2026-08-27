@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-08-27
+- **fix(routeros):** container env lists use the `envlists` (plural)
+  parameter RouterOS 7.22 actually accepts — `envlist` was rejected with
+  "unknown parameter", making any pod with env vars uncreatable.
+
 ## [v6.6.0] — 2026-08-27
 
 ### 2026-08-27 — P0 incident response (#26, #18, #14)
