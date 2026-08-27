@@ -180,6 +180,12 @@ until ALL of the following land (code complete 2026-08-27, UNTESTED — dev.g8.l
    creds needed): disable/remove mkube-update container on rose1; re-enable
    stormboot with start-on-boot.
 
+9. [ ] **Jumbo frames on the gt fabric (post-recovery, deliberate)**: bridge-gt
+   and all container veths are MTU 1500; set 9000 across bridge + veths in one
+   maintenance action once golden throughput is engine-fixed (irrelevant at
+   100 KB/s, ~6x packet-overhead win at real speeds). mkube CreateVeth should
+   set MTU from network config so recreated veths inherit it.
+
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
