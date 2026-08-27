@@ -706,9 +706,12 @@ func (c *Client) ListEnvs(ctx context.Context) ([]EnvEntry, error) {
 
 // CreateEnv creates a container environment variable entry.
 func (c *Client) CreateEnv(ctx context.Context, listName, key, value string) error {
+	// RouterOS 7.22 names the field `key`; `name` is silently discarded and
+	// the entry is never created — pod env vars never reached any container
+	// (found 2026-08-27, the build-timeout env that would not apply).
 	return c.restPOST(ctx, "/container/envs/add", map[string]string{
 		"list":  listName,
-		"name":  key,
+		"key":   key,
 		"value": value,
 	}, nil)
 }

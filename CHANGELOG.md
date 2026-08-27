@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-08-27
+- **fix(routeros):** container env entries use the `key` field RouterOS 7.22
+  expects — `name` was silently discarded, so pod env vars were never
+  actually created on the device.
 - **fix(routeros):** container env lists use the `envlists` (plural)
   parameter RouterOS 7.22 actually accepts — `envlist` was rejected with
   "unknown parameter", making any pod with env vars uncreatable.
