@@ -5,6 +5,14 @@
 name = "kube.gt.lo"
 log_dir = "/var/stormd/logs"
 
+# Rotation bounds the log PVC at max_size_bytes * max_files per process.
+# stormd's defaults (100 MB x 10 = 1 GB) let the 2026-08-27 incident log
+# grow toward filling the volume; 25 MB x 4 caps mkube at 100 MB total,
+# which with zap sampling upstream is days of history, not hours.
+[log]
+max_size_bytes = 26214400
+max_files = 4
+
 [api]
 bind = "0.0.0.0:9080"
 

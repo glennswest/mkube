@@ -87,7 +87,13 @@ func main() {
 
 func run(cmd *cobra.Command, args []string) error {
 	// ── Logger ──────────────────────────────────────────────────────
-	logger, _ := zap.NewProduction()
+	// Sampled: a fault that repeats every reconcile emits the same line
+	// thousands of times an hour (the 2026-08-27 incident log was on its way
+	// to filling the PVC). Per second, per distinct message: the first 3
+	// pass, then every 100th — the fact survives, the flood does not.
+	logCfg := zap.NewProductionConfig()
+	logCfg.Sampling = &zap.SamplingConfig{Initial: 3, Thereafter: 100}
+	logger, _ := logCfg.Build()
 	defer func() { _ = logger.Sync() }()
 	log := logger.Sugar()
 

@@ -86,6 +86,31 @@ type RecordData struct {
 	Data string `json:"data"`
 }
 
+// UnmarshalJSON accepts both payload shapes microdns serves: a string for
+// A/AAAA/CNAME/NS/PTR/TXT, and an object for MX/SRV/CAA. Decoding the object
+// shapes into a string used to fail the ENTIRE record listing, which broke
+// every stale-record cleanup and BMH DNS sync against any zone holding one
+// such record — thousands of warn lines per hour, and stale records never
+// cleaned. Object payloads are preserved as their compact JSON; consumers
+// that match A-record strings simply never match them.
+func (d *RecordData) UnmarshalJSON(b []byte) error {
+	var probe struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return err
+	}
+	d.Type = probe.Type
+	var s string
+	if err := json.Unmarshal(probe.Data, &s); err == nil {
+		d.Data = s
+		return nil
+	}
+	d.Data = string(probe.Data)
+	return nil
+}
+
 // Record represents a MicroDNS DNS record.
 type Record struct {
 	ID   string     `json:"id"`
