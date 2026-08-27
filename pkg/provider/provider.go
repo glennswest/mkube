@@ -2306,7 +2306,34 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 			}
 		}
 
-		// Restart failed — destroy container, veths so step 3 recreates.
+		// Restart failed. Before anything is destroyed, prove a runnable
+		// replacement exists: destroy-then-fail-to-pull is how a registry
+		// serving broken images became eight deleted DNS primaries (#26).
+		// EnsureImage stages the tarball AND verifies the entrypoint binary
+		// is in the rootfs; if it cannot, the stopped container is kept —
+		// stopped-but-recreatable beats gone. CoW pods stage nothing here
+		// (their golden template is the runnable artifact, checked on the
+		// create path), so only tarball-backed pods gate on this.
+		if !isCoWPod(ownerPod) {
+			img := ""
+			for _, c := range ownerPod.Spec.Containers {
+				if sanitizeName(ownerPod, c.Name) == name {
+					img = c.Image
+					break
+				}
+			}
+			if img != "" {
+				if _, imgErr := p.deps.StorageMgr.EnsureImage(ctx, img); imgErr != nil {
+					log.Errorw("RECOVERY: no runnable replacement image — keeping stopped container",
+						"container", name, "image", img, "error", imgErr)
+					p.recordEvent(ownerPod, "RecoveryBlocked",
+						fmt.Sprintf("Container %s left stopped: replacement image %s is not runnable: %v", name, img, imgErr), "Warning")
+					continue
+				}
+			}
+		}
+
+		// Destroy container and veths so step 3 recreates.
 		// NOTE: Do NOT RemoveMountsByList here — PVC mounts must survive.
 		// ReconcileMounts during recreation (step 3) handles stale cleanup.
 		log.Warnw("RECOVERY: restart failed, destroying for full recreation",

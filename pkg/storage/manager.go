@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -520,6 +521,17 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 		return fmt.Errorf("reading image config for %s: %w", imageRef, err)
 	}
 
+	// An image whose entrypoint binary is not in its rootfs is not an image —
+	// it is a container that dies with execvpe ENOENT on every start. The
+	// 2026-08-27 incident (#26) deleted eight DNS primaries by destroying
+	// containers and then "recreating" them from exactly such images (939
+	// execvpe failures). Refusing here means an unrunnable image never
+	// becomes a staged tarball, so no consumer — create, recovery, update —
+	// can cut over to it.
+	if err := verifyEntrypointPresent(rootfsBuf.Bytes(), imgCfg); err != nil {
+		return fmt.Errorf("image %s is not runnable: %w", imageRef, err)
+	}
+
 	// Build docker-save format archive with uncompressed layer
 	var dockerSave bytes.Buffer
 	if err := dockersave.Write(&dockerSave, rootfsBuf.Bytes(), imageRef, imgCfg); err != nil {
@@ -560,6 +572,40 @@ func (m *Manager) pullAndUpload(ctx context.Context, imageRef, tarballPath strin
 	}
 
 	return nil
+}
+
+// verifyEntrypointPresent confirms the binary an image starts with actually
+// exists in its flattened rootfs. Only an absolute first argument is checked
+// (scratch images always use one); a PATH-relative entrypoint would need the
+// config's PATH resolved and is passed through rather than guessed at.
+func verifyEntrypointPresent(rootfsTar []byte, cfg *v1.ConfigFile) error {
+	if cfg == nil {
+		return nil
+	}
+	argv0 := ""
+	if len(cfg.Config.Entrypoint) > 0 {
+		argv0 = cfg.Config.Entrypoint[0]
+	} else if len(cfg.Config.Cmd) > 0 {
+		argv0 = cfg.Config.Cmd[0]
+	}
+	if !strings.HasPrefix(argv0, "/") {
+		return nil
+	}
+	want := strings.TrimPrefix(argv0, "/")
+	tr := tar.NewReader(bytes.NewReader(rootfsTar))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("scanning rootfs for entrypoint %s: %w", argv0, err)
+		}
+		if strings.TrimPrefix(strings.TrimPrefix(hdr.Name, "./"), "/") == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("entrypoint %s does not exist in the image rootfs", argv0)
 }
 
 // writeTarballDigest records the manifest digest of a tarball in a sidecar file
