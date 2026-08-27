@@ -186,6 +186,16 @@ until ALL of the following land (code complete 2026-08-27, UNTESTED — dev.g8.l
    100 KB/s, ~6x packet-overhead win at real speeds). mkube CreateVeth should
    set MTU from network config so recreated veths inherit it.
 
+### STRATEGIC DIRECTION (operator decision 2026-08-27)
+**mkube retires in favor of rustkube + fastetcd + stormboot.** Control plane
+is rustkube (done, v0.7.35); device access is stormboot only; auxiliaries
+become separate Rust containers. The migration spec — including the
+2026-08-27 incident invariants as the node agent's conformance bar — lives in
+`rustkube/enhancements/rose-node-and-mkube-migration.md`. mkube TODOs #13/#15
+are superseded (rustkube IS the apiserver; the store seam becomes moot);
+remaining mkube work is stability-only until the strangler migration
+completes.
+
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).
