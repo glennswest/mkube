@@ -80,9 +80,10 @@ func (d *RouterOS) ListPorts(ctx context.Context) ([]network.PortInfo, error) {
 	out := make([]network.PortInfo, len(veths))
 	for i, v := range veths {
 		out[i] = network.PortInfo{
-			Name:    v.Name,
-			Address: v.Address,
-			Gateway: v.Gateway,
+			Name:         v.Name,
+			Address:      v.Address,
+			Gateway:      v.Gateway,
+			OwnedByMkube: v.Comment == routeros.OwnershipMarker,
 		}
 	}
 	return out, nil

@@ -144,7 +144,20 @@ type NetworkInterface struct {
 	Address string `json:"address"`
 	Gateway string `json:"gateway"`
 	Bridge  string `json:"bridge"`
+	Comment string `json:"comment"`
 }
+
+// OwnershipMarker is stamped into the comment field of every veth and static
+// bridge-port entry mkube creates, and checked before mkube removes one.
+//
+// This is the structural answer to the 2026-08-27 incident (#26): mkube
+// drained the entire /interface/bridge/port table on rose1 — physical uplinks
+// included — because its GC identified "its" entries by a heuristic over
+// state it did not create. Ownership is not inferred from names or dangling
+// references; it is proven by this marker or the object is not touched.
+// Objects that predate the marker are deliberately left alone: leaking an
+// entry costs bytes, deleting someone else's costs the network.
+const OwnershipMarker = "mkube"
 
 // NewClient creates a new RouterOS API client. The native API connection
 // (port 8728) is established lazily on first command, allowing the client
@@ -739,6 +752,7 @@ func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) 
 		"name":    name,
 		"address": address,
 		"gateway": gateway,
+		"comment": OwnershipMarker,
 	}, nil)
 }
 
@@ -753,6 +767,9 @@ func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) 
 // filtered query cannot resolve it by name, which is why the orphans were
 // invisible to the idempotency check in the first place.
 func (c *Client) RemoveVeth(ctx context.Context, name string) error {
+	if !strings.HasPrefix(name, "veth_") {
+		return fmt.Errorf("%q is not an mkube-owned veth — refusing to remove it", name)
+	}
 	c.removeBridgePortFor(ctx, name)
 
 	veths, err := c.ListVeths(ctx)
@@ -771,7 +788,15 @@ func (c *Client) RemoveVeth(ctx context.Context, name string) error {
 // interface, if there is one. Best-effort: a missing entry, a dynamic port
 // (which RouterOS reaps itself) or a query failure are all fine — the caller
 // is on a teardown path and a leaked entry must never block it.
+//
+// Only entries mkube can prove are its own are removed: the ownership marker,
+// or a `veth_` interface name (mkube's namespace — pre-marker entries carry
+// no comment, and a veth-named port on the wrong bridge is still ours to fix).
+// A physical port never matches either.
 func (c *Client) removeBridgePortFor(ctx context.Context, iface string) {
+	if !strings.HasPrefix(iface, "veth_") {
+		return
+	}
 	var ports []BridgePort
 	if err := c.restGET(ctx, "/interface/bridge/port?interface="+iface, &ports); err != nil {
 		return
@@ -787,19 +812,53 @@ func (c *Client) removeBridgePortFor(ctx context.Context, iface string) {
 // longer exists. RouterOS renders those as a dangling `*XX` id rather than a
 // name, so they are both invisible to name-filtered queries and never reaped.
 //
-// This self-heals installs that already leaked (see #14) and covers any path
-// that deletes an interface without going through RemoveVeth. Returns the
-// number removed.
+// This is the code that emptied rose1's bridge-port table on 2026-08-27 (#26)
+// — every network on the box down, physical uplinks included — because
+// "interface prints as *XX" was treated as proof of ownership when it is only
+// proof the *listing* could not resolve a name at that moment. It now removes
+// an entry only when ALL of these hold:
+//
+//  1. the entry carries mkube's ownership marker — physical ports and
+//     hand-added entries never do, so they are structurally out of reach;
+//  2. the interface reference is dangling (`*XX`);
+//  3. the pass stays under gcMaxRemovals — orphans accrue one per container
+//     recreate, so a large batch means a misread, not a backlog;
+//  4. dangling entries are a minority of the table — if most of the table
+//     fails to resolve, the listing itself is suspect and NOTHING is removed.
+//
+// Pre-marker orphans (the historical 20,737) are deliberately not eligible:
+// they cost export bloat, and reaping unmarked entries is exactly the class
+// of action that caused the outage. Returns the number removed.
 func (c *Client) GCOrphanedBridgePorts(ctx context.Context) (int, error) {
+	const gcMaxRemovals = 50
 	var ports []BridgePort
 	if err := c.restGET(ctx, "/interface/bridge/port", &ports); err != nil {
 		return 0, fmt.Errorf("listing bridge ports: %w", err)
 	}
+	dangling := 0
+	for _, p := range ports {
+		if strings.HasPrefix(p.Interface, "*") {
+			dangling++
+		}
+	}
+	if dangling == 0 {
+		return 0, nil
+	}
+	if dangling*2 > len(ports) {
+		return 0, fmt.Errorf(
+			"refusing GC: %d of %d bridge-port entries have unresolvable interfaces — that is a broken listing, not a backlog of orphans",
+			dangling, len(ports))
+	}
 	removed := 0
 	for _, p := range ports {
-		// A resolvable interface prints as its name; an orphan prints as *XX.
 		if !strings.HasPrefix(p.Interface, "*") {
 			continue
+		}
+		if !p.ownedByMkube() {
+			continue
+		}
+		if removed >= gcMaxRemovals {
+			break
 		}
 		if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
 			continue
@@ -825,7 +884,12 @@ func (c *Client) AddBridgePort(ctx context.Context, bridge, iface string) error 
 		if p.Bridge == bridge {
 			return nil // already on correct bridge
 		}
-		// on wrong bridge — try to remove the static port
+		// On the wrong bridge. Correcting that means removing an entry, so
+		// the ownership rule applies: only a veth-named interface is ours to
+		// move. Anything else stays where a human put it (#26).
+		if !strings.HasPrefix(iface, "veth_") {
+			return fmt.Errorf("%q is on bridge %q not %q, and is not an mkube-owned veth — refusing to move it", iface, p.Bridge, bridge)
+		}
 		if err := c.restPOST(ctx, "/interface/bridge/port/remove", map[string]string{".id": p.ID}, nil); err != nil {
 			if strings.Contains(err.Error(), "dynamic port") {
 				// Dynamic ports can't be removed/changed. Delete the veth
@@ -842,12 +906,16 @@ func (c *Client) AddBridgePort(ctx context.Context, bridge, iface string) error 
 	return c.restPOST(ctx, "/interface/bridge/port/add", map[string]string{
 		"bridge":    bridge,
 		"interface": iface,
+		"comment":   OwnershipMarker,
 	}, nil)
 }
 
 // recreateVethForBridge deletes a veth and recreates it with the same config,
 // clearing any dynamic bridge port assignment that RouterOS auto-created.
 func (c *Client) recreateVethForBridge(ctx context.Context, name string) error {
+	if !strings.HasPrefix(name, "veth_") {
+		return fmt.Errorf("%q is not an mkube-owned veth — refusing to recreate it", name)
+	}
 	// Capture the veth's current config before deleting it.
 	veths, err := c.ListVeths(ctx)
 	if err != nil {
@@ -899,11 +967,18 @@ func (c *Client) removeContainersUsingVeth(ctx context.Context, vethName string)
 		return
 	}
 	for _, ct := range containers {
-		if ct.Interface == vethName {
-			_ = c.restPOST(ctx, "/container/stop", map[string]string{".id": ct.ID}, nil)
-			time.Sleep(2 * time.Second) // allow stop to complete
-			_ = c.restPOST(ctx, "/container/remove", map[string]string{".id": ct.ID}, nil)
+		if ct.Interface != vethName {
+			continue
 		}
+		// The veth is mkube's, but the container on it must also be: mkube
+		// names are {ns}_{pod}_{container}. A foreign container that borrowed
+		// an mkube veth is a conflict to report, not something to delete (#26).
+		if strings.Count(ct.Name, "_") < 2 {
+			continue
+		}
+		_ = c.restPOST(ctx, "/container/stop", map[string]string{".id": ct.ID}, nil)
+		time.Sleep(2 * time.Second) // allow stop to complete
+		_ = c.restPOST(ctx, "/container/remove", map[string]string{".id": ct.ID}, nil)
 	}
 	c.InvalidateContainerCache()
 }
@@ -1390,7 +1465,12 @@ type BridgePort struct {
 	ID        string `json:".id"`
 	Bridge    string `json:"bridge"`
 	Interface string `json:"interface"`
+	Comment   string `json:"comment"`
+	Dynamic   string `json:"dynamic"`
 }
+
+// ownedByMkube reports whether mkube created this entry and may remove it.
+func (p BridgePort) ownedByMkube() bool { return p.Comment == OwnershipMarker }
 
 // ListBridgePorts returns all bridge port assignments.
 func (c *Client) ListBridgePorts(ctx context.Context) ([]BridgePort, error) {

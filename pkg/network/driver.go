@@ -63,6 +63,11 @@ type PortInfo struct {
 	Address string // IP/mask or empty
 	Gateway string
 	Bridge  string // bridge name this port is attached to, if any
+	// OwnedByMkube is true only when the driver can prove mkube created this
+	// port (the ownership comment on RouterOS). Reapers must not remove a
+	// port without it — a foreign veth (sbregistry's builder, a manual probe)
+	// is not an orphan, whatever its name looks like (#18, #26).
+	OwnedByMkube bool
 }
 
 // TunnelSpec describes a tunnel to create.

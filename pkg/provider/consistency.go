@@ -1096,9 +1096,20 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 		if expectedVeths[port.Name] {
 			continue
 		}
+		// A name that looks like ours is not proof it is ours: sbregistry's
+		// builder veth, a probe, a benchmark container all lost their
+		// interfaces to this reaper on name alone (#18). Only a port carrying
+		// mkube's ownership marker may be removed; everything else is logged
+		// and left standing.
+		if !port.OwnedByMkube {
+			p.deps.Logger.Debugw("skipping unowned veth (no mkube ownership marker)",
+				"name", port.Name, "address", port.Address)
+			continue
+		}
 
-		// This veth has no desired pod — it's orphaned
-		p.deps.Logger.Infow("removing orphaned veth", "name", port.Name, "address", port.Address)
+		p.deps.Logger.Infow("removing orphaned veth",
+			"name", port.Name, "address", port.Address,
+			"reason", fmt.Sprintf("mkube-owned, matched no container of %d desired pods (tracked+store+boot-order)", len(expectedVeths)))
 		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, port.Name); err != nil {
 			p.deps.Logger.Warnw("failed to release orphaned veth", "name", port.Name, "error", err)
 		} else {

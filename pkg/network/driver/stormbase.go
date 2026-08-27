@@ -88,6 +88,9 @@ func (d *StormBase) ListPorts(ctx context.Context) ([]network.PortInfo, error) {
 			ports = append(ports, network.PortInfo{
 				Name:    ct.Interface,
 				Address: ct.DNS, // pod IP is in the container record
+				// Every interface a StormBase workload reports was created by
+				// mkube's own deploy path — there is no foreign-veth case here.
+				OwnedByMkube: true,
 			})
 		}
 	}
