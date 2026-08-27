@@ -2445,6 +2445,24 @@ func (p *MicroKubeProvider) reconcile(ctx context.Context) error {
 		}
 
 		if !allExist {
+			// A create loop that never stops is net-destructive: each cycle
+			// adds and removes veths and bridge ports, and three days of it
+			// drained rose1's bridge-port table (761 adds / 779 removes, #26).
+			// Backoff alone only paces the loop — this caps it. Past the cap
+			// the pod stays CreateFailed and untouched until something
+			// deliberate (spec update, delete, redeploy, mkube restart)
+			// clears its failure count.
+			if priorFailures >= createHardFailureCap {
+				if priorFailures == createHardFailureCap {
+					log.Errorw("pod exceeded creation failure cap — retries stopped until spec change or restart",
+						"pod", key, "failures", priorFailures, "cap", createHardFailureCap)
+					p.recordEvent(pod, "CreateAbandoned",
+						fmt.Sprintf("Pod failed creation %d times; automatic retries stopped. Update, delete or redeploy the pod to retry.", priorFailures), "Warning")
+					p.createFailures.Set(key, priorFailures+1) // log/event once, not every cycle
+				}
+				continue
+			}
+
 			// Check creation backoff — skip if we're still in cooldown from prior failures
 			cbs, _ := p.createBackoff.Get(key)
 			if cbs != nil && cbs.backoff > 0 && time.Since(cbs.lastAttempt) < cbs.backoff {
@@ -3959,6 +3977,12 @@ const (
 	createBackoffThreshold = 3 // retries before backoff kicks in
 	createInitialBackoff   = 30 * time.Second
 	createMaxBackoff       = 5 * time.Minute
+	// createHardFailureCap ends automatic retries entirely. With backoff at
+	// its 5-minute ceiling this is ~1.5h of trying — enough to ride out a
+	// registry restart, and finite, because an unbounded create loop is
+	// net-destructive on the device (#26). Cleared by the same paths that
+	// clear createFailures: pod update, delete, redeploy, or mkube restart.
+	createHardFailureCap = 20
 )
 
 // updateCreateResult updates backoff/failure tracking after a pod creation attempt.
