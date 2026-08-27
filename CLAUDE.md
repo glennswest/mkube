@@ -167,6 +167,19 @@ until ALL of the following land (code complete 2026-08-27, UNTESTED — dev.g8.l
 6. [x] **Log flood (#16 decode bug + dedupe/rotation)**: fix RecordData per-type
    decode; zap sampling to collapse repeated identical lines; stormd log rotation.
 
+8. [ ] **Cutover to stormboot as the external supervisor; retire mkube-update
+   from auto-update duty (operator decision 2026-08-27)**: stormboot (already
+   deployed on rose1, currently stopped by hand) becomes the thing that
+   starts mkube at boot and heals it — its shipped capability. mkube-update
+   is retired NOW from automatic digest-swap: auto-updating from a poisoned
+   registry is this incident's failure class. Interim: deploys are a
+   deliberate manual action (push image, then explicit recreate). Full
+   automatic updates return only via stormboot's golden path (its own work
+   plan: mkube golden in sbregistry -> launch-from-clone -> watch-and-reclone),
+   at which point mkube-update is removed entirely. Device steps (operator or
+   creds needed): disable/remove mkube-update container on rose1; re-enable
+   stormboot with start-on-boot.
+
 ### TODO (priority order)
 1. **BareMetalHost Operator (BMO)**: Full host state machine, serial proxy, Redfish, ownership model. Separate project repo. (IPMI power control now built into mkube via `pkg/bmc/`.)
 2. **DNS 2-replica deployment**: Per zone via Deployment controller. Requires anti-affinity (multi-node).

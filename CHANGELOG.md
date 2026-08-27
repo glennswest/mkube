@@ -31,6 +31,13 @@
   address. `veth_infra_*` is never touched by the reaper. Hard
   DestroyInterface only for network moves, IP-conflict losers and
   grace-expired orphans. Bounded population: one veth per container name.
+- **fix(network/provider):** Network reassignment is in-place (old pool
+  released, device updated), never destructive — pods do not move networks;
+  update teardown soft-releases. Validated locally: linux/arm64 cross-build
+  clean, full test suite green (22 pkgs).
+- **decision:** stormboot becomes the external supervisor; mkube-update is
+  retired from automatic updates (deploys become deliberate) until the
+  golden-clone update path exists in stormboot.
 
 NOT YET BUILT/TESTED: dev.g8.lo is unreachable (outage casualty). Build,
 test, release tag and deploy are blocked on it. mkube remains disabled on
