@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v6.6.0] — 2026-08-27
+
 ### 2026-08-27 — P0 incident response (#26, #18, #14)
 - **fix(routeros/network/provider):** Ownership model. Every veth and static
   bridge-port mkube creates carries an ownership comment, and every removal
@@ -51,9 +53,10 @@
   retired from automatic updates (deploys become deliberate) until the
   golden-clone update path exists in stormboot.
 
-NOT YET BUILT/TESTED: dev.g8.lo is unreachable (outage casualty). Build,
-test, release tag and deploy are blocked on it. mkube remains disabled on
-rose1 until this ships and issues #26/#18/#14 are closed out.
+Validated: locally (linux/arm64 cross-build + full suite) during the dev
+outage, then canonically on dev.g8.lo once restored — build clean, all 22
+packages green. Deployed to rose1 as v6.6.0-p0 (image 46cd19e9) and drove
+the full recovery.
 
 ## [v6.5.1] — 2026-08-26
 

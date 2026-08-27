@@ -141,7 +141,7 @@ Known test failures: none (full suite green on dev, 2026-08-26).
 
 ## Work Plan
 
-### Current Version: `v6.5.1`
+### Current Version: `v6.6.0`
 
 ### P0 INCIDENT 2026-08-27 — issues #26/#18/#14 (network destroyed, mkube disabled)
 mkube's reconciler emptied `/interface/bridge/port` on rose1 (all networks down),
