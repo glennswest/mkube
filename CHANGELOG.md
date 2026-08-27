@@ -24,6 +24,13 @@
 - **fix(main):** zap log sampling (3, then every 100th per second per
   message) — repeated faults no longer flood the log.
 - **chore(deploy):** stormd log rotation bounded to 25 MB x 4 files.
+- **feat(network/provider):** Veths are durable container identities. Soft
+  release keeps veth + IP + MAC + IPAM through a 30-day grace period
+  (orphan-stamped in the comment); AllocateInterface reuses the sticky IP, so
+  a recreated pod — dns.g8.lo especially — always returns to the same
+  address. `veth_infra_*` is never touched by the reaper. Hard
+  DestroyInterface only for network moves, IP-conflict losers and
+  grace-expired orphans. Bounded population: one veth per container name.
 
 NOT YET BUILT/TESTED: dev.g8.lo is unreachable (outage casualty). Build,
 test, release tag and deploy are blocked on it. mkube remains disabled on

@@ -159,6 +159,11 @@ until ALL of the following land (code complete 2026-08-27, UNTESTED — dev.g8.l
    replacement image is staged AND its entrypoint exists in the rootfs.
 5. [x] **Registry-health gate (#26)**: reconcile performs no destructive action in
    any cycle where the registry/desired-state is unreachable or the image is bad.
+7. [x] **Veth identity/reuse (operator direction 2026-08-27)**: veths are
+   container-bound durable identities — soft release + 30-day orphan grace +
+   sticky IP reuse; infra veths untouchable; destroy only on network move,
+   IP conflict, or grace expiry. Follow-up (open): static DHCP/ARP entries
+   keyed on the veth MAC, now meaningful since the MAC persists.
 6. [x] **Log flood (#16 decode bug + dedupe/rotation)**: fix RecordData per-type
    decode; zap sampling to collapse repeated identical lines; stormd log rotation.
 
