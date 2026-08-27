@@ -1504,15 +1504,17 @@ func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.P
 		// ReconcileMounts during CreatePod can preserve PVC mounts and
 		// reconcile ConfigMap mounts without data loss.
 
-		// Destroy the veth only when the pod is actually moving networks —
-		// its identity (name, IP, MAC) is wrong on the new network. Otherwise
-		// keep it: CreatePod re-allocates onto the same one, and the address
-		// never goes away in between.
+		// The veth survives either way — pods do not "move" networks (g8/dns
+		// and g10/dns are different pods), and even a changed network
+		// annotation is handled by AllocateInterface updating the device in
+		// place (old pool released, address/gateway/bridge set). Soft release
+		// just deregisters DNS and starts the orphan clock until CreatePod
+		// reclaims it moments later.
 		vn := vethName(pod, i)
 		if keepNetwork {
 			log.Debugw("keeping veth across update", "veth", vn)
-		} else if err := p.deps.NetworkMgr.DestroyInterface(ctx, vn); err != nil {
-			log.Warnw("error destroying network during update teardown", "veth", vn, "error", err)
+		} else if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
+			log.Warnw("error releasing network during update teardown", "veth", vn, "error", err)
 		}
 
 		// Remove from namespace (CreatePod will re-register)
