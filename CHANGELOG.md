@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v6.5.1] — 2026-08-26
+
 ### 2026-08-26
 - **fix(runtime):** RouterOS runtime now populates `DiskTotal`/`DiskAvailable`
   from `/system/resource` `total-hdd-space`/`free-hdd-space` (system/flash
