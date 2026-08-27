@@ -35,6 +35,18 @@
   released, device updated), never destructive — pods do not move networks;
   update teardown soft-releases. Validated locally: linux/arm64 cross-build
   clean, full test suite green (22 pkgs).
+- **recovery (rose1, 2026-08-27 ~15:05Z):** Full restore executed and verified.
+  All 30 container-veth bridge ports re-added (with ownership comments);
+  stormblockmk, sbregistry and kube.gt.lo recreated from freshly verified
+  registry pulls (cache bypassed); poisoned /raid1/cache tarballs wiped;
+  P0-fixed mkube v6.6.0-p0 (image 46cd19e9) recovered the 14 broken
+  containers and recreated all 8 deleted DNS primaries via
+  verify-before-destroy. All nine DNS primaries answering, external
+  resolution working, 23/23 pods Running, storage engine intact.
+  Registry audit: every :edge image verified clean (entrypoint present in
+  layers) — the poison was mkube's staged-tarball cache (cross-named
+  content), root-cause tracking continues on #26. mkube-update retired on
+  the device; mkube golden building in sbregistry.
 - **decision:** stormboot becomes the external supervisor; mkube-update is
   retired from automatic updates (deploys become deliberate) until the
   golden-clone update path exists in stormboot.
