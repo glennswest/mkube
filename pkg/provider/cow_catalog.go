@@ -261,15 +261,33 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 		}
 		log.Infow("waiting for external golden template", "template", name, "wait", wait)
 		deadline := time.Now().Add(wait)
+		// An unreachable builder, a build still in progress, and a build the
+		// builder discarded all used to time out with the same message; track
+		// what each poll actually saw so the failure names the real problem.
+		var lastPollErr error
+		lastSeen := "template never appeared in the builder's list"
 		for time.Now().Before(deadline) {
 			var poll struct {
 				Items []sbTemplate `json:"items"`
 			}
-			if err := sb.do(ctx, http.MethodGet, "/api/v1/fstemplates", nil, &poll); err == nil {
+			if err := sb.do(ctx, http.MethodGet, "/api/v1/fstemplates", nil, &poll); err != nil {
+				if lastPollErr == nil || err.Error() != lastPollErr.Error() {
+					log.Warnw("golden template poll failed", "template", name, "error", err)
+				}
+				lastPollErr = err
+			} else {
+				lastPollErr = nil
 				for _, t := range poll.Items {
-					if t.Name == name && (strings.EqualFold(t.State, "ready") || strings.EqualFold(t.State, "sealed")) {
+					if t.Name != name {
+						continue
+					}
+					if strings.EqualFold(t.State, "ready") || strings.EqualFold(t.State, "sealed") {
 						log.Infow("external golden template ready", "template", name)
 						return name, nil
+					}
+					if seen := "last seen in state " + t.State; seen != lastSeen {
+						log.Infow("golden template build in progress", "template", name, "state", t.State)
+						lastSeen = seen
 					}
 				}
 			}
@@ -279,7 +297,10 @@ func (p *MicroKubeProvider) ensureGoldenTemplate(ctx context.Context, ros *route
 			case <-time.After(5 * time.Second):
 			}
 		}
-		return "", fmt.Errorf("golden template %s not published by the external builder within %s (goldenSource=sbregistry)", name, wait)
+		if lastPollErr != nil {
+			return "", fmt.Errorf("golden template %s not published by the external builder within %s (goldenSource=sbregistry): builder unreachable: %w", name, wait, lastPollErr)
+		}
+		return "", fmt.Errorf("golden template %s not published by the external builder within %s (goldenSource=sbregistry): %s", name, wait, lastSeen)
 	}
 
 	// Only NOW does a full image need to be on disk: mkube is about to seed

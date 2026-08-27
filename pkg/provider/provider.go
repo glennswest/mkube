@@ -1989,6 +1989,7 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 
 	go p.podWorker.Run(ctx)
 	go p.runPVCUsageRefresher(ctx)
+	go p.runResourceTrace(ctx)
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -2025,6 +2026,41 @@ func (p *MicroKubeProvider) RunStandaloneReconciler(ctx context.Context) error {
 			if err := p.reconcile(ctx); err != nil {
 				log.Errorw("reconciliation error (push-notify)", "error", err)
 			}
+		}
+	}
+}
+
+// runResourceTrace logs node memory, CPU and disk every 30s. RouterOS keeps
+// its own logs in RAM, so after a node-level freeze the power cycle erases
+// every kernel-side trace — this persisted trail is the only resource history
+// a post-mortem gets, with at most a 30s gap to the moment the node died.
+func (p *MicroKubeProvider) runResourceTrace(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			res, err := p.deps.Runtime.GetSystemResource(rctx)
+			cancel()
+			if err != nil {
+				p.deps.Logger.Warnw("resource trace failed", "error", err)
+				continue
+			}
+			total, _ := strconv.ParseUint(res.TotalMemory, 10, 64)
+			free, _ := strconv.ParseUint(res.FreeMemory, 10, 64)
+			var usedPct uint64
+			if total > 0 {
+				usedPct = (total - free) * 100 / total
+			}
+			p.deps.Logger.Infow("resource trace",
+				"free_mem_mb", free>>20,
+				"total_mem_mb", total>>20,
+				"mem_used_pct", usedPct,
+				"cpu_load", res.CPULoad,
+				"disk_avail_mb", res.DiskAvailable>>20)
 		}
 	}
 }

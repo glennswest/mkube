@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### 2026-08-26
+- **feat(provider):** Resource trace — mkube logs node free/total memory,
+  CPU load and free disk every 30s (`resource trace` in the persisted stormd
+  log). Motivated by the 2026-08-26 rose1 freeze post-mortem: the node locked
+  up at 22:34:43Z with every disk-backed service dead while ping and cached
+  UDP DNS answered, and because RouterOS logs live in RAM, the power cycle
+  left zero resource history. The persisted trail now bounds any future
+  freeze to a 30s window with memory/CPU/disk state at the edge.
+- **feat(provider):** The CoW golden wait loop no longer times out blind.
+  Poll errors against the builder were silently swallowed
+  (`if err == nil`), so "builder unreachable", "build in progress", and
+  "builder discarded the build" all produced the identical
+  `not published within 5m0s` error. The loop now logs poll failures (on
+  change), logs template state transitions it observes, and the timeout error
+  names what the last poll actually saw. Companion spec filed in
+  stormblock-registry `enhancements/debuggability-and-graceful-restart.md`
+  (graceful SIGTERM, build resume, health + build-status API, unpack
+  throughput — sbregistry builds were observed being killed mid-build by
+  `image-policy: auto` redeploys and discarding all progress, at 30–75 KB/s
+  unpack speed).
+
 ## [v6.4.3] — 2026-08-26
 
 ### 2026-08-26
