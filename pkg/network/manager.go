@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -242,6 +243,15 @@ func (m *Manager) AllocateInterface(ctx context.Context, vethName, hostname, net
 		if err := m.ipam.AllocateStatic(ns.def.Name, vethName, allocatedIP); err != nil {
 			return "", "", "", err
 		}
+	} else if prev, ok := m.allocs[vethName]; ok && prev.networkName == ns.def.Name && prev.ip != nil {
+		// Sticky identity: a veth that already exists keeps its address, so a
+		// recreated pod comes back on the same IP, MAC and DNS answer.
+		// AllocateStatic is idempotent for the same key, which is exactly the
+		// reuse case (the allocation was kept across the pod's absence).
+		allocatedIP = prev.ip
+		if err := m.ipam.AllocateStatic(ns.def.Name, vethName, allocatedIP); err != nil {
+			return "", "", "", fmt.Errorf("reusing %s for %s: %w", allocatedIP, vethName, err)
+		}
 	} else {
 		allocatedIP, err = m.ipam.Allocate(ns.def.Name, vethName)
 		if err != nil {
@@ -300,8 +310,73 @@ func (m *Manager) AllocateInterface(ctx context.Context, vethName, hostname, net
 	return ipCIDR, gw, dnsServerIP, nil
 }
 
-// ReleaseInterface removes the veth, deregisters DNS, and returns the IP.
+// ReleaseInterface is a SOFT release: the veth, its IPAM allocation and its
+// state entry all survive. The veth is the container's durable identity —
+// same name, same IP, same MAC across recreates — so a returning pod (a DNS
+// primary especially) lands exactly where it was. Only DNS is deregistered
+// (the service is gone even if its address is reserved), and the veth is
+// stamped with an orphan timestamp so the grace-period reaper can eventually
+// retire it if nothing ever comes back.
+//
+// The veth delete/recreate churn this replaces is what drained rose1's
+// bridge-port table (#26). Actually deleting a veth now takes an explicit
+// DestroyInterface call.
 func (m *Manager) ReleaseInterface(ctx context.Context, vethName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Deregister DNS
+	if alloc, ok := m.allocs[vethName]; ok && m.dns != nil && alloc.hostname != "" {
+		if ns, exists := m.networks[alloc.networkName]; exists && ns.zoneID != "" {
+			if err := m.dns.DeregisterHost(ctx, ns.def.DNS.Endpoint, ns.zoneID, alloc.hostname); err != nil {
+				m.log.Warnw("failed to deregister DNS", "hostname", alloc.hostname, "error", err)
+			}
+		}
+	}
+
+	// If the veth no longer exists on the device there is no identity to
+	// keep — fall through to a full state cleanup so IPAM does not hold an
+	// address for hardware that is gone.
+	ports, err := m.driver.ListPorts(ctx)
+	if err != nil {
+		return fmt.Errorf("listing ports for release of %s: %w", vethName, err)
+	}
+	exists := false
+	for _, p := range ports {
+		if p.Name == vethName {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		if alloc, ok := m.allocs[vethName]; ok {
+			m.ipam.Release(alloc.networkName, vethName)
+			delete(m.allocs, vethName)
+		} else {
+			m.ipam.ReleaseFromAll(vethName)
+		}
+		m.state.removePort(vethName)
+		if err := m.state.save(); err != nil {
+			m.log.Warnw("failed to persist network state", "error", err)
+		}
+		m.log.Infow("interface released (veth already gone — state cleaned)", "veth", vethName)
+		return nil
+	}
+
+	if err := m.driver.SetPortComment(ctx, vethName,
+		OrphanStampPrefix+time.Now().UTC().Format(time.RFC3339)); err != nil {
+		m.log.Warnw("failed to stamp released veth", "veth", vethName, "error", err)
+	}
+	m.log.Infow("interface released (veth kept for reuse)", "veth", vethName)
+	return nil
+}
+
+// DestroyInterface is the old hard release: delete the veth (and with it the
+// bridge port), free the IPAM allocation, drop the state entry. Reserved for
+// the cases where the identity itself is wrong or expired: a pod moved to a
+// different network, an IP conflict where this veth is the loser, network
+// teardown, or the orphan reaper after the grace period.
+func (m *Manager) DestroyInterface(ctx context.Context, vethName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -336,8 +411,15 @@ func (m *Manager) ReleaseInterface(ctx context.Context, vethName string) error {
 		m.log.Warnw("failed to persist network state", "error", err)
 	}
 
-	m.log.Infow("interface released", "veth", vethName)
+	m.log.Infow("interface destroyed", "veth", vethName)
 	return nil
+}
+
+// StampOrphan marks a veth as orphaned-now, starting its grace period.
+// Idempotent in effect: re-stamping only moves the clock, never deletes.
+func (m *Manager) StampOrphan(ctx context.Context, vethName string) error {
+	return m.driver.SetPortComment(ctx, vethName,
+		OrphanStampPrefix+time.Now().UTC().Format(time.RFC3339))
 }
 
 // DNSClient returns the underlying DNS client for direct zone operations.

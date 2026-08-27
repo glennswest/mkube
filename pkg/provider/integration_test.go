@@ -131,6 +131,7 @@ func (d *mockNetworkDriver) DeletePort(context.Context, string) error           
 func (d *mockNetworkDriver) AttachPort(context.Context, string, string) error         { return nil }
 func (d *mockNetworkDriver) DetachPort(context.Context, string, string) error         { return nil }
 func (d *mockNetworkDriver) ListPorts(context.Context) ([]network.PortInfo, error)    { return nil, nil }
+func (d *mockNetworkDriver) SetPortComment(context.Context, string, string) error    { return nil }
 func (d *mockNetworkDriver) SetPortVLAN(context.Context, string, int, bool) error     { return nil }
 func (d *mockNetworkDriver) RemovePortVLAN(context.Context, string, int) error        { return nil }
 func (d *mockNetworkDriver) CreateTunnel(context.Context, string, network.TunnelSpec) error {

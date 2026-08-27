@@ -936,9 +936,12 @@ func (p *MicroKubeProvider) CreatePod(ctx context.Context, pod *corev1.Pod) erro
 				// stale veth), extract that name and release it too.
 				if strings.Contains(errMsg, "already allocated to") {
 					if staleVeth := extractAllocHolder(errMsg); staleVeth != "" && staleVeth != vethName {
-						log.Warnw("releasing stale veth holding IP", "staleVeth", staleVeth)
-						if releaseErr := p.deps.NetworkMgr.ReleaseInterface(ctx, staleVeth); releaseErr != nil {
-							log.Warnw("stale veth release failed, force-releasing", "staleVeth", staleVeth, "error", releaseErr)
+						// An identity conflict: this veth is squatting on an IP
+						// another pod owns. It is the one case where reuse is
+						// wrong — destroy, not soft-release.
+						log.Warnw("destroying stale veth holding IP", "staleVeth", staleVeth)
+						if releaseErr := p.deps.NetworkMgr.DestroyInterface(ctx, staleVeth); releaseErr != nil {
+							log.Warnw("stale veth destroy failed, force-releasing", "staleVeth", staleVeth, "error", releaseErr)
 							p.forceReleaseVeth(ctx, staleVeth)
 						}
 					}
@@ -1377,9 +1380,11 @@ func (p *MicroKubeProvider) forceReleaseVeth(ctx context.Context, vethName strin
 		}
 	}
 
-	// Retry veth release after container removal
-	if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vethName); err != nil {
-		log.Warnw("veth release still failed after container removal", "veth", vethName, "error", err)
+	// Retry as a destroy: forceReleaseVeth is only reached when the veth's
+	// state is wrong enough that soft release failed or an IP conflict named
+	// it — the identity is not worth preserving.
+	if err := p.deps.NetworkMgr.DestroyInterface(ctx, vethName); err != nil {
+		log.Warnw("veth destroy still failed after container removal", "veth", vethName, "error", err)
 	}
 }
 
@@ -1499,14 +1504,15 @@ func (p *MicroKubeProvider) teardownForUpdate(ctx context.Context, pod *corev1.P
 		// ReconcileMounts during CreatePod can preserve PVC mounts and
 		// reconcile ConfigMap mounts without data loss.
 
-		// Release the veth only when the pod is actually moving. Otherwise
+		// Destroy the veth only when the pod is actually moving networks —
+		// its identity (name, IP, MAC) is wrong on the new network. Otherwise
 		// keep it: CreatePod re-allocates onto the same one, and the address
 		// never goes away in between.
 		vn := vethName(pod, i)
 		if keepNetwork {
 			log.Debugw("keeping veth across update", "veth", vn)
-		} else if err := p.deps.NetworkMgr.ReleaseInterface(ctx, vn); err != nil {
-			log.Warnw("error releasing network during update teardown", "veth", vn, "error", err)
+		} else if err := p.deps.NetworkMgr.DestroyInterface(ctx, vn); err != nil {
+			log.Warnw("error destroying network during update teardown", "veth", vn, "error", err)
 		}
 
 		// Remove from namespace (CreatePod will re-register)

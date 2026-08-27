@@ -1096,10 +1096,15 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 		if expectedVeths[port.Name] {
 			continue
 		}
+		// Infra veths are never touched, whatever their state. The things on
+		// them are the things you need working to fix everything else.
+		if strings.HasPrefix(port.Name, "veth_infra_") {
+			continue
+		}
 		// A name that looks like ours is not proof it is ours: sbregistry's
 		// builder veth, a probe, a benchmark container all lost their
 		// interfaces to this reaper on name alone (#18). Only a port carrying
-		// mkube's ownership marker may be removed; everything else is logged
+		// mkube's ownership marker may be touched; everything else is logged
 		// and left standing.
 		if !port.OwnedByMkube {
 			p.deps.Logger.Debugw("skipping unowned veth (no mkube ownership marker)",
@@ -1107,11 +1112,28 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 			continue
 		}
 
-		p.deps.Logger.Infow("removing orphaned veth",
-			"name", port.Name, "address", port.Address,
-			"reason", fmt.Sprintf("mkube-owned, matched no container of %d desired pods (tracked+store+boot-order)", len(expectedVeths)))
-		if err := p.deps.NetworkMgr.ReleaseInterface(ctx, port.Name); err != nil {
-			p.deps.Logger.Warnw("failed to release orphaned veth", "name", port.Name, "error", err)
+		// A veth is a container's durable identity — name, IP, MAC — and an
+		// orphan is just an identity whose pod is away. It is kept through a
+		// grace period so the pod comes back to the same address, and only
+		// retired when nothing has reclaimed it for vethOrphanGrace.
+		orphanedAt, stamped := network.OrphanedSince(port.Comment)
+		if !stamped {
+			p.deps.Logger.Infow("stamping orphaned veth — grace period starts",
+				"name", port.Name, "address", port.Address, "grace", vethOrphanGrace)
+			if err := p.deps.NetworkMgr.StampOrphan(ctx, port.Name); err != nil {
+				p.deps.Logger.Warnw("failed to stamp orphaned veth", "name", port.Name, "error", err)
+			}
+			continue
+		}
+		if time.Since(orphanedAt) < vethOrphanGrace {
+			continue
+		}
+
+		p.deps.Logger.Infow("retiring orphaned veth after grace period",
+			"name", port.Name, "address", port.Address, "orphanedAt", orphanedAt,
+			"reason", fmt.Sprintf("mkube-owned, unclaimed for %s, matched no container of %d desired pods (tracked+store+boot-order)", vethOrphanGrace, len(expectedVeths)))
+		if err := p.deps.NetworkMgr.DestroyInterface(ctx, port.Name); err != nil {
+			p.deps.Logger.Warnw("failed to retire orphaned veth", "name", port.Name, "error", err)
 		} else {
 			cleaned++
 		}
@@ -1119,6 +1141,13 @@ func (p *MicroKubeProvider) cleanOrphanedVeths(ctx context.Context) (int, error)
 
 	return cleaned, nil
 }
+
+// vethOrphanGrace is how long a released or orphaned veth keeps its identity
+// (name, IP, MAC) waiting for its pod to return. Long on purpose: the
+// population is bounded — one veth per container name — so the cost of
+// keeping one is an interface entry, and the payoff is that dns.g8.lo comes
+// back at the same address every time.
+const vethOrphanGrace = 30 * 24 * time.Hour
 
 // cleanOrphanedContainers finds RouterOS containers that follow the mkube
 // naming convention (namespace_pod_container) but are not owned by any

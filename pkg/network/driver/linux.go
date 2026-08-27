@@ -142,6 +142,10 @@ func (d *Linux) AttachPort(ctx context.Context, bridge, port string) error {
 	return nil
 }
 
+func (d *Linux) SetPortComment(_ context.Context, _, _ string) error {
+	return nil // no comment/label support on this backend
+}
+
 func (d *Linux) DetachPort(ctx context.Context, bridge, port string) error {
 	p, err := netlink.LinkByName(port)
 	if err != nil {

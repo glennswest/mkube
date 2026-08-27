@@ -737,14 +737,25 @@ func (c *Client) CreateVeth(ctx context.Context, name, address, gateway string) 
 	}
 	for _, v := range veths {
 		if v.Name == name {
+			// Reuse is the point (#26 follow-up): the veth is the container's
+			// stable identity — same name, same IP, same MAC across pod
+			// recreates. Reclaiming it clears any orphan timestamp so the
+			// grace-period reaper leaves it alone again.
 			if v.Address == address && v.Gateway == gateway {
-				return nil // already exists with correct config
+				if v.Comment == OwnershipMarker {
+					return nil // already exists with correct config and marker
+				}
+				return c.restPOST(ctx, "/interface/veth/set", map[string]string{
+					".id":     v.ID,
+					"comment": OwnershipMarker,
+				}, nil)
 			}
 			// exists with different config — update in place
 			return c.restPOST(ctx, "/interface/veth/set", map[string]string{
 				".id":     v.ID,
 				"address": address,
 				"gateway": gateway,
+				"comment": OwnershipMarker,
 			}, nil)
 		}
 	}
@@ -988,6 +999,24 @@ func (c *Client) ListVeths(ctx context.Context) ([]NetworkInterface, error) {
 	var veths []NetworkInterface
 	err := c.restGET(ctx, "/interface/veth", &veths)
 	return veths, err
+}
+
+// SetVethComment replaces a veth's comment. Used for the ownership marker and
+// the orphan timestamp that starts a released veth's grace period.
+func (c *Client) SetVethComment(ctx context.Context, name, comment string) error {
+	veths, err := c.ListVeths(ctx)
+	if err != nil {
+		return fmt.Errorf("listing veths to find %q: %w", name, err)
+	}
+	for _, v := range veths {
+		if v.Name == name {
+			return c.restPOST(ctx, "/interface/veth/set", map[string]string{
+				".id":     v.ID,
+				"comment": comment,
+			}, nil)
+		}
+	}
+	return fmt.Errorf("veth %q not found", name)
 }
 
 // ─── File Operations ────────────────────────────────────────────────────────

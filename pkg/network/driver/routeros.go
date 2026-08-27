@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -80,13 +81,20 @@ func (d *RouterOS) ListPorts(ctx context.Context) ([]network.PortInfo, error) {
 	out := make([]network.PortInfo, len(veths))
 	for i, v := range veths {
 		out[i] = network.PortInfo{
-			Name:         v.Name,
-			Address:      v.Address,
-			Gateway:      v.Gateway,
-			OwnedByMkube: v.Comment == routeros.OwnershipMarker,
+			Name:    v.Name,
+			Address: v.Address,
+			Gateway: v.Gateway,
+			// The marker alone, or marker plus metadata (orphan timestamp).
+			OwnedByMkube: v.Comment == routeros.OwnershipMarker ||
+				strings.HasPrefix(v.Comment, routeros.OwnershipMarker+" "),
+			Comment: v.Comment,
 		}
 	}
 	return out, nil
+}
+
+func (d *RouterOS) SetPortComment(ctx context.Context, name, comment string) error {
+	return d.client.SetVethComment(ctx, name, comment)
 }
 
 // ─── VLAN Operations ─────────────────────────────────────────────────────────

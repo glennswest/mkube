@@ -78,6 +78,10 @@ func (d *Proxmox) AttachPort(_ context.Context, _, _ string) error {
 	return nil
 }
 
+func (d *Proxmox) SetPortComment(_ context.Context, _, _ string) error {
+	return nil // no comment/label support on this backend
+}
+
 func (d *Proxmox) DetachPort(_ context.Context, _, _ string) error {
 	return nil
 }

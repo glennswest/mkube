@@ -72,6 +72,10 @@ func (d *StormBase) AttachPort(_ context.Context, _, _ string) error {
 	return nil
 }
 
+func (d *StormBase) SetPortComment(_ context.Context, _, _ string) error {
+	return nil // no comment/label support on this backend
+}
+
 func (d *StormBase) DetachPort(_ context.Context, _, _ string) error {
 	return nil
 }

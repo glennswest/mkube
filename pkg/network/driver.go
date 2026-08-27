@@ -3,10 +3,30 @@ package network
 import (
 	"context"
 	"errors"
+	"strings"
+	"time"
 )
 
 // ErrNotSupported is returned when a driver does not support an operation.
 var ErrNotSupported = errors.New("operation not supported by this driver")
+
+// OrphanStampPrefix precedes the RFC3339 time at which a released veth lost
+// its pod (full comment: "mkube orphaned=<ts>"). The prefix keeps the
+// ownership marker, so a stamped veth still reads as mkube-owned; the
+// timestamp starts the grace period after which the reaper may retire it.
+const OrphanStampPrefix = "mkube orphaned="
+
+// OrphanedSince extracts the orphan timestamp from a port comment, if any.
+func OrphanedSince(comment string) (time.Time, bool) {
+	if !strings.HasPrefix(comment, OrphanStampPrefix) {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimPrefix(comment, OrphanStampPrefix))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
 
 // NetworkDriver abstracts physical network operations across different backends
 // (RouterOS REST API, Linux netlink, etc). The Manager calls these methods
@@ -23,6 +43,9 @@ type NetworkDriver interface {
 	AttachPort(ctx context.Context, bridge, port string) error
 	DetachPort(ctx context.Context, bridge, port string) error
 	ListPorts(ctx context.Context) ([]PortInfo, error)
+	// SetPortComment replaces the port's comment/label (ownership marker,
+	// orphan timestamp). Drivers without comment support return nil.
+	SetPortComment(ctx context.Context, name, comment string) error
 
 	// VLAN operations
 	SetPortVLAN(ctx context.Context, port string, vid int, tagged bool) error
@@ -68,6 +91,9 @@ type PortInfo struct {
 	// port without it — a foreign veth (sbregistry's builder, a manual probe)
 	// is not an orphan, whatever its name looks like (#18, #26).
 	OwnedByMkube bool
+	// Comment is the raw port comment, carrying the ownership marker and,
+	// for released veths, the orphan timestamp that starts the grace clock.
+	Comment string
 }
 
 // TunnelSpec describes a tunnel to create.
