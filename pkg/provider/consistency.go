@@ -1154,6 +1154,13 @@ const vethOrphanGrace = 30 * 24 * time.Hour
 // desired pod (tracked, in NATS store, or in boot-order manifest).
 // Only runs when we have the full desired state (NATS connected) to avoid
 // incorrectly killing containers whose pods haven't loaded yet.
+// isForeignNamespace reports whether a namespace belongs to the rustkube
+// migration side. Containers there share mkube's naming convention but are
+// owned by rosenode/stormboot; mkube must never reap them.
+func isForeignNamespace(ns string) bool {
+	return strings.HasPrefix(ns, "rosekube")
+}
+
 func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, error) {
 	// Don't remove containers until we have the full desired state from NATS.
 	// Without NATS, we only know about boot-order pods — NATS-sourced pods
@@ -1229,6 +1236,14 @@ func (p *MicroKubeProvider) cleanOrphanedContainers(ctx context.Context) (int, e
 			continue
 		}
 		if expectedContainers[ct.Name] {
+			continue
+		}
+		// Migration co-existence: containers whose namespace prefix belongs
+		// to the rustkube/rosenode side share mkube's naming but are not
+		// mkube's to reap. The first pod the new core ever ran lived five
+		// seconds before this reaper removed it (2026-08-28). Ownership,
+		// again: absent proof of mine, leave it standing.
+		if ns, _, ok := strings.Cut(ct.Name, "_"); ok && isForeignNamespace(ns) {
 			continue
 		}
 
