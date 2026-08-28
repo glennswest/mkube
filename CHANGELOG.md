@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v6.6.1] — 2026-08-28
+
 ### 2026-08-27
 - **fix(routeros):** container env entries use the `key` field RouterOS 7.22
   expects — `name` was silently discarded, so pod env vars were never
