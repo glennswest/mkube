@@ -233,8 +233,15 @@ plan". mkube's part:
 - [ ] **stormboot launches from a clone.** Import a pre-built golden `.img`
       as a sealed template, clone it, attach, start. Then it is podman with
       the expensive half deleted: it only runs, because by the time it sees an
-      image that image is already golden. **GATE OPEN 2026-08-28: the mkube
-      golden (img-52ef98d18797, mkube-edge) sealed in sbregistry** — 13
+      image that image is already golden. **DONE MANUALLY 2026-08-28: mkube RUNS FROM ITS
+      GOLDEN CLONE on rose1** — clone of img-bacb0bd4d3c1 (vol 72fdeb69),
+      NVMe-TCP attach (nvme-tcp9), stub + /stormpivot, all mounts
+      /payload-prefixed (config -> /payload/etc/mkube, data, stormd, cache,
+      registry, hostraid1); healthz 200, fleet 23/23, kube-old kept stopped
+      as rollback. stormboot re-enabled with start-on-boot as the boot
+      supervisor. Remaining: implement this exact recipe IN stormboot
+      (clone-launch + watch-and-reclone) so it is automatic. Golden history:
+      img-52ef98d18797 sealed first (42 min, old write path) — 13
       attempts; the kill-list (SIGTERM drain, stop-time, redeploy-mid-build,
       900s deadline, ROS env traps, and the fio-ext4 1000x metadata
       amplification, filed as mkfs.ext4.rs#4) is documented in the sbregistry
