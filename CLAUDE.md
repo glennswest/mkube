@@ -240,7 +240,13 @@ plan". mkube's part:
       registry, hostraid1); healthz 200, fleet 23/23, kube-old kept stopped
       as rollback. stormboot re-enabled with start-on-boot as the boot
       supervisor. Remaining: implement this exact recipe IN stormboot
-      (clone-launch + watch-and-reclone) so it is automatic. Golden history:
+      (clone-launch + watch-and-reclone) so it is automatic. Clone-launch
+      requirements found manually: (a) every image mount dst must be
+      /payload-prefixed; (b) the stub carries NO image ENV — set container
+      env explicitly (envlists= + key= semantics; RUST_LOG=info et al), and
+      until then stormd on the clone runs at debug verbosity and its :9080
+      API is not serving (mkube 8082 unaffected; use RouterOS /log
+      meanwhile) — investigate stormd api-under-chroot when adding env. Golden history:
       img-52ef98d18797 sealed first (42 min, old write path) — 13
       attempts; the kill-list (SIGTERM drain, stop-time, redeploy-mid-build,
       900s deadline, ROS env traps, and the fio-ext4 1000x metadata
