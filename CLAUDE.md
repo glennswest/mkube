@@ -233,7 +233,12 @@ plan". mkube's part:
 - [ ] **stormboot launches from a clone.** Import a pre-built golden `.img`
       as a sealed template, clone it, attach, start. Then it is podman with
       the expensive half deleted: it only runs, because by the time it sees an
-      image that image is already golden.
+      image that image is already golden. **GATE OPEN 2026-08-28: the mkube
+      golden (img-52ef98d18797, mkube-edge) sealed in sbregistry** — 13
+      attempts; the kill-list (SIGTERM drain, stop-time, redeploy-mid-build,
+      900s deadline, ROS env traps, and the fio-ext4 1000x metadata
+      amplification, filed as mkfs.ext4.rs#4) is documented in the sbregistry
+      changelog and issue trail.
 - [x] **Relocation — solved by `stormpivot` (chroot), 2026-08-19.**
       `MKUBE_VOLUME_TOOL` was the mkube side; the image side (252 absolute
       `-> /stormd` symlinks breaking under a `/payload` stub root, which
